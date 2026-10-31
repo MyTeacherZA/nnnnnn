@@ -1,0 +1,395 @@
+@import "tailwindcss";
+
+/* THEME ACCENT DEFINITIONS (Gradient Accents as decorative elements) */
+:root {
+  --forest-green: linear-gradient(135deg, #059669 0%, #10b981 100%);
+  --sky-blue: linear-gradient(135deg, #0284c7 0%, #38bdf8 100%);
+  --electric-blue: linear-gradient(135deg, #1d4ed8 0%, #3b82f6 100%);
+  --sand-brown: linear-gradient(135deg, #92400e 0%, #f59e0b 100%);
+  --crimson-red: linear-gradient(135deg, #991b1b 0%, #ef4444 100%);
+  --amber-yellow: linear-gradient(135deg, #b45309 0%, #fbbf24 100%);
+  --indigo: linear-gradient(135deg, #3730a3 0%, #6366f1 100%);
+  --violet: linear-gradient(135deg, #6d28d9 0%, #a78bfa 100%);
+
+  /* Default active accent is electric-blue */
+  --active-accent: var(--electric-blue);
+  --active-accent-glow: rgba(59, 130, 246, 0.4);
+
+  /* Theme Display Base Colors (Dark by default) */
+  --bg-page: #020617;
+  --bg-card: rgba(15, 23, 42, 0.85);
+  --bg-card-hover: rgba(30, 41, 59, 0.9);
+  --bg-input: #020617;
+  --border-card: rgba(51, 65, 85, 0.6);
+  --text-main: #f8fafc;
+  --text-muted: #94a3b8;
+}
+
+/* ----------------------------------------------------
+   DISPLAY BASE MODES
+   ---------------------------------------------------- */
+
+/* 1. LIGHT MODE (Google Apps Clean White Background) */
+html.mode-light,
+body.mode-light,
+.mode-light {
+  --bg-page: #ffffff;
+  --bg-card: #ffffff;
+  --bg-card-hover: #f8fafc;
+  --bg-input: #ffffff;
+  --border-card: #e2e8f0;
+  --text-main: #0f172a;
+  --text-muted: #64748b;
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+}
+
+.mode-light body,
+body.mode-light {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+}
+
+.mode-light .metallic-card {
+  background: #ffffff !important;
+  border-color: #e2e8f0 !important;
+  color: #0f172a !important;
+  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.06), 0 1px 4px -1px rgba(0, 0, 0, 0.04) !important;
+}
+
+.mode-light header {
+  background-color: rgba(255, 255, 255, 0.95) !important;
+  border-bottom-color: #e2e8f0 !important;
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05) !important;
+}
+
+.mode-light footer {
+  background-color: #ffffff !important;
+  border-top-color: #e2e8f0 !important;
+  color: #64748b !important;
+}
+
+.mode-light .bg-slate-900,
+.mode-light .bg-slate-900\/90,
+.mode-light .bg-slate-900\/80,
+.mode-light .bg-slate-900\/95,
+.mode-light .bg-slate-900\/60,
+.mode-light .bg-slate-900\/40 {
+  background-color: #f8fafc !important;
+  color: #0f172a !important;
+  border-color: #e2e8f0 !important;
+}
+
+.mode-light .bg-slate-950,
+.mode-light .bg-slate-950\/90,
+.mode-light .bg-slate-950\/85,
+.mode-light .bg-slate-950\/80,
+.mode-light .bg-slate-950\/70,
+.mode-light .bg-slate-950\/60 {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  border-color: #e2e8f0 !important;
+}
+
+.mode-light .bg-slate-800,
+.mode-light .bg-slate-800\/80,
+.mode-light .bg-slate-800\/60 {
+  background-color: #f1f5f9 !important;
+  color: #1e293b !important;
+  border-color: #e2e8f0 !important;
+}
+
+.mode-light input:not([type="radio"]):not([type="checkbox"]),
+.mode-light select,
+.mode-light textarea {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  border-color: #cbd5e1 !important;
+}
+
+.mode-light input::placeholder,
+.mode-light textarea::placeholder {
+  color: #94a3b8 !important;
+}
+
+.mode-light option {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+}
+
+.mode-light .text-white,
+.mode-light .text-slate-100 {
+  color: #0f172a !important;
+}
+
+.mode-light .text-slate-200,
+.mode-light .text-slate-300 {
+  color: #334155 !important;
+}
+
+.mode-light .text-slate-400 {
+  color: #64748b !important;
+}
+
+.mode-light .border-slate-800,
+.mode-light .border-slate-800\/80,
+.mode-light .border-slate-800\/60,
+.mode-light .border-slate-700,
+.mode-light .border-slate-700\/80,
+.mode-light .border-slate-700\/70,
+.mode-light .border-slate-700\/60 {
+  border-color: #e2e8f0 !important;
+}
+
+/* 2. NORMAL MODE (Luminous Silver / Titanium Metallic) */
+html.mode-normal,
+body.mode-normal,
+.mode-normal {
+  --bg-page: #e2e8f0;
+  --bg-card: rgba(248, 250, 252, 0.95);
+  --bg-card-hover: #ffffff;
+  --bg-input: #ffffff;
+  --border-card: #94a3b8;
+  --text-main: #0f172a;
+  --text-muted: #475569;
+  background-color: #e2e8f0 !important;
+  color: #0f172a !important;
+}
+
+.mode-normal body,
+body.mode-normal {
+  background-color: #e2e8f0 !important;
+  color: #0f172a !important;
+}
+
+.mode-normal .metallic-card {
+  background: linear-gradient(145deg, #f8fafc 0%, #f1f5f9 100%) !important;
+  border-color: #cbd5e1 !important;
+  color: #0f172a !important;
+  box-shadow: 0 4px 20px -2px rgba(100, 116, 139, 0.15) !important;
+}
+
+.mode-normal header {
+  background-color: rgba(241, 245, 249, 0.95) !important;
+  border-bottom-color: #cbd5e1 !important;
+}
+
+.mode-normal footer {
+  background-color: #f1f5f9 !important;
+  border-top-color: #cbd5e1 !important;
+  color: #475569 !important;
+}
+
+.mode-normal .bg-slate-900,
+.mode-normal .bg-slate-900\/90,
+.mode-normal .bg-slate-900\/80,
+.mode-normal .bg-slate-900\/95,
+.mode-normal .bg-slate-900\/60,
+.mode-normal .bg-slate-900\/40 {
+  background-color: #f1f5f9 !important;
+  color: #0f172a !important;
+  border-color: #cbd5e1 !important;
+}
+
+.mode-normal .bg-slate-950,
+.mode-normal .bg-slate-950\/90,
+.mode-normal .bg-slate-950\/85,
+.mode-normal .bg-slate-950\/80,
+.mode-normal .bg-slate-950\/70,
+.mode-normal .bg-slate-950\/60 {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  border-color: #cbd5e1 !important;
+}
+
+.mode-normal .bg-slate-800,
+.mode-normal .bg-slate-800\/80,
+.mode-normal .bg-slate-800\/60 {
+  background-color: #e2e8f0 !important;
+  color: #1e293b !important;
+  border-color: #cbd5e1 !important;
+}
+
+.mode-normal input:not([type="radio"]):not([type="checkbox"]),
+.mode-normal select,
+.mode-normal textarea {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  border-color: #cbd5e1 !important;
+}
+
+.mode-normal option {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+}
+
+.mode-normal .text-white,
+.mode-normal .text-slate-100 {
+  color: #0f172a !important;
+}
+
+.mode-normal .text-slate-200,
+.mode-normal .text-slate-300 {
+  color: #334155 !important;
+}
+
+.mode-normal .text-slate-400 {
+  color: #475569 !important;
+}
+
+.mode-normal .border-slate-800,
+.mode-normal .border-slate-800\/80,
+.mode-normal .border-slate-800\/60,
+.mode-normal .border-slate-700,
+.mode-normal .border-slate-700\/80,
+.mode-normal .border-slate-700\/70,
+.mode-normal .border-slate-700\/60 {
+  border-color: #cbd5e1 !important;
+}
+
+/* 3. DARK / NIGHT MODE (Deep Midnight Slate) */
+html.mode-dark,
+body.mode-dark,
+.mode-dark {
+  --bg-page: #020617;
+  --bg-card: rgba(15, 23, 42, 0.85);
+  --bg-card-hover: rgba(30, 41, 59, 0.9);
+  --bg-input: #020617;
+  --border-card: rgba(51, 65, 85, 0.6);
+  --text-main: #f8fafc;
+  --text-muted: #94a3b8;
+  background-color: #020617 !important;
+  color: #f8fafc !important;
+}
+
+.mode-dark body,
+body.mode-dark {
+  background-color: #020617 !important;
+  color: #f8fafc !important;
+}
+
+.theme-forest-green {
+  --active-accent: var(--forest-green);
+  --active-accent-glow: rgba(16, 185, 129, 0.4);
+}
+
+.theme-sky-blue {
+  --active-accent: var(--sky-blue);
+  --active-accent-glow: rgba(56, 189, 248, 0.4);
+}
+
+.theme-electric-blue {
+  --active-accent: var(--electric-blue);
+  --active-accent-glow: rgba(59, 130, 246, 0.4);
+}
+
+.theme-sand-brown {
+  --active-accent: var(--sand-brown);
+  --active-accent-glow: rgba(245, 158, 11, 0.4);
+}
+
+.theme-crimson-red {
+  --active-accent: var(--crimson-red);
+  --active-accent-glow: rgba(239, 68, 68, 0.4);
+}
+
+.theme-amber-yellow {
+  --active-accent: var(--amber-yellow);
+  --active-accent-glow: rgba(251, 191, 36, 0.4);
+}
+
+.theme-indigo {
+  --active-accent: var(--indigo);
+  --active-accent-glow: rgba(99, 102, 241, 0.4);
+}
+
+.theme-violet {
+  --active-accent: var(--violet);
+  --active-accent-glow: rgba(167, 139, 250, 0.4);
+}
+
+/* Accent decorative utility classes */
+.accent-gradient-bg {
+  background: var(--active-accent);
+}
+
+.accent-gradient-text {
+  background: var(--active-accent);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.accent-gradient-border {
+  border-image: var(--active-accent) 1;
+}
+
+.accent-border-glow {
+  box-shadow: 0 0 15px -2px var(--active-accent-glow);
+}
+
+.btn-accent {
+  background: var(--active-accent);
+  color: #ffffff;
+  box-shadow: 0 4px 14px 0 var(--active-accent-glow);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.btn-accent:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.1);
+  box-shadow: 0 6px 20px 0 var(--active-accent-glow);
+}
+
+.btn-accent:active {
+  transform: translateY(0);
+}
+
+.accent-outline {
+  position: relative;
+}
+
+.accent-outline::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  background: var(--active-accent);
+  z-index: -1;
+  opacity: 0.8;
+}
+
+/* Metallic & Titanium Cards */
+.metallic-card {
+  background: linear-gradient(145deg, rgba(30, 41, 59, 0.7) 0%, rgba(15, 23, 42, 0.85) 100%);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+.metallic-card-light {
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.9) 0%, rgba(241, 245, 249, 0.95) 100%);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(203, 213, 225, 0.8);
+}
+
+.metallic-card-silver {
+  background: linear-gradient(145deg, rgba(226, 232, 240, 0.6) 0%, rgba(203, 213, 225, 0.7) 100%);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.4);
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.25);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.45);
+}
+

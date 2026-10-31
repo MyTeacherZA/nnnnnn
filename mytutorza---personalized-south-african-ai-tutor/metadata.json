@@ -1,0 +1,6 @@
+{
+  "name": "MyTutorZA - Personalized South African AI Tutor",
+  "description": "South Africa's premier CAPS curriculum AI tutor for Grades 4-12 with Socratic tutoring, ATP study summaries, authentic NSC DBE exam simulation, mathematics formula sheets, and The Firmament psychometric cognitive profiling across all 11 official South African languages.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

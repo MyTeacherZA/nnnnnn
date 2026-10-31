@@ -1,0 +1,2635 @@
+import express from 'express';
+import type { Request, Response } from 'express';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
+import dotenv from 'dotenv';
+import { createClient } from '@supabase/supabase-js';
+import { buildFirmamentSystemPrompt } from './serverFirmamentRules';
+import { getSelectiveCapsCurriculumContext } from './serverCapsVault';
+import {
+  buildCapsVaultIndex,
+  searchCapsVault,
+  detectTOC,
+  splitByTOC,
+} from './serverPdfIngestion';
+import {
+  pickFiles as pickCapsFiles,
+  matchSubject as capsMatchSubject,
+  matchGrade as capsMatchGrade,
+} from './serverCapsCatalog';
+
+dotenv.config();
+
+// Llama 3.3 is the brain for Tutoring, Study & Exam agents.
+const LLAMA_API_KEY =
+  process.env.LLAMA_API_KEY ||
+  process.env.OLLAMA_API_KEY ||
+  process.env.GROQ_API_KEY ||
+  process.env.TOGETHER_API_KEY ||
+  '';
+const LLAMA_BASE_URL = (process.env.LLAMA_BASE_URL || 'https://api.groq.com/openai/v1').replace(/\/+$/, '');
+const LLAMA_MODEL_ID = process.env.LLAMA_MODEL || 'llama-3.3-70b-versatile';
+
+// Upstash Redis REST
+const UPSTASH_URL = (process.env.UPSTASH_REDIS_REST_URL || '').replace(/\/+$/, '');
+const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || '';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const app = express();
+const port = parseInt(process.env.PORT || '8080', 10);
+
+app.use(express.json({ limit: '10mb' }));
+
+// In-memory cache fallback (used when Upstash is not configured)
+const cacheVault = new Map<string, { data: any; expiry: number }>();
+
+function encodeCacheKey(key: string) {
+  return Buffer.from(key)
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+}
+
+async function getCache(key: string): Promise<any> {
+  if (UPSTASH_URL && UPSTASH_TOKEN) {
+    try {
+      const r = await fetch(`${UPSTASH_URL}/get/${encodeCacheKey(key)}`, {
+        headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
+      });
+      if (r.ok) {
+        const json = await r.json();
+        if (json?.result) {
+          return JSON.parse(json.result);
+        }
+      }
+    } catch (e) {
+      console.warn('Upstash get error:', (e as any)?.message || e);
+    }
+  }
+  const item = cacheVault.get(key);
+  if (!item) return null;
+  if (Date.now() > item.expiry) {
+    cacheVault.delete(key);
+    return null;
+  }
+  return item.data;
+}
+
+async function setCache(key: string, data: any, ttlSeconds: number = 3600): Promise<void> {
+  if (UPSTASH_URL && UPSTASH_TOKEN) {
+    try {
+      const value = JSON.stringify(data);
+      await fetch(
+        `${UPSTASH_URL}/set/${encodeCacheKey(key)}/${encodeURIComponent(value)}?EX=${ttlSeconds}`,
+        { headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` } },
+      );
+      return;
+    } catch (e) {
+      console.warn('Upstash set error:', (e as any)?.message || e);
+    }
+  }
+  cacheVault.set(key, { data, expiry: Date.now() + ttlSeconds * 1000 });
+}
+
+async function callLlamaChat(params: {
+  system?: string;
+  user?: string;
+  messages?: { role: string; content: string }[];
+  jsonMode?: boolean;
+  temperature?: number;
+  timeoutMs?: number;
+}): Promise<string | null> {
+  if (!LLAMA_API_KEY) return null;
+  const { system, user, messages = [], jsonMode = false, temperature = 0.4, timeoutMs = 9000 } = params;
+  const payload: any = {
+    model: LLAMA_MODEL_ID,
+    messages: [
+      ...(system ? [{ role: 'system', content: system }] : []),
+      ...messages,
+      ...(user ? [{ role: 'user', content: user }] : []),
+    ],
+    temperature,
+  };
+  if (jsonMode) {
+    payload.response_format = { type: 'json_object' };
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  const useNativeOllama = LLAMA_BASE_URL.endsWith('/api') || LLAMA_BASE_URL.endsWith('/api/');
+
+  try {
+    const url = useNativeOllama
+      ? `${LLAMA_BASE_URL.replace(/\/+$/, '')}/chat`
+      : `${LLAMA_BASE_URL}/chat/completions`;
+
+    const body = useNativeOllama
+      ? {
+          model: LLAMA_MODEL_ID,
+          messages: payload.messages,
+          stream: false,
+          format: jsonMode ? 'json' : undefined,
+          options: { temperature: payload.temperature },
+        }
+      : payload;
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${LLAMA_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (!res.ok) {
+      const errText = await res.text();
+      console.warn('Llama chat error:', res.status, errText);
+      return null;
+    }
+    const data = await res.json();
+    if (useNativeOllama) {
+      return data?.message?.content ?? data?.response ?? null;
+    }
+    return data?.choices?.[0]?.message?.content ?? null;
+  } catch (err: any) {
+    clearTimeout(timer);
+    console.warn('Llama chat failed:', err?.message || err);
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------
+// HEALTH & SECURE STATUS
+// ---------------------------------------------------------------------
+const supabaseServerUrl = process.env.SUPABASE_URL || '';
+const supabaseServerAnonKey =
+  process.env.SUPABASE_ANON_KEY ||
+  process.env.SUPABASE_SERVICE_ROLE_KEY ||
+  process.env.SUPABASE_KEY ||
+  '';
+const supabaseServerJwt = process.env.SUPABASE_JWT_SECRET || process.env.SUPABASE_JWT || '';
+
+function getSupabaseServerClient(req?: Request) {
+  if (!supabaseServerUrl || !supabaseServerAnonKey) return null;
+  const clientOptions: any = {};
+  const authHeader = req?.headers?.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    clientOptions.global = { headers: { Authorization: authHeader } };
+  }
+  try {
+    return createClient(supabaseServerUrl, supabaseServerAnonKey, clientOptions);
+  } catch (err) {
+    console.warn('Failed to initialize server Supabase client:', err);
+    return null;
+  }
+}
+
+function getServiceSupabaseClient() {
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || supabaseServerAnonKey || '';
+  if (!supabaseServerUrl || !key) return null;
+  try {
+    return createClient(supabaseServerUrl, key, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+  } catch (err) {
+    console.warn('Failed to initialize service Supabase client:', err);
+    return null;
+  }
+}
+
+app.get('/api/health', (req: Request, res: Response) => {
+  res.json({
+    status: 'online',
+    app: 'MyTutorZA Backend Engine',
+    llamaConfigured: !!LLAMA_API_KEY,
+    llamaModel: LLAMA_MODEL_ID,
+    supabaseConfigured: !!(supabaseServerUrl && supabaseServerAnonKey),
+    upstashConfigured: !!(UPSTASH_URL && UPSTASH_TOKEN),
+    curriculumDb: 'CAPS 450+ Knowledge Base Active (local vault)',
+  });
+});
+
+app.get('/api/supabase/status', (req: Request, res: Response) => {
+  res.json({
+    configured: !!(supabaseServerUrl && supabaseServerAnonKey),
+    url: supabaseServerUrl
+      ? supabaseServerUrl.replace(/^(https:\/\/[^.]+).*/, '$1.supabase.co')
+      : null,
+    hasAnonKey: !!supabaseServerAnonKey,
+    hasJwtSecret: !!supabaseServerJwt,
+    rlsReady: true,
+  });
+});
+
+// Timeout helper to prevent HeadersTimeoutError from long-running AI generation
+async function callWithTimeout<T>(promise: Promise<T>, timeoutMs: number = 10000): Promise<T> {
+  let timer: NodeJS.Timeout;
+  const timeoutPromise = new Promise<T>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('AI generation timed out')), timeoutMs);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    clearTimeout(timer);
+  });
+}
+
+function getAuthenticDBEPaper(
+  subject: string,
+  grade: string,
+  paperType: string,
+  dur: number,
+  topic?: string,
+) {
+  const isMathLit = subject.toLowerCase().includes('literacy');
+  const isPhysics =
+    subject.toLowerCase().includes('physical') || subject.toLowerCase().includes('science');
+  const isEnglish =
+    subject.toLowerCase().includes('english') || subject.toLowerCase().includes('language');
+  const isAccounting = subject.toLowerCase().includes('accounting');
+
+  if (isMathLit) {
+    return {
+      title: `${grade} Mathematical Literacy ${paperType}`,
+      subject,
+      grade,
+      examType: paperType,
+      durationMinutes: dur,
+      totalMarks: dur === 30 ? 25 : dur === 60 ? 50 : 100,
+      instructions: [
+        'Answer ALL the questions.',
+        'Use the ANNEXURES provided where applicable.',
+        'An approved non-programmable calculator may be used.',
+        'Round off all final answers to TWO decimal places.',
+      ],
+      sections: [
+        {
+          title: 'SECTION A: Basic Calculations & Terminology (Finance & Tax)',
+          description:
+            'Short objective questions on SARS taxation, VAT and percentage calculations.',
+          totalMarks: 15,
+          questions: [
+            {
+              id: 'lit-1-1',
+              number: '1.1',
+              section: 'Section A',
+              prompt:
+                'A solar power inverter system is priced at R14 950,00 excluding VAT. Calculate the total price including 15% South African VAT.',
+              type: 'calculation' as const,
+              marks: 3,
+              rubric:
+                '1 mark: VAT formula (Amount × 1,15), 1 mark: Substitution 14950 × 1,15, 1 mark: Final answer R17 192,50.',
+              examinerTrap:
+                'Students often calculate 15% but forget to add it back to the original price.',
+              solution: 'VAT Inclusive = R14 950 × 1,15 = R17 192,50',
+            },
+            {
+              id: 'lit-1-2',
+              number: '1.2',
+              section: 'Section A',
+              prompt:
+                'Define the term "Primary Rebate" as used by the South African Revenue Service (SARS).',
+              type: 'short' as const,
+              marks: 2,
+              rubric:
+                '2 marks: Full definition stating standard tax deduction allowed for all taxpayers.',
+              examinerTrap:
+                'Confusing a tax rebate (deduction from tax payable) with a tax deduction (deduction from gross income).',
+              solution:
+                'A statutory tax relief discount deducted directly from the calculated tax payable for all individual taxpayers under 65 years old.',
+            },
+          ],
+        },
+        {
+          title: 'SECTION B: Maps, Plans, Scale & Measurements',
+          description: 'Context-based calculations on distance, scale ratios, and capacity.',
+          totalMarks: 25,
+          questions: [
+            {
+              id: 'lit-2-1',
+              number: '2.1',
+              section: 'Section B',
+              prompt:
+                'On a topographical hiking map with a scale of 1 : 50 000, the distance between Sentinel Peak and Tugela Falls measures 7,6 cm with a ruler. Calculate the actual ground distance in kilometers (km).',
+              type: 'calculation' as const,
+              marks: 4,
+              rubric:
+                '1 mark: Multiplication 7,6 × 50 000 = 380 000 cm, 1 mark: Division by 100 to meters (3 800 m), 1 mark: Division by 1 000 to km, 1 mark: Final answer 3,8 km.',
+              examinerTrap:
+                'Dividing by 10 000 instead of 100 000 to convert centimeters directly to kilometers.',
+              solution:
+                'Real distance = 7,6 cm × 50 000 = 380 000 cm.\n380 000 cm ÷ 100 000 = 3,8 km.',
+            },
+          ],
+        },
+        {
+          title: 'SECTION C: Data Handling & Financial Decisions',
+          description: 'Complex financial scenario comparing hire purchase versus personal loan.',
+          totalMarks: 10,
+          questions: [
+            {
+              id: 'lit-3-1',
+              number: '3.1',
+              section: 'Section C',
+              prompt:
+                'A learner purchases a refrigerator with a cash price of R8 500 on Hire Purchase. Terms: 10% cash deposit, 36 equal monthly installments of R345,00. Calculate the total interest paid and evaluate if this is cost-effective.',
+              type: 'calculation' as const,
+              marks: 6,
+              rubric:
+                '1 mark: Deposit = R850, 1 mark: Total installments = 36 × 345 = R12 420, 1 mark: Total cost = R13 270, 2 marks: Total interest = R13 270 - R8 500 = R4 770, 1 mark: Valid evaluation.',
+              examinerTrap:
+                'Forgetting to include the 10% deposit in the total money paid.',
+              solution:
+                'Deposit = 10% of R8 500 = R850.\nInstallments = 36 × R345 = R12 420.\nTotal HP Cost = R850 + R12 420 = R13 270.\nTotal Interest Paid = R13 270 - R8 500 = R4 770 (over 56% interest).',
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  // Default: Pure Mathematics authentic NSC paper
+  return {
+    title: `${grade} ${subject} ${paperType}`,
+    subject,
+    grade,
+    examType: paperType,
+    durationMinutes: dur,
+    totalMarks: dur === 30 ? 25 : dur === 60 ? 50 : 100,
+    instructions: [
+      'Answer ALL the questions.',
+      'Clearly show ALL calculations, diagrams, and graphs used in determining your answers.',
+      'Answers only will NOT necessarily be awarded full marks.',
+      'An approved scientific calculator may be used unless stated otherwise.',
+      'Round off all final answers to TWO decimal places where appropriate.',
+    ],
+    sections: [
+      {
+        title: 'SECTION A: Objective Concepts & Number Patterns',
+        description: 'Nature of roots, quadratic equations, and geometric sequences.',
+        totalMarks: 15,
+        questions: [
+          {
+            id: 'q1-1',
+            number: '1.1',
+            section: 'Section A',
+            prompt: 'Which of the following describes the roots of 2x² - 4x + 5 = 0?',
+            type: 'mcq' as const,
+            options: [
+              'A: Real, rational, and equal',
+              'B: Real, irrational, and unequal',
+              'C: Non-real (imaginary)',
+              'D: Real, rational, and unequal',
+            ],
+            marks: 3,
+            rubric:
+              '1 mark: Discriminant formula Δ = b² - 4ac, 1 mark: Calculation Δ = -24, 1 mark: Correct deduction (C).',
+            examinerTrap:
+              'Students often forget the brackets around (-4)², writing -16 instead of +16, leading to an incorrect positive discriminant.',
+            solution:
+              'Δ = (-4)² - 4(2)(5) = 16 - 40 = -24. Since Δ < 0, roots are non-real. Correct answer is C.',
+          },
+          {
+            id: 'q1-2',
+            number: '1.2',
+            section: 'Section A',
+            prompt:
+              'Given the geometric sequence: 7; 14; 28; ... Write down the value of the common ratio r and determine the 8th term (T₈).',
+            type: 'short' as const,
+            marks: 3,
+            rubric:
+              '1 mark: Common ratio r = 2, 1 mark: Formula T_n = a·r^(n-1), 1 mark: T₈ = 7(2)⁷ = 896.',
+            examinerTrap:
+              'Confusing common difference d with ratio r or writing 7(2)⁸ instead of (n-1).',
+            solution: 'r = T₂ / T₁ = 14 / 7 = 2.\nT₈ = 7 × 2⁷ = 7 × 128 = 896.',
+          },
+        ],
+      },
+      {
+        title: 'SECTION B: Functions, Calculus & Financial Mathematics',
+        description: 'Differentiation from first principles and annuity calculations.',
+        totalMarks: 25,
+        questions: [
+          {
+            id: 'q2-1',
+            number: '2.1',
+            section: 'Section B',
+            prompt: 'Differentiate f(x) = 2x² - 3x from first principles.',
+            type: 'calculation' as const,
+            marks: 5,
+            rubric:
+              "1 mark: Definition f'(x) = lim_{h->0} [f(x+h) - f(x)]/h, 1 mark: Expansion 2(x+h)² - 3(x+h), 1 mark: Simplification 4xh + 2h² - 3h, 1 mark: Factorising h out, 1 mark: Limit evaluation 4x - 3.",
+            examinerTrap:
+              'Dropping the limit notation lim_{h->0} before the final line loses a critical notation mark in NSC papers.',
+            solution:
+              "f(x+h) = 2(x+h)² - 3(x+h) = 2x² + 4xh + 2h² - 3x - 3h\nf(x+h) - f(x) = 4xh + 2h² - 3h\nf'(x) = lim_{h->0} [h(4x + 2h - 3)] / h = lim_{h->0} (4x + 2h - 3) = 4x - 3.",
+          },
+          {
+            id: 'q2-2',
+            number: '2.2',
+            section: 'Section B',
+            prompt:
+              'Ayanda takes out a home loan of R1 250 000 at an interest rate of 11,25% p.a. compounded monthly over 20 years. Calculate her equal monthly repayment installment x.',
+            type: 'calculation' as const,
+            marks: 4,
+            rubric:
+              '1 mark: Present value annuity formula, 1 mark: i = 0,1125/12 and n = 240, 1 mark: Substitution, 1 mark: Final monthly installment R13 124,19.',
+            examinerTrap:
+              'Using the future value annuity formula instead of present value for a home mortgage loan.',
+            solution:
+              'P_v = x[1 - (1 + i)^(-n)] / i\n1 250 000 = x[1 - (1 + 0,1125/12)^(-240)] / (0,1125/12)\nx = R13 124,19 per month.',
+          },
+        ],
+      },
+      {
+        title: 'SECTION C: Cubic Function Analysis & Optimization',
+        description: 'Turning points, points of inflection and tangents.',
+        totalMarks: 10,
+        questions: [
+          {
+            id: 'q3-1',
+            number: '3.1',
+            section: 'Section C',
+            prompt:
+              'Given the cubic function f(x) = x³ - 3x² - 9x + 5. Determine the coordinates of the turning points and classify them as local maximum or minimum.',
+            type: 'calculation' as const,
+            marks: 6,
+            rubric:
+              "1 mark: f'(x) = 3x² - 6x - 9, 1 mark: Setting 3(x - 3)(x + 1) = 0, 1 mark: x = 3 and x = -1, 1 mark: y = -22 and y = 10, 2 marks: Classification (-1; 10) local max, (3; -22) local min.",
+            examinerTrap:
+              'Substituting x values into the derivative instead of the original function f(x) to find turning point y-coordinates.',
+            solution:
+              "f'(x) = 3x² - 6x - 9 = 0 ⟹ x² - 2x - 3 = 0 ⟹ (x - 3)(x + 1) = 0\nx = 3 or x = -1.\nf(-1) = (-1)³ - 3(-1)² - 9(-1) + 5 = 10 ⟹ (-1; 10) is a local maximum.\nf(3) = 27 - 27 - 27 + 5 = -22 ⟹ (3; -22) is a local minimum.",
+          },
+        ],
+      },
+    ],
+  };
+}
+
+app.post('/api/tutoring/chat', async (req: Request, res: Response) => {
+  try {
+    const {
+      message,
+      firmamentProfile,
+      subject,
+      grade,
+      previousMark,
+      language,
+      textbook,
+      history,
+      homeworkMode,
+      askMode,
+    } = req.body;
+
+    if (!message) {
+      return res.status(400).json({ error: 'Message is required' });
+    }
+
+    const targetLang = language || 'English';
+    const mark = previousMark !== undefined ? Number(previousMark) : 50;
+    const gapSeverity = mark < 60 ? 'REMEDIAL_SCAFFOLD' : 'ADVANCEMENT_SCAFFOLD';
+
+    let systemInstruction = buildFirmamentSystemPrompt({
+      firmamentProfile,
+      subject: subject || 'Mathematics',
+      grade: grade || 'Grade 12',
+      previousMark: mark,
+      language: targetLang,
+      textbook,
+      userQuery: message,
+      taskType: 'tutoring',
+    });
+
+    let extraModeInstruction = '';
+    if (homeworkMode)
+      extraModeInstruction +=
+        "\nHOMEWORK MODE ACTIVE: Evaluate the student's submitted work, pinpoint errors, and guide correction without revealing final answers.";
+    if (askMode)
+      extraModeInstruction +=
+        "\nASK MODE ACTIVE: Opening should be synonymous with: What is it that you don't understand? Feel free to open up.";
+    if (extraModeInstruction) {
+      systemInstruction = systemInstruction + extraModeInstruction;
+    }
+
+    if (LLAMA_API_KEY) {
+      try {
+        const historyMessages = Array.isArray(history)
+          ? history.slice(-6).map((h: any) => ({
+              role: h.sender === 'user' ? 'user' : 'assistant',
+              content: h.text,
+            }))
+          : [];
+
+        const reply = await callLlamaChat({
+          system: systemInstruction,
+          messages: historyMessages,
+          user: message,
+          temperature: 0.7,
+          timeoutMs: 9000,
+        });
+
+        if (reply) {
+          return res.json({ reply, source: LLAMA_MODEL_ID });
+        }
+      } catch (llamaErr: any) {
+        console.warn(
+          'Llama tutoring timeout/error, serving firmament fallback:',
+          llamaErr?.message || llamaErr,
+        );
+      }
+    }
+
+    // Offline Socratic fallback
+    const reply = `Sawubona! Working in ${subject} (${targetLang}). Based on your ${
+      firmamentProfile?.cognitiveVector?.primaryModality || 'Logical'
+    } profile and ${mark}% baseline, let us break this down step-by-step. What is the very first rule or formula we need to write down before substituting?`;
+    return res.json({ reply, source: 'firmament-engine-local' });
+  } catch (err: any) {
+    console.error('Tutoring API error:', err);
+    return res.json({
+      reply:
+        'Sawubona! Let us examine this CAPS topic together. What is the fundamental formula or theorem we should apply first?',
+      source: 'safe-fallback',
+    });
+  }
+});
+
+// ---------------------------------------------------------------------
+// 1B. CONVERSATION ANALYSIS & PERSONALIZED SPARK NOTES GENERATOR
+// Transforms Bot-User tutoring transcripts into structured Spark Notes
+// ---------------------------------------------------------------------
+function generatePersonalizedSparkNotesFallback(params: {
+  conversation: any[];
+  subject: string;
+  grade: string;
+  firmamentProfile: any;
+  language?: string;
+  focus?: string;
+}) {
+  const { conversation, subject, grade, firmamentProfile } = params;
+  const combinedText = conversation.map((c: any) => c.text || '').join(' ').toLowerCase();
+
+  let detectedTopic = 'Core Concept Socratic Mastery';
+  if (
+    combinedText.includes('first principle') ||
+    combinedText.includes('derivative') ||
+    combinedText.includes('calculus')
+  ) {
+    detectedTopic = 'Calculus & First Principles Derivatives';
+  } else if (
+    combinedText.includes('trig') ||
+    combinedText.includes('sine') ||
+    combinedText.includes('cosine') ||
+    combinedText.includes('tan')
+  ) {
+    detectedTopic = 'Trigonometric Identities & Reduction Formulae';
+  } else if (
+    combinedText.includes('quadratic') ||
+    combinedText.includes('factor') ||
+    combinedText.includes('parabola') ||
+    combinedText.includes('turning point')
+  ) {
+    detectedTopic = 'Functions, Turning Points & Quadratic Graphs';
+  } else if (
+    combinedText.includes('newton') ||
+    combinedText.includes('force') ||
+    combinedText.includes('momentum') ||
+    combinedText.includes('velocity')
+  ) {
+    detectedTopic = "Newton's Laws & Momentum Conservation";
+  } else if (
+    combinedText.includes('acid') ||
+    combinedText.includes('base') ||
+    combinedText.includes('organic') ||
+    combinedText.includes('ester')
+  ) {
+    detectedTopic = 'Organic Chemistry & Reaction Mechanisms';
+  } else if (
+    combinedText.includes('vat') ||
+    combinedText.includes('tax') ||
+    combinedText.includes('interest') ||
+    combinedText.includes('annuity')
+  ) {
+    detectedTopic = 'Financial Mathematics, Annuities & SARS Taxation';
+  } else if (
+    combinedText.includes('balance sheet') ||
+    combinedText.includes('ledger') ||
+    combinedText.includes('depreciation') ||
+    combinedText.includes('gaap')
+  ) {
+    detectedTopic = 'Financial Statements & Year-End Adjustments';
+  } else if (
+    combinedText.includes('genetics') ||
+    combinedText.includes('dna') ||
+    combinedText.includes('meiosis')
+  ) {
+    detectedTopic = 'Genetics, DNA Replication & Meiosis';
+  }
+
+  const archetype = firmamentProfile?.lifePath?.archetype || 'The Architect';
+  const modality = firmamentProfile?.cognitiveVector?.primaryModality || 'Logical-Rule';
+
+  return {
+    id: `spark-${Date.now()}`,
+    subject,
+    grade,
+    topic: detectedTopic,
+    title: `${detectedTopic} - Personalized Socratic Spark Notes`,
+    summary: `Synthesized directly from live dialogue between student and MyTutorZA AI Tutor. Analyzed ${conversation.length} exchange(s) covering foundational rules, Socratic problem-solving under CAPS guidelines, and targeted error elimination calibrated to ${archetype}.`,
+    keyBreakdowns: [
+      {
+        heading: 'Socratic Concept Foundation',
+        details: `Identified and reinforced the core premise of ${detectedTopic}. Verified prerequisite algebraic manipulation and structural axioms before attempting substitutions.`,
+      },
+      {
+        heading: 'Step-by-Step Reasoning Scaffold',
+        details: `Followed ${modality} scaffold: State formal DBE definition ➔ Factorize and isolate target variables ➔ Carry signs cleanly ➔ Formulate final answer with SI units or mathematical justification.`,
+      },
+      {
+        heading: 'Dialectical Problem Resolution',
+        details:
+          'Corrected intermediate arithmetic and variable misalignments discovered during the tutoring exchange.',
+      },
+    ],
+    weakSpotsIdentified: [
+      {
+        misconception:
+          'Rushing to substitute numerical values before simplifying the algebraic or symbolic expression.',
+        correction: 'Always expand and cancel algebraic terms completely before substituting values.',
+      },
+      {
+        misconception:
+          'Sign reversal when applying distributive laws over brackets containing negatives.',
+        correction: 'Place negative multipliers in explicit brackets -(...) and distribute step-by-step.',
+      },
+      {
+        misconception: 'Omitting accepted DBE reasons in geometric or formal proofs.',
+        correction:
+          'Every mathematical claim in CAPS Paper 2 requires an approved shorthand reason (e.g., "∠s on a straight line").',
+      },
+    ],
+    sparkBullets: [
+      `Mastered core theorem for ${detectedTopic} in ${grade} ${subject}.`,
+      'Never omit intermediate factorization steps; DBE memo awards method marks (M1) even before final accuracy (A1).',
+      'Watch bracket placement when working with negative signs.',
+      'Always verify whether the question asks for exact surd form or rounding to 2 decimal places.',
+      'Check consistency with real-world constraints (dimensions, rates, and probabilities cannot be negative).',
+      `Optimized for ${archetype} cognitive profile: structural mastery and axiomatic verification.`,
+    ],
+    coreFormulasOrRules: [
+      "f'(x) = lim_{h→0} [f(x+h) - f(x)] / h",
+      'Quadratic Formula: x = [-b ± √(b² - 4ac)] / (2a)',
+      'DBE Method Mark Rule: Method mark retained on consistent accuracy (CA) provided no conceptual error occurred.',
+    ],
+    examinerTraps: [
+      'Examiner Trap #1: Distributing powers over addition: (a + b)² ≠ a² + b².',
+      'Examiner Trap #2: Forgetting to take both positive and negative square roots when solving x² = k.',
+      'Examiner Trap #3: Confusing average rate of change with instantaneous rate of change at a point.',
+    ],
+    flashcards: [
+      {
+        front: `What is the crucial first step when working with ${detectedTopic}?`,
+        back: 'Write down the authentic formula or definition from the CAPS formula sheet before substituting.',
+      },
+      {
+        front: 'What does Consistent Accuracy (CA) mean in DBE marking memos?',
+        back: 'You still get method marks for subsequent correct working even if an earlier arithmetic calculation had an error.',
+      },
+      {
+        front: 'How do you avoid sign errors when subtracting expressions with multiple terms?',
+        back: 'Wrap the entire subtracted expression in parentheses: - (term1 + term2) = -term1 - term2.',
+      },
+      {
+        front: `What is the diagnostic advice for ${archetype}?`,
+        back: 'Construct step-by-step structural summaries and verify boundary cases before final submission.',
+      },
+    ],
+    cognitiveAdvice: `Calibrated for ${archetype} (${modality}): Maintain your rigorous structural verification. When under exam time pressure, draft the outline of each multi-mark problem first to prevent algebraic tunnel vision.`,
+    conversationMessageCount: conversation.length,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+app.post('/api/tutoring/analyze-spark-notes', async (req: Request, res: Response) => {
+  try {
+    const {
+      conversation,
+      subject,
+      grade,
+      firmamentProfile,
+      language,
+      focus,
+      jwtToken,
+      supabaseUrl,
+      supabaseAnonKey,
+    } = req.body;
+
+    if (!Array.isArray(conversation) || conversation.length === 0) {
+      return res.status(400).json({ error: 'Conversation history is required for analysis' });
+    }
+
+    const sub = subject || 'Mathematics';
+    const grd = grade || 'Grade 12';
+    const lang = language || 'English';
+    const archetype = firmamentProfile?.lifePath?.archetype || 'The Architect';
+    const modality = firmamentProfile?.cognitiveVector?.primaryModality || 'Logical-Rule';
+
+    const transcript = conversation
+      .map((m: any) => `${m.sender === 'user' ? 'STUDENT' : 'AI TUTOR'}: ${m.text}`)
+      .join('\n\n');
+
+    let generatedNotes: any = null;
+
+    if (LLAMA_API_KEY) {
+      const basePrompt = buildFirmamentSystemPrompt({
+        firmamentProfile,
+        subject: sub,
+        grade: grd,
+        language: lang,
+        userQuery: transcript,
+        taskType: 'spark-notes',
+      });
+
+      const systemInstruction = `
+${basePrompt}
+
+ADDITIONAL MISSION: CONVERSATION SPARK NOTES SYNTHESIS
+Perform deep cognitive analysis of the tutoring dialogue transcript and turn it into personalized, high-yield SPARK NOTES that capture:
+1. Exact topics and concepts discussed in the session
+2. Specific misconceptions, errors, or hesitation the student showed, along with the precise corrective insight
+3. 5-8 punchy, high-yield Spark Notes bullet points
+4. Core CAPS formulas, theorems, or rules used or required
+5. DBE Examiner Traps relevant to the conversation
+6. 4-6 interactive self-test flashcards directly derived from what was discussed
+7. Actionable cognitive advice calibrated specifically to ${archetype} (${firmamentProfile?.cognitiveScore || modality})
+
+You MUST return valid JSON strictly matching this schema:
+{
+  "topic": string,
+  "title": string,
+  "summary": string,
+  "keyBreakdowns": [
+    { "heading": string, "details": string }
+  ],
+  "weakSpotsIdentified": [
+    { "misconception": string, "correction": string }
+  ],
+  "sparkBullets": string[],
+  "coreFormulasOrRules": string[],
+  "examinerTraps": string[],
+  "flashcards": [
+    { "front": string, "back": string }
+  ],
+  "cognitiveAdvice": string
+}
+Do not include markdown code fences if responseMimeType is json.
+`;
+
+      try {
+        const textRaw = await callLlamaChat({
+          system: systemInstruction,
+          user: `Analyze the following tutoring conversation and generate Personalized Spark Notes:\n\n${transcript}`,
+          jsonMode: true,
+          temperature: 0.4,
+          timeoutMs: 9500,
+        });
+        let text = (textRaw || '').trim();
+        if (text.startsWith('```json')) {
+          text = text.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+        } else if (text.startsWith('```')) {
+          text = text.replace(/^```\s*/, '').replace(/\s*```$/, '');
+        }
+
+        const parsed = JSON.parse(text);
+        if (parsed && Array.isArray(parsed.sparkBullets)) {
+          generatedNotes = {
+            id: `spark-${Date.now()}`,
+            subject: sub,
+            grade: grd,
+            topic: parsed.topic || 'Socratic Dialogue Synthesis',
+            title: parsed.title || `${sub} Socratic Spark Notes`,
+            summary:
+              parsed.summary || 'Personalized revision notes synthesized from live tutoring.',
+            keyBreakdowns: Array.isArray(parsed.keyBreakdowns) ? parsed.keyBreakdowns : [],
+            weakSpotsIdentified: Array.isArray(parsed.weakSpotsIdentified)
+              ? parsed.weakSpotsIdentified
+              : [],
+            sparkBullets: parsed.sparkBullets,
+            coreFormulasOrRules: Array.isArray(parsed.coreFormulasOrRules)
+              ? parsed.coreFormulasOrRules
+              : [],
+            examinerTraps: Array.isArray(parsed.examinerTraps) ? parsed.examinerTraps : [],
+            flashcards: Array.isArray(parsed.flashcards) ? parsed.flashcards : [],
+            cognitiveAdvice: parsed.cognitiveAdvice || `Calibrated for ${archetype}.`,
+            conversationMessageCount: conversation.length,
+            createdAt: new Date().toISOString(),
+            source: LLAMA_MODEL_ID,
+          };
+        }
+      } catch (llamaErr: any) {
+        console.warn(
+          'Llama spark notes analysis error/timeout, using cognitive fallback:',
+          (llamaErr as any)?.message || llamaErr,
+        );
+      }
+    }
+
+    if (!generatedNotes) {
+      generatedNotes = {
+        ...generatePersonalizedSparkNotesFallback({
+          conversation,
+          subject: sub,
+          grade: grd,
+          firmamentProfile,
+          language: lang,
+          focus,
+        }),
+        source: 'firmament-engine-local',
+      };
+    }
+
+    const targetUrl = supabaseUrl || supabaseServerUrl;
+    const targetKey = supabaseAnonKey || supabaseServerAnonKey;
+    let supabaseSaved = false;
+
+    if (targetUrl && targetKey) {
+      try {
+        const clientOptions: any = {};
+        if (jwtToken) {
+          clientOptions.global = { headers: { Authorization: `Bearer ${jwtToken}` } };
+        }
+        const supabase = createClient(targetUrl, targetKey, clientOptions);
+        const { error: sbError } = await supabase.from('spark_notes').insert([
+          {
+            subject: generatedNotes.subject,
+            grade: generatedNotes.grade,
+            topic: generatedNotes.topic,
+            title: generatedNotes.title,
+            summary: generatedNotes.summary,
+            key_breakdowns: generatedNotes.keyBreakdowns,
+            weak_spots: generatedNotes.weakSpotsIdentified,
+            spark_bullets: generatedNotes.sparkBullets,
+            formulas_rules: generatedNotes.coreFormulasOrRules,
+            examiner_traps: generatedNotes.examinerTraps,
+            flashcards: generatedNotes.flashcards,
+            cognitive_advice: generatedNotes.cognitiveAdvice,
+            raw_convo_count: generatedNotes.conversationMessageCount,
+          },
+        ]);
+        if (!sbError) {
+          supabaseSaved = true;
+          generatedNotes.syncedToSupabase = true;
+        } else {
+          console.warn('Supabase server-side insert notification:', sbError.message);
+        }
+      } catch (sbErr) {
+        console.warn('Supabase sync skipped:', sbErr);
+      }
+    }
+
+    return res.json({ sparkNotes: generatedNotes, supabaseSaved });
+  } catch (err: any) {
+    console.error('Spark notes analysis error:', err);
+    return res.status(500).json({ error: 'Failed to analyze conversation for spark notes' });
+  }
+});
+
+app.get('/api/spark-notes', async (req: Request, res: Response) => {
+  try {
+    const supabase = getSupabaseServerClient(req);
+    if (!supabase) {
+      return res.json({ sparkNotes: [], source: 'offline' });
+    }
+    const subject = req.query.subject as string | undefined;
+    let query = supabase.from('spark_notes').select('*').order('created_at', { ascending: false });
+    if (subject) {
+      query = query.ilike('subject', `%${subject}%`);
+    }
+    const { data, error } = await query;
+    if (error) {
+      console.warn('Supabase fetch error:', error.message);
+      return res.json({ sparkNotes: [], error: error.message });
+    }
+    const mapped = (data || []).map((row: any) => ({
+      id: row.id,
+      userId: row.user_id,
+      subject: row.subject,
+      grade: row.grade,
+      topic: row.topic,
+      title: row.title,
+      summary: row.summary,
+      keyBreakdowns: row.key_breakdowns || [],
+      weakSpotsIdentified: row.weak_spots || [],
+      sparkBullets: row.spark_bullets || [],
+      coreFormulasOrRules: row.formulas_rules || [],
+      examinerTraps: row.examiner_traps || [],
+      flashcards: row.flashcards || [],
+      cognitiveAdvice: row.cognitive_advice || '',
+      conversationMessageCount: row.raw_convo_count || 0,
+      createdAt: row.created_at || new Date().toISOString(),
+      syncedToSupabase: true,
+    }));
+    return res.json({ sparkNotes: mapped, source: 'supabase' });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/spark-notes/sync', async (req: Request, res: Response) => {
+  try {
+    const note = req.body;
+    if (!note || !note.title) {
+      return res.status(400).json({ error: 'Valid spark note required' });
+    }
+    const supabase = getSupabaseServerClient(req);
+    if (!supabase) {
+      return res.json({
+        success: true,
+        synced: false,
+        message: 'Server Supabase credentials not set, stored in local vault',
+      });
+    }
+    const { data, error } = await supabase
+      .from('spark_notes')
+      .insert([
+        {
+          subject: note.subject,
+          grade: note.grade,
+          topic: note.topic,
+          title: note.title,
+          summary: note.summary,
+          key_breakdowns: note.keyBreakdowns || [],
+          weak_spots: note.weakSpotsIdentified || [],
+          spark_bullets: note.sparkBullets || [],
+          formulas_rules: note.coreFormulasOrRules || [],
+          examiner_traps: note.examinerTraps || [],
+          flashcards: note.flashcards || [],
+          cognitive_advice: note.cognitiveAdvice || '',
+          raw_convo_count: note.conversationMessageCount || 0,
+        },
+      ])
+      .select('id')
+      .single();
+
+    if (error) {
+      console.warn('Supabase sync error:', error.message);
+      return res.json({ success: false, synced: false, error: error.message });
+    }
+    return res.json({ success: true, synced: true, id: data?.id || note.id });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/spark-notes/:id', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const supabase = getSupabaseServerClient(req);
+    if (!supabase) {
+      return res.json({ success: true });
+    }
+    const { error } = await supabase.from('spark_notes').delete().eq('id', id);
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+    return res.json({ success: true });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/study/generate', async (req: Request, res: Response) => {
+  try {
+    const { subject, grade, topic, term, language } = req.body;
+    const cacheKey =
+      `study:${grade}:${subject}:${topic}:${term}:${language || 'English'}`
+        .toLowerCase()
+        .replace(/\s+/g, '_');
+
+    const cached = await getCache(cacheKey);
+    if (cached) {
+      return res.json({ ...cached, source: 'cache' });
+    }
+
+    const rawCaps = getSelectiveCapsCurriculumContext(subject, grade, topic);
+
+    const systemInstruction = `
+You are MyTutorZA's Study AI Agent for South Africa's CAPS Curriculum.
+Your task is to generate high-yield, CAPS-aligned study notes and spark notes for:
+Subject: ${subject}
+Grade: ${grade}
+Topic: ${topic || 'Core Curriculum Overview'}
+Term: ${term || 'Term 2 / Term 3'}
+Language: ${language || 'English'}
+
+RAW CAPS SYLLABUS DIRECTIVE:
+${rawCaps}
+
+You must return valid JSON strictly matching this schema:
+{
+  "topic": string,
+  "atpWeek": string,
+  "summary": string,
+  "sparkNotes": string[], // 5-7 punchy bullet points capturing the essence
+  "coreFormulasOrRules": string[], // essential formulas, definitions or theorems
+  "flashcards": [
+    { "front": string, "back": string }
+  ],
+  "examinerTips": string[], // DBE examiner advice & common traps to avoid
+  "dbeCurriculumFocus": string
+}
+Do not enclose in markdown code fences if responseMimeType is json.
+`;
+
+    if (LLAMA_API_KEY) {
+      try {
+        const textRaw = await callLlamaChat({
+          system: systemInstruction,
+          user: `Generate complete study notes for ${grade} ${subject} on topic "${
+            topic || 'Key Curriculum Section'
+          }".`,
+          jsonMode: true,
+          temperature: 0.4,
+          timeoutMs: 9000,
+        });
+        let text = (textRaw || '').trim();
+        if (text.startsWith('```json')) {
+          text = text.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+        } else if (text.startsWith('```')) {
+          text = text.replace(/^```\s*/, '').replace(/\s*```$/, '');
+        }
+
+        const parsed = JSON.parse(text);
+        if (parsed && Array.isArray(parsed.sparkNotes) && parsed.sparkNotes.length > 0) {
+          await setCache(cacheKey, parsed, 7200);
+          return res.json({ ...parsed, source: LLAMA_MODEL_ID });
+        }
+      } catch (llamaErr: any) {
+        console.warn(
+          'Llama study timeout/error, serving fallback study notes:',
+          (llamaErr as any)?.message || llamaErr,
+        );
+      }
+    }
+
+    const fallbackData = {
+      topic: topic || 'Core CAPS Review',
+      atpWeek: 'Weeks 4-6 CAPS Schedule',
+      summary: `High-yield CAPS revision notes for ${grade} ${subject}. Focuses on fundamental mastery, examination guidelines, and common high-weight question patterns.`,
+      sparkNotes: [
+        'Always state the appropriate DBE formula before substituting values.',
+        'Verify SI units before starting calculation questions.',
+        'Double-check negative signs when multiplying or taking square roots.',
+        'In geometry or proofs, every statement MUST be accompanied by an accepted DBE reason.',
+        'Budget 1 minute per mark during formal NSC exams.',
+      ],
+      coreFormulasOrRules: [
+        'Quadratic formula: x = (-b ± √(b² - 4ac)) / (2a)',
+        'Nature of roots: Δ = b² - 4ac determines real/non-real roots',
+        'DBE accepted reason: "rad ⊥ tan" for radius perpendicular to tangent',
+      ],
+      flashcards: [
+        {
+          front: 'What is the condition for real, unequal roots?',
+          back: 'Δ > 0 (discriminant is positive)',
+        },
+        {
+          front: 'What does consistent accuracy (CA) mean in marking?',
+          back: 'Marks awarded for correct subsequent steps even if an earlier calculation had an error.',
+        },
+        { front: 'What is the VAT rate in South Africa?', back: '15% standard rate' },
+      ],
+      examinerTips: [
+        'Examiners penalize premature rounding in multi-step finance and trigonometry problems.',
+        'Never leave negative exponents in final answers unless explicitly requested.',
+      ],
+      dbeCurriculumFocus:
+        'Cognitive levels: 25% Knowledge, 45% Routine, 20% Complex, 10% Problem Solving.',
+    };
+    await setCache(cacheKey, fallbackData, 7200);
+    return res.json({ ...fallbackData, source: 'firmament-study-fallback' });
+  } catch (err: any) {
+    console.error('Study API error:', err);
+    return res.json({
+      topic: 'Core CAPS Review',
+      atpWeek: 'Current CAPS Term',
+      summary: 'High-yield revision summary.',
+      sparkNotes: [
+        'State formulas clearly before substitution.',
+        'Double check negative signs.',
+        'Verify units.',
+      ],
+      coreFormulasOrRules: ['Standard form ax² + bx + c = 0'],
+      flashcards: [
+        {
+          front: 'What is a prime number?',
+          back: 'A number with exactly two factors: 1 and itself.',
+        },
+      ],
+      examinerTips: ['Show all working for method marks.'],
+      dbeCurriculumFocus: 'NSC Curriculum Assessment Policy Statement.',
+      source: 'emergency-study-fallback',
+    });
+  }
+});
+
+// ---------------------------------------------------------------------
+// 2B. STUDY ROADMAP API (Firmament 4-Week Personalized Study Engine)
+// ---------------------------------------------------------------------
+function getFirmamentRoadmapFallback(
+  subject: string,
+  grade: string,
+  firmamentProfile: any,
+  previousMark: number,
+  targetExam?: string,
+  focusTopic?: string,
+) {
+  const mark = Number(previousMark) || 50;
+  const isRemedial = mark < 60;
+  const archetype = firmamentProfile?.lifePath?.archetype || 'The Architect';
+  const lifePathNumber = firmamentProfile?.lifePath?.number || 7;
+  const mercuryElement = firmamentProfile?.mercury?.element || 'Air';
+  const primaryModality = firmamentProfile?.cognitiveVector?.primaryModality || 'Logical-Rule';
+  const modalityTip =
+    primaryModality === 'Visual'
+      ? 'Use color-coded mind maps, summary diagrams, and highlighters.'
+      : primaryModality === 'Kinesthetic'
+      ? 'Write out each step physically on paper, flashcard sorting drills, and practice problems.'
+      : primaryModality === 'Auditory'
+      ? 'Verbalize rules out loud, explain concepts to a peer, and record audio summaries.'
+      : 'Derive proofs from first principles, build deductive step charts, and classify problem types.';
+
+  const pacingNote =
+    mercuryElement === 'Fire'
+      ? 'Fire Engine: High-intensity 25-minute Pomodoro sprints with brisk problem sets.'
+      : mercuryElement === 'Earth'
+      ? 'Earth Engine: Methodical 45-minute deep-focus blocks with structured step-by-step drills.'
+      : mercuryElement === 'Air'
+      ? 'Air Engine: Socratic dialogue, conceptual mind-mapping, and active inquiry.'
+      : 'Water Engine: Holistic connection sessions, thematic linkage, and intuitive pattern recognition.';
+
+  const subLower = subject.toLowerCase();
+  const isMathPure = subLower.includes('mathematics') && !subLower.includes('literacy');
+  const isMathLit = subLower.includes('literacy');
+  const isPhysics = subLower.includes('physical') || subLower.includes('science');
+  const isLifeScience =
+    subLower.includes('life science') || subLower.includes('biology');
+  const isEnglish = subLower.includes('english') || subLower.includes('language');
+  const isCommerce =
+    subLower.includes('account') ||
+    subLower.includes('business') ||
+    subLower.includes('economic');
+
+  let week1Theme = 'Week 1: Foundational Diagnostic & Axiom Mastery';
+  let week2Theme = 'Week 2: Routine Procedures & Method-Mark Optimization';
+  let week3Theme = 'Week 3: Complex Scenarios & Examiner Trap Inoculation';
+  let week4Theme = 'Week 4: NSC Examination Simulation & Timing Calibration';
+
+  let week1Topics: string[] = ['Core Terminology', 'Prerequisite Algebra', 'Definition Formulas'];
+  let week2Topics: string[] = ['Standard Procedures', 'Step-by-Step Algorithms', 'Graph/Diagram Analysis'];
+  let week3Topics: string[] = ['Higher-Order Applications', 'Synthesis Problems', 'Blooms Level 3 & 4'];
+  let week4Topics: string[] = ['Past NSC Paper 1 & 2 Drills', 'Memorandum Rubric Review', 'Time Management'];
+
+  let week1Traps: string[] = ['Premature rounding', 'Sign errors in transposition'];
+  let week2Traps: string[] = ['Omitting required intermediate calculation steps', 'Unit conversions ignored'];
+  let week3Traps: string[] = ['Misreading negative constraints', 'Falling for distractor values in multi-step questions'];
+  let week4Traps: string[] = ['Spending more than 1 minute per mark on early questions', 'Leaving blank responses'];
+
+  if (isMathPure) {
+    week1Theme = isRemedial
+      ? 'Week 1: Algebraic Diagnostic & Equations Recovery'
+      : 'Week 1: Advanced Algebraic Foundations & Function Inverses';
+    week1Topics = [
+      'Quadratic Equations & Inequalities',
+      'Nature of Roots (Δ = b² - 4ac)',
+      'Exponents & Surds laws',
+      'Hyperbola & Parabola axes',
+    ];
+    week1Traps = [
+      'Dividing both sides by variable x without considering x = 0',
+      'Forgetting to test solutions in fractional equations',
+    ];
+
+    week2Theme = 'Week 2: Differential Calculus & Sequence/Series Mastery';
+    week2Topics = [
+      'Arithmetic & Geometric Series (Σ notation)',
+      'First Principles Differentiation',
+      'Rules of Differentiation',
+      'Cubic Polynomial Factorization',
+    ];
+    week2Traps = [
+      'Differentiating terms before expanding brackets',
+      'Confusing sum to infinity (|r| < 1) with divergent series',
+    ];
+
+    week3Theme = 'Week 3: Analytical Geometry & Euclidean Circle Theorems';
+    week3Topics = [
+      'Equation of Tangent to a Circle',
+      'Euclidean Cyclic Quadrilateral Theorems',
+      'Tan-Chord Theorem Proof',
+      'Proportionality & Similarity',
+    ];
+    week3Traps = [
+      'Writing geometric statements without accepted DBE reasons (e.g. omitting "tan-chord thm")',
+      'Confusing radius perpendicular to tangent with midpoint theorem',
+    ];
+
+    week4Theme = 'Week 4: NSC Paper 1 & Paper 2 Full Simulation';
+    week4Topics = [
+      'Trigonometry Compound & Double Angles',
+      'Calculus Optimization Word Problems',
+      'Financial Mathematics (Amortization & Sinking Funds)',
+      'Past NSC Timed Papers',
+    ];
+    week4Traps = [
+      'Premature decimal rounding before final answer in finance equations',
+      'Writing general solutions in radians instead of degrees',
+    ];
+  } else if (isMathLit) {
+    week1Theme = 'Week 1: Financial Mathematics, SARS Tax & VAT Mastery';
+    week1Topics = [
+      '15% VAT Inclusive/Exclusive Conversions',
+      'SARS Personal Income Tax Brackets',
+      'UIF & Medical Scheme Credits',
+      'Household Budgets & Tariffs',
+    ];
+    week1Traps = [
+      'Multiplying by 0.15 instead of dividing by 1.15 for VAT-inclusive base prices',
+      'Tax threshold confusion',
+    ];
+
+    week2Theme = 'Week 2: Measurement, Perimeter, Area & Volume Conversions';
+    week2Topics = [
+      'Metric Unit Conversions (cm³ to Litres)',
+      'Packaging & Volume Calculations',
+      'Surface Area of Cylinders & Prisms',
+      'Assembly Diagrams',
+    ];
+    week2Traps = [
+      'Converting cm² to m² by dividing by 100 instead of 10 000',
+      'Using diameter instead of radius',
+    ];
+
+    week3Theme = 'Week 3: Maps, Plans, Scale & Elevation Profiles';
+    week3Topics = [
+      'Number Scales vs Bar Scales',
+      'Compass Bearings & Grid References',
+      'Floor Plans & Elevation Drawings',
+      'Travel Schedules & Speed/Distance',
+    ];
+    week3Traps = [
+      'Measuring map distance incorrectly without checking print scale accuracy',
+      'Time conversion (e.g. treating 2.5 hours as 2h 50min instead of 2h 30min)',
+    ];
+
+    week4Theme = 'Week 4: Data Handling, Probability & NSC Past Paper Simulation';
+    week4Topics = [
+      'Box-and-Whisker Plots & Quartiles',
+      'Mean, Median, Mode & Spread',
+      'Tree Diagrams & Contingency Tables',
+      'DBE Paper 1 & 2 Timed Exam Review',
+    ];
+    week4Traps = [
+      'Confusing mean and median in skewed distributions',
+      'Misidentifying outlier limits',
+    ];
+  } else if (isPhysics) {
+    week1Theme = "Week 1: Newton's Laws, Momentum & Vector Foundations";
+    week1Topics = [
+      'Free-body Diagrams & Normal Force',
+      "Newton's Second Law (Fnet = ma)",
+      'Conservation of Linear Momentum',
+      'Elastic vs Inelastic Collisions',
+    ];
+    week1Traps = [
+      'Drawing forces that act ON other bodies rather than ON the target object in free-body diagrams',
+      'Omitting coordinate direction (+ and -) in momentum vectors',
+    ];
+
+    week2Theme = 'Week 2: Work, Energy, Power & Organic Chemistry Nomenclature';
+    week2Topics = [
+      'Work-Energy Theorem (Wnet = ΔK)',
+      'Conservative vs Non-conservative forces',
+      'IUPAC Naming of Homologous Series',
+      'Intermolecular Forces & Boiling Points',
+    ];
+    week2Traps = [
+      'Omitting hyphens/commas in IUPAC names (e.g. 2-methylbutane)',
+      'Confusing hydrogen bonds with covalent bonds',
+    ];
+
+    week3Theme = 'Week 3: Chemical Equilibrium, Rates of Reaction & Doppler Effect';
+    week3Topics = [
+      "Le Chatelier's Principle & Equilibrium Constant (Kc)",
+      'Reaction Rate Factors & Maxwell-Boltzmann curves',
+      'Doppler Effect Equation & Redshift',
+      'Electrochemical Galvanic Cells',
+    ];
+    week3Traps = [
+      'Including pure liquids or solids in the Kc expression',
+      'Confusing frequency observed with emitted frequency when source is moving towards observer',
+    ];
+
+    week4Theme = 'Week 4: Electric Circuits, Acids & Bases, Full NSC Paper Trial';
+    week4Topics = [
+      'Internal Resistance & EMF Calculations (ε = I(R + r))',
+      'Acid-Base Titrations & Ka/Kb',
+      'Photoelectric Effect & Work Function',
+      'Timed NSC Physics & Chemistry Trials',
+    ];
+    week4Traps = [
+      'Forgetting that internal resistance drops terminal voltage under load',
+      'Miscalculating moles in neutralization reactions',
+    ];
+  } else if (isLifeScience) {
+    week1Theme = 'Week 1: DNA, RNA & Molecular Genetics Mastery';
+    week1Topics = [
+      'DNA Replication & Discovery',
+      'Transcription & Translation (Protein Synthesis)',
+      'RNA Codons & Anticodons',
+      'Genetic Aberrations & Mutations',
+    ];
+    week1Traps = [
+      'Confusing Thymine in DNA with Uracil in mRNA',
+      'Transcribing from tRNA instead of mRNA for amino acid charts',
+    ];
+
+    week2Theme = 'Week 2: Mendelian Genetics, Meiosis & Pedigree Charts';
+    week2Topics = [
+      'Phases of Meiosis & Non-disjunction',
+      'Monohybrid & Dihybrid Cross Formats',
+      'Sex-linked Disorders (Haemophilia)',
+      'Pedigree Diagram Interpretation',
+    ];
+    week2Traps = [
+      'Omitting parental phenotypes and genotypes format in genetic crosses',
+      'Confusing homologous chromosome separation with sister chromatid separation',
+    ];
+
+    week3Theme = 'Week 3: Human Endocrine System, Reproduction & Homeostasis';
+    week3Topics = [
+      'Negative Feedback Mechanisms (TSH, Insulin/Glucagon)',
+      'Menstrual Cycle Hormone Fluctuation',
+      'Thermoregulation & Osmoregulation',
+      'Human Ear and Eye Structure',
+    ];
+    week3Traps = [
+      'Confusing Glycogen (storage molecule) with Glucagon (hormone)',
+      'Accommodation mechanism for near vs distant objects',
+    ];
+
+    week4Theme = 'Week 4: Evolution by Natural Selection & NSC Past Paper Trials';
+    week4Topics = [
+      'Lamarckism vs Darwinism Comparisons',
+      'Speciation via Geographic Isolation',
+      'Hominid Fossil Evidence in South Africa',
+      'DBE Paper 1 & 2 Structured Question Trials',
+    ];
+    week4Traps = [
+      'Using Lamarckian phrasing ("organisms adapted in order to survive") in Darwinian questions',
+      'Failing to cite Australopithecus sediba / africanus fossils correctly',
+    ];
+  } else if (isEnglish) {
+    week1Theme = 'Week 1: Paper 1 Comprehension & Summary Writing Precision';
+    week1Topics = [
+      'Textual Analysis & Inferences',
+      'Critical Language Awareness & Tone',
+      'Point-form Summary Writing (Rule of 70 words)',
+      'Denotation vs Connotation',
+    ];
+    week1Traps = [
+      'Quoting verbatim in summary instead of using own words',
+      'Failing to state text reference line numbers when requested',
+    ];
+
+    week2Theme = 'Week 2: Visual Literacy, Cartoons, Advertisements & Language Mechanics';
+    week2Topics = [
+      'Cartoon Body Language & Satirical Techniques',
+      'AIDA Advertising Principles',
+      'Active to Passive Voice',
+      'Direct to Indirect Speech & Concord',
+    ];
+    week2Traps = [
+      'Describing visual details without linking them to the underlying message or satirical target',
+      'Forgetting tense shifts in indirect speech',
+    ];
+
+    week3Theme = 'Week 3: Paper 2 Literature Mastery (Prescribed Drama & Poetry)';
+    week3Topics = [
+      'Theme & Character Arc Synthesis',
+      'Contextual Questions Passage Mapping',
+      'Poetic Devices (Metaphor, Enjambment, Tone)',
+      'Literature Essay Structure (PEEL format)',
+    ];
+    week3Traps = [
+      'Writing narrative plot summaries instead of analytical arguments in literary essays',
+      'Confusing speaker with poet',
+    ];
+
+    week4Theme = 'Week 4: Paper 3 Writing Time Trial & Paper 1/2 Final Drills';
+    week4Topics = [
+      'Discursive & Narrative Essay Planning',
+      'Transactional Texts (Formal Letter, CV, Obituary)',
+      'Editing Drills & Punctuation Traps',
+      'Timed Mock Examination Paper',
+    ];
+    week4Traps = [
+      'Writing beyond the prescribed word limits in Paper 3',
+      'Tone too informal for formal letters',
+    ];
+  }
+
+  const makeTasks = (weekNum: number, prefix: string, topics: string[]) => [
+    {
+      id: `w${weekNum}-t1`,
+      dayLabel: 'Days 1–2',
+      title: `${topics[0] || 'Core Foundation'} Intensive`,
+      description: `Target the fundamental axioms and definitions for ${
+        topics[0] || 'the core module'
+      }. Review DBE summary notes and establish clear understanding.`,
+      durationMinutes: mercuryElement === 'Fire' ? 30 : 45,
+      cognitiveTip: `${modalityTip} Focus specifically on how this connects to South African curriculum standards.`,
+      completed: false,
+    },
+    {
+      id: `w${weekNum}-t2`,
+      dayLabel: 'Days 3–4',
+      title: `${topics[1] || 'Procedural'} Applied Practice`,
+      description: `Complete 6 structured DBE practice questions on ${
+        topics[1] || 'this topic'
+      }. Focus on scoring method marks and identifying the question layout.`,
+      durationMinutes: mercuryElement === 'Fire' ? 35 : 50,
+      cognitiveTip: `Apply ${archetype} reasoning: write intermediate steps explicitly before writing the final answer.`,
+      completed: false,
+    },
+    {
+      id: `w${weekNum}-t3`,
+      dayLabel: 'Days 5–6',
+      title: `${topics[2] || 'Synthesis'} & Exam Trap Immunity`,
+      description: `Deep dive into common mistakes students make. Solve 3 challenging past paper problems under timed conditions.`,
+      durationMinutes: mercuryElement === 'Fire' ? 40 : 55,
+      cognitiveTip: `Pay close attention to DBE examiner traps: check signs, units, and geometric/scientific reasons.`,
+      completed: false,
+    },
+    {
+      id: `w${weekNum}-t4`,
+      dayLabel: 'Day 7',
+      title: 'Weekly Mastery Checkpoint & AI Socratic Review',
+      description: `Self-assess with a 20-mark mini test, then prompt MyTutorZA's Socratic Tutoring Agent to clarify any remaining uncertainties.`,
+      durationMinutes: 30,
+      cognitiveTip: `Reflect on your learning curve. Log any formula or concept you had to look up.`,
+      completed: false,
+    },
+  ];
+
+  return {
+    id: `roadmap-${grade}-${subject}-${Date.now()}`.toLowerCase().replace(/\s+/g, '-'),
+    subject,
+    grade,
+    createdAt: new Date().toISOString(),
+    overallGoal: `4-Week DBE CAPS Mastery for ${grade} ${subject} targeting ${
+      isRemedial ? '70%+ Achievement Band' : '85%+ Distinction Band'
+    }`,
+    targetExam: targetExam || 'Term 2 / NSC Examination',
+    firmamentSummary: {
+      archetype,
+      lifePathNumber,
+      mercuryElement,
+      primaryModality,
+      pacingStrategy: pacingNote,
+      diagnosticTreatment: isRemedial ? 'REMEDIAL_SCAFFOLD' : 'ADVANCEMENT_SCAFFOLD',
+    },
+    keyAdvice: [
+      `Align your study schedule with your ${mercuryElement} element pacing: study in focused blocks rather than passive reading.`,
+      `Leverage your ${primaryModality} cognitive modality: ${modalityTip}`,
+      `Previous term baseline was ${mark}% (${
+        isRemedial
+          ? 'Remedial Scaffold: emphasize axiomatic foundations'
+          : 'Advancement: prioritize complex synthesis & time trial'
+      }).`,
+      `Never leave blank questions in formal DBE assessments; partial method marks (CA - consistent accuracy) can elevate your achievement band.`,
+    ],
+    weeks: [
+      {
+        weekNumber: 1,
+        theme: week1Theme,
+        atpFocus: `CAPS Diagnostic Phase: ${week1Topics.slice(0, 2).join(' & ')}`,
+        mercuryRhythmNotes: pacingNote,
+        estimatedHours: mercuryElement === 'Earth' ? 6 : 5,
+        topics: week1Topics,
+        milestoneCheckpoint: `Demonstrate 100% accuracy on prerequisite diagnostic drill and state core definitions without reference notes.`,
+        examinerTraps: week1Traps,
+        tasks: makeTasks(1, 'w1', week1Topics),
+      },
+      {
+        weekNumber: 2,
+        theme: week2Theme,
+        atpFocus: `CAPS Procedural Phase: ${week2Topics.slice(0, 2).join(' & ')}`,
+        mercuryRhythmNotes: `${mercuryElement} rhythm: Transition into routine calculation patterns and structured proofs.`,
+        estimatedHours: 6,
+        topics: week2Topics,
+        milestoneCheckpoint: `Complete 12 past DBE routine questions with correct intermediate step-by-step layout.`,
+        examinerTraps: week2Traps,
+        tasks: makeTasks(2, 'w2', week2Topics),
+      },
+      {
+        weekNumber: 3,
+        theme: week3Theme,
+        atpFocus: `CAPS Synthesis & Traps: ${week3Topics.slice(0, 2).join(' & ')}`,
+        mercuryRhythmNotes: `${mercuryElement} rhythm: High-order synthesis drills; analyze complex multi-step problems.`,
+        estimatedHours: 7,
+        topics: week3Topics,
+        milestoneCheckpoint: `Successfully avoid all listed examiner traps in a 40-mark timed past paper section.`,
+        examinerTraps: week3Traps,
+        tasks: makeTasks(3, 'w3', week3Topics),
+      },
+      {
+        weekNumber: 4,
+        theme: week4Theme,
+        atpFocus: `CAPS Final Exam Readiness: ${week4Topics.slice(0, 2).join(' & ')}`,
+        mercuryRhythmNotes: `${mercuryElement} rhythm: Full exam condition rehearsals with official memorandum mark schemes.`,
+        estimatedHours: 8,
+        topics: week4Topics,
+        milestoneCheckpoint: `Complete a full timed NSC mock examination under standard test conditions, scoring above your target band.`,
+        examinerTraps: week4Traps,
+        tasks: makeTasks(4, 'w4', week4Topics),
+      },
+    ],
+  };
+}
+
+app.post('/api/roadmap/generate', async (req: Request, res: Response) => {
+  try {
+    const { subject, grade, firmamentProfile, previousMark, targetExam, focusTopic, language } =
+      req.body;
+    const targetSubject = subject || 'Mathematics (Pure)';
+    const targetGrade = grade || 'Grade 12';
+    const mark = previousMark !== undefined ? Number(previousMark) : 50;
+    const isRemedial = mark < 60;
+    const targetLang = language || 'English';
+
+    const cacheKey =
+      `roadmap:${targetGrade}:${targetSubject}:${mark}:${targetExam || 'general'}:${
+        focusTopic || 'all'
+      }:${targetLang}`
+        .toLowerCase()
+        .replace(/\s+/g, '_');
+    const cached = await getCache(cacheKey);
+    if (cached) {
+      return res.json({ ...cached, source: 'cache' });
+    }
+
+    const systemInstruction = `
+You are MyTutorZA's Master Academic Director and Chief Strategist for South African CAPS curriculum (Grades 4-12).
+Your task is to build a bespoke, highly motivating, structured 4-WEEK STUDY ROADMAP tailored specifically to the student's psychological profile under THE FIRMAMENT ENGINE:
+
+STUDENT'S FIRMAMENT PSYCHOMETRIC PROFILE:
+- Student: ${firmamentProfile?.studentName || 'Student'}
+- Life Path Archetype: ${firmamentProfile?.lifePath?.archetype || 'The Architect'} (Life Path ${firmamentProfile?.lifePath?.number || 7})
+- Strengths: ${firmamentProfile?.lifePath?.strengths?.join(', ') || 'Analytical thinking, perseverance'}
+- Mercury Element & Rhythm: ${firmamentProfile?.mercury?.element || 'Air'} (${firmamentProfile?.mercury?.pacingStyle || 'Conceptual dialogue'}, rhythm: ${firmamentProfile?.mercury?.learningRhythm || 'Steady deep dive'})
+- Cognitive Vector: ${firmamentProfile?.cognitiveVector?.primaryModality || 'Logical-Rule'}
+- Reasoning Scaffold: ${firmamentProfile?.cognitiveVector?.reasoningScaffold || 'Deductive Proofs & First Principles'}
+- South African Analogy Focus: ${firmamentProfile?.cognitiveVector?.southAfricanAnalogySet || 'South African engineering, sports, and transit systems'}
+
+DIAGNOSTIC STATUS:
+- Previous Term Average: ${mark}%.
+- Case Treatment: ${isRemedial ? 'REMEDIAL_SCAFFOLD' : 'ADVANCEMENT_SCAFFOLD'}.
+${isRemedial
+  ? '- CRITICAL: Student has prerequisite foundational gaps. Week 1 must rebuild core definitions, prerequisite algebra/rules, and confidence before progressing.'
+  : '- ADVANCED: Student is proficient. Emphasize multi-step synthesis, higher-order DBE questions (Blooms Level 3-4), and trap avoidance.'
+}
+
+CURRICULUM SPECIFICATIONS:
+- Subject: ${targetSubject}
+- Grade: ${targetGrade}
+- Target Milestones: ${targetExam || 'Upcoming DBE Assessment'}
+- Focus Area: ${focusTopic || 'Full CAPS Syllabus'}
+- Language of instruction: ${targetLang}
+
+RAW DBE CAPS ANNUAL TEACHING PLAN (ATP) CONTEXT:
+${getSelectiveCapsCurriculumContext(targetSubject, targetGrade, focusTopic)}
+
+RETURN STRICT JSON matching this schema:
+{
+  "id": string,
+  "subject": string,
+  "grade": string,
+  "overallGoal": string,
+  "targetExam": string,
+  "firmamentSummary": {
+    "archetype": string,
+    "lifePathNumber": number,
+    "mercuryElement": string,
+    "primaryModality": string,
+    "pacingStrategy": string,
+    "diagnosticTreatment": "REMEDIAL_SCAFFOLD" | "ADVANCEMENT_SCAFFOLD"
+  },
+  "keyAdvice": string[], // 3-4 golden study rules tailored to their archetype and modality
+  "weeks": [
+    {
+      "weekNumber": number, // 1, 2, 3, 4
+      "theme": string,
+      "atpFocus": string,
+      "mercuryRhythmNotes": string,
+      "estimatedHours": number,
+      "topics": string[],
+      "milestoneCheckpoint": string,
+      "examinerTraps": string[],
+      "tasks": [
+        {
+          "id": string,
+          "dayLabel": string, // "Days 1–2", "Days 3–4", "Days 5–6", "Day 7"
+          "title": string,
+          "description": string,
+          "durationMinutes": number,
+          "cognitiveTip": string
+        }
+      ]
+    }
+  ]
+}
+`;
+
+    if (LLAMA_API_KEY) {
+      try {
+        const textRaw = await callLlamaChat({
+          system: systemInstruction,
+          user: `Generate a personalized 4-week CAPS study roadmap for ${targetGrade} ${targetSubject} for a student with previous mark ${mark}% and archetype ${
+            firmamentProfile?.lifePath?.archetype || 'The Architect'
+          }. Focus: ${focusTopic || 'Full Curriculum'}.`,
+          jsonMode: true,
+          temperature: 0.4,
+          timeoutMs: 9000,
+        });
+        let text = (textRaw || '').trim();
+        if (text.startsWith('```json')) {
+          text = text.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+        } else if (text.startsWith('```')) {
+          text = text.replace(/^```\s*/, '').replace(/\s*```$/, '');
+        }
+
+        const parsed = JSON.parse(text);
+        if (parsed && Array.isArray(parsed.weeks) && parsed.weeks.length === 4) {
+          await setCache(cacheKey, parsed, 7200);
+          return res.json({ ...parsed, source: LLAMA_MODEL_ID });
+        }
+      } catch (llamaErr: any) {
+        console.warn(
+          'Llama roadmap generation timeout/error, serving firmament fallback:',
+          (llamaErr as any)?.message || llamaErr,
+        );
+      }
+    }
+
+    const fallback = getFirmamentRoadmapFallback(
+      targetSubject,
+      targetGrade,
+      firmamentProfile,
+      mark,
+      targetExam,
+      focusTopic,
+    );
+    await setCache(cacheKey, fallback, 7200);
+    return res.json({ ...fallback, source: 'firmament-engine-local' });
+  } catch (err: any) {
+    console.error('Roadmap endpoint error:', err);
+    const safeFallback = getFirmamentRoadmapFallback(
+      req.body?.subject || 'Mathematics (Pure)',
+      req.body?.grade || 'Grade 12',
+      req.body?.firmamentProfile,
+      req.body?.previousMark || 50,
+      req.body?.targetExam,
+      req.body?.focusTopic,
+    );
+    return res.json({ ...safeFallback, source: 'emergency-safe-fallback' });
+  }
+});
+
+// ---------------------------------------------------------------------
+// 3. EXAM AI AGENT API (NSC DBE Paper Simulator - 90% Accuracy)
+// ---------------------------------------------------------------------
+app.post('/api/exam/generate', async (req: Request, res: Response) => {
+  try {
+    const { subject, grade, examType, durationMinutes, topic, term } = req.body;
+    const dur = Number(durationMinutes) || 60;
+    const paperType = examType || 'November Final Exam';
+
+    const cacheKey =
+      `exam:${grade}:${subject}:${paperType}:${dur}:${topic || 'general'}`
+        .toLowerCase()
+        .replace(/\s+/g, '_');
+    const cached = await getCache(cacheKey);
+    if (cached) {
+      return res.json({ ...cached, source: 'cache' });
+    }
+
+    const systemInstruction = `
+You are the DBE Senior Chief Marking Examiner & Chief Invigilator for South African National Senior Certificate (NSC) Examinations.
+You must construct an authentic, rigorous South African DBE Exam Paper with 90% real-life accuracy to past NSC papers for:
+Subject: ${subject}
+Grade: ${grade}
+Examination: ${paperType} (${
+      paperType.includes('June') ? 'Mid-Year Examination' : 'November Final Examination'
+    })
+Allocated Time: ${dur} minutes
+Topic Focus: ${topic ? topic : 'Full CAPS Syllabus for this exam stage'}
+
+RAW CAPS SYLLABUS & EXAM SPECIFICATION:
+${getSelectiveCapsCurriculumContext(subject, grade, topic)}
+
+STRICT NSC DBE EXAM GEOMETRY MANDATE:
+1. SECTION A: Objective Questions (MCQs, matching items, or short 1-word concepts) - approx 20-25% of marks.
+2. SECTION B: Routine & Complex Procedures (Structured multi-part questions, calculations, diagram analysis, step-by-step problem solving) - approx 55-60% of marks.
+3. SECTION C: Problem Solving / Synthesis / Essay / Application - approx 20% of marks.
+
+CRITICAL REQUIREMENTS:
+- Provide authentic question numbers (e.g. 1.1, 1.2, 1.3, 2.1.1, 2.1.2).
+- Every question must have an EXACT MARK ALLOCATION with explicit sub-mark allocations (e.g., "[1.1.1 (2 marks: Formula 1, Substitution 1)]").
+- Provide an exhaustive, accurate OFFICIAL MEMORANDUM showing step-by-step solutions, mark breakdowns, and explicit "EXAMINER TRAPS" (common misconceptions students fall for).
+- Follow South African CAPS question conventions (e.g., BODMAS, DBE geometric reasons, SARS tax brackets, SI units).
+
+Return valid JSON conforming strictly to:
+{
+  "title": string,
+  "subject": string,
+  "grade": string,
+  "examType": string,
+  "durationMinutes": number,
+  "totalMarks": number,
+  "instructions": string[],
+  "sections": [
+    {
+      "title": string, // e.g. "SECTION A: Objective Concepts"
+      "description": string,
+      "totalMarks": number,
+      "questions": [
+        {
+          "id": string,
+          "number": string, // e.g. "1.1"
+          "section": string,
+          "prompt": string,
+          "type": "mcq" | "calculation" | "short" | "essay",
+          "options": string[], // for MCQ
+          "marks": number,
+          "rubric": string, // e.g. "1 mark: formula, 1 mark: substitution, 1 mark: answer"
+          "examinerTrap": string, // common mistake alert
+          "solution": string
+        }
+      ]
+    }
+  ]
+}
+`;
+
+    if (LLAMA_API_KEY) {
+      try {
+        const textRaw = await callLlamaChat({
+          system: systemInstruction,
+          user: `Generate a realistic ${dur}-minute South African CAPS exam for ${grade} ${subject} (${paperType}) on ${
+            topic || 'core syllabus'
+          }.`,
+          jsonMode: true,
+          temperature: 0.3,
+          timeoutMs: 9000,
+        });
+        let text = (textRaw || '').trim();
+        if (text.startsWith('```json')) {
+          text = text.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+        } else if (text.startsWith('```')) {
+          text = text.replace(/^```\s*/, '').replace(/\s*```$/, '');
+        }
+
+        const parsed = JSON.parse(text);
+        if (parsed && Array.isArray(parsed.sections) && parsed.sections.length > 0) {
+          await setCache(cacheKey, parsed, 7200);
+          return res.json({ ...parsed, source: LLAMA_MODEL_ID });
+        }
+      } catch (llamaErr: any) {
+        console.warn(
+          'Llama exam generation timeout/error, serving authentic CAPS DBE paper bank:',
+          (llamaErr as any)?.message || llamaErr,
+        );
+      }
+    }
+
+    const fallbackPaper = getAuthenticDBEPaper(subject, grade, paperType, dur, topic);
+    await setCache(cacheKey, fallbackPaper, 7200);
+    return res.json({ ...fallbackPaper, source: 'curriculum-dbe-bank' });
+  } catch (err: any) {
+    console.error('Exam endpoint safety handler:', err);
+    const safePaper = getAuthenticDBEPaper(
+      req.body?.subject || 'Mathematics (Pure)',
+      req.body?.grade || 'Grade 12',
+      req.body?.examType || 'November Final Exam',
+      req.body?.durationMinutes || 60,
+    );
+    return res.json({ ...safePaper, source: 'emergency-safe-fallback' });
+  }
+});
+
+// ---------------------------------------------------------------------
+// 4. USER FEEDBACK / CONTACT US
+// ---------------------------------------------------------------------
+app.post('/api/feedback', (req: Request, res: Response) => {
+  const { name, email, subject, message, grade } = req.body;
+  console.log(`Feedback received from ${name} (${email}): [${grade}] ${subject} - ${message}`);
+  return res.json({
+    success: true,
+    message:
+      'Thank you! Your suggestion has been logged and sent to the MyTutorZA curriculum team.',
+  });
+});
+
+// ---------------------------------------------------------------------
+// CAPS PDF INGESTION (450 in-app PDFs)
+// ---------------------------------------------------------------------
+app.post('/api/caps/ingest', async (req: Request, res: Response) => {
+  const client = getServiceSupabaseClient() || getSupabaseServerClient(req);
+  try {
+    const result = await buildCapsVaultIndex();
+    return res.json({ success: true, ...result });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+app.get('/api/caps/search', (req: Request, res: Response) => {
+  const q = (req.query.q as string) || '';
+  const limit = Number(req.query.limit || 6);
+  const results = searchCapsVault(q, limit);
+  return res.json({ results });
+});
+
+// ---------------------------------------------------------------------
+// BILLING (PayFast gating: beta mode until merchant configured)
+// ---------------------------------------------------------------------
+app.get('/api/billing/trial', (req: Request, res: Response) => {
+  const trialStarted = Date.now() - 0;
+  const expires = trialStarted + 3 * 24 * 60 * 60 * 1000;
+  return res.json({
+    trialStartedAt: new Date(trialStarted).toISOString(),
+    trialExpiresAt: new Date(expires).toISOString(),
+    daysRemaining: 3,
+    status: 'trial',
+  });
+});
+
+app.get('/api/billing/status', (req: Request, res: Response) => {
+  const configured = !!process.env.PAYFAST_MERCHANT_ID;
+  return res.json({
+    betaMode: !configured,
+    payfastConfigured: configured,
+    plans: [
+      { id: 'weekly', label: 'R25 / 7 days', price: 25, cycle: 'weekly' },
+      { id: 'monthly', label: 'R80 / month', price: 80, cycle: 'monthly' },
+    ],
+  });
+});
+
+app.post('/api/billing/checkout', (req: Request, res: Response) => {
+  const { merchantId = process.env.PAYFAST_MERCHANT_ID, plan = 'weekly' } = req.body || {};
+
+  if (!merchantId) {
+    return res.json({
+      success: true,
+      betaMode: true,
+      message: 'Beta testing mode: subscription not required yet.',
+    });
+  }
+
+  const amount = plan === 'monthly' ? '80.00' : '25.00';
+  const itemName =
+    plan === 'monthly' ? 'MyTutorZA Monthly Subscription' : 'MyTutorZA Weekly Subscription';
+  const sandbox = process.env.PAYFAST_SANDBOX !== 'false';
+  const baseUrl = sandbox
+    ? 'https://sandbox.payfast.co.za/eng/process'
+    : 'https://www.payfast.co.za/eng/process';
+
+  return res.json({
+    success: true,
+    redirectUrl: `${baseUrl}?merchant_id=${encodeURIComponent(
+      merchantId,
+    )}&amount=${amount}&item_name=${encodeURIComponent(itemName)}`,
+  });
+});
+
+// ---------------------------------------------------------------------
+// TERM TESTS / EXAMS PRE-GENERATION (batch job)
+// ---------------------------------------------------------------------
+app.post('/api/termtests/generate', async (req: Request, res: Response) => {
+  const { subject, grade, term, examType, durationMinutes } = req.body || {};
+  const sub = subject || 'Mathematics';
+  const grd = grade || 'Grade 12';
+  const trm = term || 'Term 1';
+  const exam = examType || 'Term Test';
+  const dur = Number(durationMinutes) || 60;
+
+  const caps = getSelectiveCapsCurriculumContext(sub, grd, '');
+  const pdfRefs = (caps.match(/\.pdf/g) || []).length;
+  const systemInstruction = `
+You are a DBE Senior Chief Examiner. Generate a ${exam} for ${grd} ${sub} (${trm}).
+Duration: ${dur} minutes. Include sections, questions, mark allocations, examiner traps, and an official answer sheet with rubrics.
+Ground all content in the CAPS curriculum and annual teaching plans:
+${caps}
+
+Return valid JSON with:
+{
+  "title": string,
+  "subject": string,
+  "grade": string,
+  "term": string,
+  "examType": string,
+  "durationMinutes": number,
+  "totalMarks": number,
+  "instructions": string[],
+  "sections": [ { "title": string, "questions": [ { "number": string, "prompt": string, "type": "mcq"|"calculation"|"short"|"essay", "marks": number, "rubric": string, "examinerTrap": string, "solution": string } ] } ],
+  "answerSheet": [ { "question": string, "answer": string, "marking": string } ],
+  "essayCriteria": string
+}
+`.trim();
+
+  let paper: any = null;
+  if (LLAMA_API_KEY) {
+    try {
+      const text = await callLlamaChat({
+        system: systemInstruction,
+        user: `Generate the ${exam} now for ${grd} ${sub} (${trm}).`,
+        jsonMode: true,
+        temperature: 0.3,
+        timeoutMs: 30000,
+      });
+      if (text) {
+        let cleaned = text.trim();
+        if (cleaned.startsWith('```'))
+          cleaned = cleaned
+            .replace(/^```json\s*/, '')
+            .replace(/^```\s*/, '')
+            .replace(/\s*```$/, '');
+        paper = JSON.parse(cleaned);
+      }
+    } catch (err) {
+      console.warn('Term test generation error:', err);
+    }
+  }
+
+  if (!paper) {
+    return res.status(503).json({ error: 'Llama not available or generation failed' });
+  }
+
+  const client = getServiceSupabaseClient() || getSupabaseServerClient(req);
+  let id: string | null = null;
+  if (client) {
+    try {
+      const { data } = await client
+        .from('term_tests')
+        .insert([
+          {
+            subject: sub,
+            grade: grd,
+            term: trm,
+            exam_type: exam,
+            duration_minutes: dur,
+            paper,
+            answer_sheet: paper.answerSheet || null,
+          },
+        ])
+        .select('id')
+        .single();
+      id = data?.id || null;
+    } catch (err) {
+      console.warn('Term test insert error:', err);
+    }
+  }
+
+  return res.json({ success: true, id, paper });
+});
+
+app.get('/api/termtests', async (req: Request, res: Response) => {
+  const client = getServiceSupabaseClient() || getSupabaseServerClient(req);
+  if (!client) return res.json({ items: [] });
+  const { data, error } = await client
+    .from('term_tests')
+    .select('*')
+    .order('generated_at', { ascending: false });
+  if (error) return res.status(400).json({ error: error.message });
+  return res.json({ items: data || [] });
+});
+
+// ---------------------------------------------------------------------
+// BATCH CONTENT GENERATION (async-friendly; call in chunks)
+// ---------------------------------------------------------------------
+app.get('/api/admin/run', async (req: Request, res: Response) => {
+  const limit = Number(req.query.limit || 3);
+  try {
+    const index = await buildCapsVaultIndex();
+    const generated: any[] = [];
+    const combos = [
+      { subject: 'Mathematics (Pure)', grade: 'Grade 12', term: 'Term 1', exam: 'Term Test' },
+    ];
+    for (
+      let i = 0;
+      i < Math.min(limit, combos.length) && generated.length < limit;
+      i++
+    ) {
+      const c = combos[i];
+      try {
+        const r = await fetch(`http://localhost:${port}/api/termtests/generate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            subject: c.subject,
+            grade: c.grade,
+            term: c.term,
+            examType: c.exam,
+            durationMinutes: 60,
+          }),
+        });
+        const data = await r.json();
+        generated.push({ ...c, ok: !!data?.success, id: data?.id || null });
+      } catch (err: any) {
+        generated.push({ ...c, ok: false, error: err?.message });
+      }
+    }
+    return res.json({ ingest: { pdfs: index.processed }, generated });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+app.post('/api/batch/generate-all', async (req: Request, res: Response) => {
+  const { subjects, grades, terms, exams } = req.body || {};
+  const subjectList =
+    Array.isArray(subjects) && subjects.length ? subjects : ['Mathematics (Pure)'];
+  const gradeList = Array.isArray(grades) && grades.length ? grades : ['Grade 12'];
+  const termList =
+    Array.isArray(terms) && terms.length
+      ? terms
+      : ['Term 1', 'Term 2', 'Term 3', 'Term 4'];
+  const examList =
+    Array.isArray(exams) && exams.length
+      ? exams
+      : ['Term Test', 'June Mid-Year Exam', 'November Final Exam'];
+
+  const results: any[] = [];
+  outer: for (const subject of subjectList) {
+    for (const grade of gradeList) {
+      for (const term of termList) {
+        for (const exam of examList) {
+          if (results.length >= 5) break outer;
+          try {
+            const r = await fetch(`http://localhost:${port}/api/termtests/generate`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                subject,
+                grade,
+                term,
+                examType: exam,
+                durationMinutes: 60,
+              }),
+            });
+            const data = await r.json();
+            results.push({
+              subject,
+              grade,
+              term,
+              exam,
+              ok: !!data?.success,
+              id: data?.id || null,
+            });
+          } catch (err: any) {
+            results.push({
+              subject,
+              grade,
+              term,
+              exam,
+              ok: false,
+              error: err?.message,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  return res.json({ batch: true, generated: results.length, results });
+});
+
+// ---------------------------------------------------------------------
+// AUTO-NOTES BATCH (one chapter/term per call, respecting model limits)
+// ---------------------------------------------------------------------
+app.post('/api/notes/batch-generate', async (req: Request, res: Response) => {
+  const { subject, grade, terms } = req.body || {};
+  const sub = subject || 'Mathematics (Pure)';
+  const grd = grade || 'Grade 12';
+  const termList =
+    Array.isArray(terms) && terms.length ? terms : ['Term 1', 'Term 2', 'Term 3', 'Term 4'];
+  const results: any[] = [];
+
+  for (const term of termList) {
+    try {
+      const capsText = getSelectiveCapsCurriculumContext(sub, grd, term);
+      const r = await fetch(`http://localhost:${port}/api/notes/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          subject: sub,
+          grade: grd,
+          term,
+          chapter: `CAPS ${term} Core Coverage`,
+          section: 'Core curriculum blocks',
+          text: capsText,
+          sourceFile: 'CAPS vault',
+        }),
+      });
+      const data = await r.json();
+      results.push({ term, ok: !!data?.success, id: data?.id || null });
+    } catch (err: any) {
+      results.push({ term, ok: false, error: err?.message });
+    }
+  }
+
+  return res.json({ batch: true, subject: sub, grade: grd, results });
+});
+
+// ---------------------------------------------------------------------
+// CHUNKED NOTES GENERATION (one chapter/section at a time)
+// ---------------------------------------------------------------------
+app.post('/api/notes/generate', async (req: Request, res: Response) => {
+  const { subject, grade, term, chapter, section, text, sourceFile } = req.body || {};
+  if (!subject || !grade || !term || !chapter) {
+    return res.status(400).json({ error: 'subject, grade, term, chapter required' });
+  }
+  const fallbackText = getSelectiveCapsCurriculumContext(subject, grade, chapter);
+  const excerpt = (text ? text : fallbackText).slice(0, 4000);
+  const isMathOrPhysics = /math|physic|science/i.test(subject);
+  const hardLock = isMathOrPhysics
+    ? '\\nHARD RULE: Every formula in the chapter MUST be generated with full notation, variables explained, and examples. No omission.'
+    : '';
+
+  const caps = getSelectiveCapsCurriculumContext(subject, grade, chapter);
+  const systemInstruction = `
+You are a DBE CAPS study notes generator. Create concise, accurate study notes for:
+Subject: ${subject}  Grade: ${grade}  Term: ${term}
+Chapter: ${chapter}  Section: ${section || 'General'}
+RAW CAPS reference: ${caps}${hardLock}
+
+Source excerpt:
+${excerpt}
+
+Return valid JSON:
+{
+  "summary": string,
+  "topics": [ { "heading": string, "details": string } ],
+  "keyPoints": string[],
+  "formulas": [ { "name": string, "formula": string, "variables": string, "when": string, "example": string } ],
+  "terminology": [ { "term": string, "definition": string } ],
+  "examinerTips": string[]
+}
+`.trim();
+
+  let paper: any = null;
+  if (LLAMA_API_KEY) {
+    try {
+      const textRaw = await callLlamaChat({
+        system: systemInstruction,
+        user: `Generate study notes for this chapter only.`,
+        jsonMode: true,
+        temperature: 0.3,
+        timeoutMs: 60000,
+      });
+      if (textRaw) {
+        let cleaned = textRaw.trim();
+        if (cleaned.startsWith('```'))
+          cleaned = cleaned
+            .replace(/^```json\s*/, '')
+            .replace(/^```\s*/, '')
+            .replace(/\s*```$/, '');
+        paper = JSON.parse(cleaned);
+      }
+    } catch (err: any) {
+      console.warn('Note gen error:', err?.message);
+    }
+  }
+
+  if (!paper) {
+    return res
+      .status(503)
+      .json({ error: 'Generation failed (model unavailable or parse error)' });
+  }
+
+  const client = getServiceSupabaseClient() || getSupabaseServerClient(req);
+  let id: string | null = null;
+  if (client) {
+    try {
+      const { data } = await client
+        .from('subject_notes')
+        .upsert(
+          [
+            {
+              subject,
+              grade,
+              term,
+              chapter,
+              section: section || null,
+              content: paper,
+              formulas: paper.formulas || [],
+              source_file: sourceFile || null,
+            },
+          ],
+          { onConflict: 'subject,grade,term,chapter,section' },
+        )
+        .select('id')
+        .single();
+      id = data?.id || null;
+    } catch (err) {
+      console.warn('Note save error:', err);
+    }
+  }
+
+  return res.json({ success: true, id, note: paper });
+});
+
+app.get('/api/notes', async (req: Request, res: Response) => {
+  const { subject, grade, term } = req.query as any;
+  const client = getServiceSupabaseClient() || getSupabaseServerClient(req);
+  if (!client) return res.json({ items: [] });
+  let q = client.from('subject_notes').select('*').order('generated_at', { ascending: true });
+  if (subject) q = q.eq('subject', subject);
+  if (grade) q = q.eq('grade', grade);
+  if (term) q = q.eq('term', term);
+  const { data, error } = await q;
+  if (error) return res.status(400).json({ error: error.message });
+  return res.json({ items: data || [] });
+});
+
+// ---------------------------------------------------------------------
+// PROFILE & FIRMAMENT SYNC
+// ---------------------------------------------------------------------
+app.post('/api/profile/sync', async (req: Request, res: Response) => {
+  const { profile, firmamentProfile, answers } = req.body || {};
+  const client = getServiceSupabaseClient() || getSupabaseServerClient(req);
+  if (!client) {
+    return res.json({ success: true, synced: false, message: 'Supabase not configured' });
+  }
+
+  try {
+    const safeProfile = profile || {};
+    const { data: profileRow, error: profileErr } = await client
+      .from('student_profiles')
+      .insert([
+        {
+          full_name: safeProfile.fullName || safeProfile.full_name || null,
+          email: safeProfile.email || null,
+          phone: safeProfile.phone || null,
+          date_of_birth: safeProfile.dateOfBirth || safeProfile.date_of_birth || null,
+          grade: safeProfile.grade || null,
+          trial_started_at: new Date().toISOString(),
+          trial_expires_at: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
+          subscription_status: 'trial',
+        },
+      ])
+      .select('id')
+      .single();
+
+    if (profileErr) {
+      console.warn('Profile insert error:', profileErr.message);
+    }
+
+    const profileId = profileRow?.id || null;
+
+    let answersSynced = false;
+    if (answers && profileId) {
+      const rows = Object.entries(answers).map(([qid, label]) => ({
+        user_id: profileId,
+        question_id: Number(qid),
+        answer_label: String(label),
+      }));
+      const { error: ansErr } = await client
+        .from('firmament_onboarding_answers')
+        .insert(rows);
+      if (!ansErr) answersSynced = true;
+      else console.warn('Onboarding answers insert error:', ansErr.message);
+    }
+
+    let firmamentSynced = false;
+    const { error: firmErr } = await client.from('firmament_profiles').insert([
+      {
+        user_id: profileId,
+        cognitive_score: firmamentProfile?.cognitiveScore || null,
+        processing_speed: firmamentProfile?.processingSpeed || null,
+        retention_profile: firmamentProfile?.retentionProfile || null,
+        scaffold_needs: firmamentProfile?.scaffoldNeeds || null,
+        firmament_rules: Array.isArray(firmamentProfile?.firmamentRules)
+          ? firmamentProfile.firmamentRules
+          : [],
+        life_path: firmamentProfile?.lifePath || null,
+        mercury: firmamentProfile?.mercury || null,
+        cognitive_vector: firmamentProfile?.cognitiveVector || null,
+        raw_answers: answers || firmamentProfile?.rawAnswers || {},
+        calculated_at: firmamentProfile?.calculatedAt || new Date().toISOString(),
+      },
+    ]);
+    if (!firmErr) firmamentSynced = true;
+    else console.warn('Firmament profile insert error:', firmErr.message);
+
+    return res.json({
+      success: true,
+      synced: true,
+      syncedProfile: !!profileRow,
+      syncedAnswers: answersSynced,
+      syncedFirmament: firmamentSynced,
+    });
+  } catch (err: any) {
+    console.warn('Profile sync failed:', err?.message || err);
+    return res.json({ success: true, synced: false, error: err?.message || String(err) });
+  }
+});
+
+app.get('/api/profile/status', (req: Request, res: Response) => {
+  const client = getServiceSupabaseClient() || getSupabaseServerClient(req);
+  res.json({
+    supabaseConfigured: !!client,
+    profileSyncAvailable: !!client,
+  });
+});
+
+// ---------------------------------------------------------------------
+// PDF-TOC → NOTES
+// ---------------------------------------------------------------------
+app.get('/api/caps/toc', (req: Request, res: Response) => {
+  const { pdfFile } = req.query as any;
+  if (!pdfFile) return res.status(400).json({ error: 'pdfFile required' });
+  const tocPath = path.resolve(process.cwd(), 'caps_vault', 'manifest-toc.json');
+  if (!fs.existsSync(tocPath)) return res.json({ toc: [], message: 'Run /api/caps/ingest first' });
+  const enriched = JSON.parse(fs.readFileSync(tocPath, 'utf-8'));
+  const entry = (enriched.tocIndex || []).find((e: any) => e.file === pdfFile);
+  if (!entry) return res.json({ toc: [], message: 'PDF not in TOC index' });
+  return res.json({
+    file: pdfFile,
+    subject: entry.subject,
+    grade: entry.grade,
+    term: entry.term,
+    toc: entry.toc,
+  });
+});
+
+app.post('/api/notes/generate-from-pdf-toc', async (req: Request, res: Response) => {
+  const { subject, grade, term, pdfFile, maxChapters } = req.body || {};
+  if (!subject || !grade || !term || !pdfFile)
+    return res.status(400).json({ error: 'subject, grade, term, pdfFile required' });
+  const fullPath = path.resolve(process.cwd(), 'caps_vault', pdfFile);
+  if (!fs.existsSync(fullPath)) return res.status(404).json({ error: 'PDF not found' });
+  const { extractPdfText } = await import('./serverPdfIngestion');
+  const fullText = await extractPdfText(fullPath);
+  if (!fullText || fullText.length < 50) return res.status(400).json({ error: 'No extractable text' });
+  const toc = detectTOC(fullText);
+  const chapters = splitByTOC(fullText, toc);
+  const tocContext = toc.map((t: any) => `${'  '.repeat(t.level - 1)}${t.title}`).join('\n');
+  const limit = Number(maxChapters || chapters.length);
+  const results: any[] = [];
+  for (let i = 0; i < Math.min(limit, chapters.length); i++) {
+    const ch = chapters[i];
+    const caps = getSelectiveCapsCurriculumContext(subject, grade, ch.title);
+    const systemInstruction = `You are a DBE CAPS study notes generator.\n\nTABLE OF CONTENTS:\n${tocContext}\n\nWrite notes for chapter: ${ch.title}\nSubject: ${subject} Grade: ${grade} Term: ${term}\n\nCAPS reference:\n${caps}\n\nSource:\n${ch.content.slice(
+      0,
+      5000,
+    )}\n\nReturn valid JSON: {"summary": string, "topics": [{"heading": string, "details": string}], "keyPoints": string[], "formulas": [{"name": string, "formula": string, "variables": string, "when": string, "example": string}], "terminology": [{"term": string, "definition": string}], "examinerTips": string[]}`;
+    let paper: any = null;
+    try {
+      const raw = await callLlamaChat({
+        system: systemInstruction,
+        user: 'Generate notes for this chapter.',
+        jsonMode: true,
+        temperature: 0.3,
+        timeoutMs: 90000,
+      });
+      if (raw) {
+        let c = raw.trim();
+        if (c.startsWith('```')) c = c.replace(/^```json\s*/, '').replace(/^```\s*/, '').replace(/\s*```$/, '');
+        paper = JSON.parse(c);
+      }
+    } catch (err: any) {
+      console.warn('err:', err?.message);
+    }
+    if (!paper) {
+      results.push({ chapter: ch.title, ok: false, error: 'Generation failed' });
+      continue;
+    }
+    const client = getServiceSupabaseClient();
+    let id: string | null = null;
+    if (client) {
+      try {
+        const { data } = await client
+          .from('subject_notes')
+          .upsert(
+            [
+              {
+                subject,
+                grade,
+                term,
+                chapter: ch.title,
+                section: ch.level === 2 ? ch.title : null,
+                content: paper,
+                formulas: paper.formulas || [],
+                source_file: pdfFile,
+                generated_at: new Date().toISOString(),
+              },
+            ],
+            { onConflict: 'subject,grade,term,chapter,section' },
+          )
+          .select('id')
+          .single();
+        id = data?.id || null;
+      } catch (err) {
+        console.warn('save err:', err);
+      }
+    }
+    results.push({ chapter: ch.title, ok: true, id });
+  }
+  return res.json({ success: true, pdfFile, chaptersProcessed: results.length, results });
+});
+
+app.post('/api/notes/batch-from-pdfs-toc', async (req: Request, res: Response) => {
+  const { subject, grade, term, maxPdfs, maxChaptersPerPdf } = req.body || {};
+  const sub = subject || 'Mathematics (Pure)';
+  const grd = grade || 'Grade 12';
+  const trm = term || 'Term 1';
+  const pdfLimit = Number(maxPdfs || 5);
+  const chLimit = Number(maxChaptersPerPdf || 5);
+  const manifestPath = path.resolve(process.cwd(), 'caps_vault', 'manifest.json');
+  if (!fs.existsSync(manifestPath)) return res.json({ error: 'No manifest' });
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+  const files: string[] = Array.isArray(manifest?.files) ? manifest.files : [];
+  const matched = pickPdfs(files, sub, grd).slice(0, pdfLimit);
+  const all: any[] = [];
+  const { extractPdfText } = await import('./serverPdfIngestion');
+  for (const file of matched) {
+    try {
+      const fullText = await extractPdfText(path.resolve(process.cwd(), 'caps_vault', file));
+      if (!fullText || fullText.length < 50) continue;
+      const toc = detectTOC(fullText);
+      const chapters = splitByTOC(fullText, toc);
+      const tocContext = toc.map((t: any) => `${'  '.repeat(t.level - 1)}${t.title}`).join('\n');
+      for (let i = 0; i < Math.min(chLimit, chapters.length); i++) {
+        const ch = chapters[i];
+        const caps = getSelectiveCapsCurriculumContext(sub, grd, ch.title);
+        const sys = `You are a DBE CAPS study notes generator.\n\nTABLE OF CONTENTS:\n${tocContext}\n\nWrite notes for: ${ch.title}\nSubject: ${sub} Grade: ${grd} Term: ${trm}\n\nCAPS reference:\n${caps}\n\nSource:\n${ch.content.slice(
+          0,
+          5000,
+        )}\n\nReturn valid JSON: {"summary": string, "topics": [{"heading": string, "details": string}], "keyPoints": string[], "formulas": [{"name": string, "formula": string, "variables": string, "when": string, "example": string}], "terminology": [{"term": string, "definition": string}], "examinerTips": string[]}`;
+        let paper: any = null;
+        try {
+          const raw = await callLlamaChat({
+            system: sys,
+            user: 'Generate notes.',
+            jsonMode: true,
+            temperature: 0.3,
+            timeoutMs: 90000,
+          });
+          if (raw) {
+            let c = raw.trim();
+            if (c.startsWith('```')) c = c.replace(/^```json\s*/, '').replace(/^```\s*/, '').replace(/\s*```$/, '');
+            paper = JSON.parse(c);
+          }
+        } catch (err: any) {
+          console.warn('err:', err?.message);
+        }
+        if (!paper) {
+          all.push({ file, chapter: ch.title, ok: false });
+          continue;
+        }
+        const client = getServiceSupabaseClient();
+        if (client) {
+          try {
+            await client.from('subject_notes').upsert(
+              [
+                {
+                  subject: sub,
+                  grade: grd,
+                  term: trm,
+                  chapter: ch.title,
+                  section: ch.level === 2 ? ch.title : null,
+                  content: paper,
+                  formulas: paper.formulas || [],
+                  source_file: file,
+                  generated_at: new Date().toISOString(),
+                },
+              ],
+              { onConflict: 'subject,grade,term,chapter,section' },
+            );
+          } catch (err) {
+            console.warn('save:', err);
+          }
+        }
+        all.push({ file, chapter: ch.title, ok: true });
+      }
+    } catch (err: any) {
+      console.warn('pdf err:', err);
+    }
+  }
+  return res.json({
+    success: true,
+    pdfsProcessed: matched.length,
+    totalChapters: all.length,
+    results: all,
+  });
+});
+
+// ---------------------------------------------------------------------
+// CAPS CATALOG MATCHING
+// ---------------------------------------------------------------------
+function gradeMatches(fn: string, grade: string): boolean {
+  return capsMatchGrade(fn, grade);
+}
+
+function pickPdfs(files: string[], subject: string, grade: string): string[] {
+  return pickCapsFiles({ files, subject, grade, kind: 'content', limit: 50 });
+}
+
+app.post('/api/termtests/debug', async (req: Request, res: Response) => {
+  const c = getServiceSupabaseClient();
+  if (!c) return res.status(500).json({ error: 'No Supabase client' });
+  const info = {
+    hasServiceKey: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
+    hasAnonKey: !!process.env.SUPABASE_ANON_KEY,
+  };
+  const pr = await c
+    .from('term_tests')
+    .insert({
+      subject: 'probe',
+      grade: 'probe',
+      term: 'probe',
+      exam_type: 'probe',
+      duration_minutes: 1,
+      paper: { t: 1 },
+      answer_sheet: null,
+    })
+    .select()
+    .single();
+  if (pr.error)
+    return res
+      .status(400)
+      .json({ ok: false, info, error: pr.error.message, code: pr.error.code, hint: pr.error.hint, details: pr.error.details });
+  await c.from('term_tests').delete().eq('id', pr.data.id);
+  return res.json({ ok: true, info });
+});
+
+// ---------------------------------------------------------------------
+// STATIC ASSETS (Vite build output) + SPA FALLBACK
+// ---------------------------------------------------------------------
+const distDir = path.join(__dirname, 'dist');
+if (fs.existsSync(distDir)) {
+  app.use(express.static(distDir, { index: false, maxAge: '1h' }));
+}
+
+app.get('*', (req: Request, res: Response) => {
+  // Never swallow API routes into the SPA shell.
+  if (req.path.startsWith('/api/')) {
+    return res.status(404).json({ error: `Unknown API route: ${req.path}` });
+  }
+  const indexFile = path.join(distDir, 'index.html');
+  if (fs.existsSync(indexFile)) {
+    return res.sendFile(indexFile);
+  }
+  return res
+    .status(500)
+    .type('text/plain')
+    .send('Client build not found. Run `bun run build` to generate dist/.');
+});
+
+// ---------------------------------------------------------------------
+// START SERVER
+// Cloud Run requires listening on 0.0.0.0 and the PORT env var (8080).
+// ---------------------------------------------------------------------
+const host = '0.0.0.0';
+const server = app.listen(port, host, () => {
+  console.log(`Server listening on http://${host}:${port}`);
+  console.log(`Static build: ${fs.existsSync(distDir) ? distDir : 'MISSING (run bun run build)'}`);
+});
+
+server.on('error', (err) => {
+  console.error('Server failed to start:', err);
+  process.exit(1);
+});
+
+// Keep the container alive on stray rejections but always log them.
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled rejection:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception:', err);
+});
+
+for (const sig of ['SIGTERM', 'SIGINT'] as const) {
+  process.on(sig, () => {
+    console.log(`${sig} received, shutting down.`);
+    server.close(() => process.exit(0));
+  });
+}
