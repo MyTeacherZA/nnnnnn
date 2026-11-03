@@ -1,27 +1,14 @@
 {
-  "name": "unpipe",
-  "description": "Unpipe a stream from all destinations",
-  "version": "1.0.0",
-  "author": "Douglas Christopher Wilson <doug@somethingdoug.com>",
-  "license": "MIT",
-  "repository": "stream-utils/unpipe",
-  "devDependencies": {
-    "istanbul": "0.3.15",
-    "mocha": "2.2.5",
-    "readable-stream": "1.1.13"
-  },
-  "files": [
-    "HISTORY.md",
-    "LICENSE",
-    "README.md",
-    "index.js"
-  ],
+  "name": "mytutorza-deploy-root",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Deployment wrapper. The actual MyTutorZA app lives in ./mytutorza---personalized-south-african-ai-tutor",
   "engines": {
-    "node": ">= 0.8"
+    "node": ">=22.12.0"
   },
   "scripts": {
-    "test": "mocha --reporter spec --bail --check-leaks test/",
-    "test-cov": "istanbul cover node_modules/mocha/bin/_mocha -- --reporter dot --check-leaks test/",
-    "test-travis": "istanbul cover node_modules/mocha/bin/_mocha --report lcovonly -- --reporter spec --check-leaks test/"
+    "postinstall": "npm --prefix mytutorza---personalized-south-african-ai-tutor ci --no-audit --no-fund && npm --prefix mytutorza---personalized-south-african-ai-tutor run build",
+    "build": "npm --prefix mytutorza---personalized-south-african-ai-tutor run build",
+    "start": "npm --prefix mytutorza---personalized-south-african-ai-tutor start"
   }
 }

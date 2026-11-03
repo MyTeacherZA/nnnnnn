@@ -10,11 +10,19 @@ View your app in AI Studio: https://ai.studio/apps/435ac907-b5f9-4926-8211-1bf8d
 
 ## Run Locally
 
-**Prerequisites:**  Node.js
-
+**Prerequisites:** Node.js 22.12+ (Bun 1.4+ also supported)
 
 1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+   `npm ci`
+2. Copy `.env.example` to `.env` and fill in your keys (`LLAMA_API_KEY`, Supabase, etc.)
+3. Build the client and start the server:
+   `npm run build && npm start`
+
+The server serves the built `dist/` assets on `http://localhost:8080`
+(override with `PORT`). To run with Bun instead, use `bun run dev`.
+
+## Deploying
+
+See [RENDER_DEPLOY.md](../RENDER_DEPLOY.md) for Render setup (Node and Docker),
+required environment variables, and common build failures.
+
