@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { PSYCHOMETRIC_QUESTIONS, calculateFirmamentFromAnswers } from '../data/psychometrics';
-import { syncOnboardingToSupabase } from '../services/supabase';
-import { GRADES } from '../data/curriculumData';
+import { GRADES, REGIONS_BY_COUNTRY, SUBJECTS_BY_COUNTRY } from '../data/curriculumData';
+import { CountryCode, SubjectSlot } from '../types';
 import confetti from 'canvas-confetti';
 import {
   X,
@@ -16,39 +16,157 @@ import {
   Phone,
   Calendar,
   GraduationCap,
-  Zap,
+  MapPin,
+  BookOpen,
+  User,
+  Loader2,
+  AlertCircle,
 } from 'lucide-react';
 
+const inputClass =
+  'w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500';
+const labelClass =
+  'text-[11px] font-bold text-slate-400 uppercase tracking-wider block mb-1';
+
+type Step = 'account' | 'details' | 'subjects' | 'quiz' | 'result';
+
 export const OnboardingModal: React.FC = () => {
-  const { isOnboardingOpen, setIsOnboardingOpen, student, updateStudentProfile, updateFirmament } = useApp();
-  const [step, setStep] = useState<'auth' | 'quiz' | 'result'>('auth');
+  const {
+    isOnboardingOpen,
+    setIsOnboardingOpen,
+    student,
+    account,
+    hasCompletedOnboarding,
+    signUpAccount,
+    signInAccount,
+    completeOnboarding,
+  } = useApp();
+
+  const isGate = !hasCompletedOnboarding;
+  const [step, setStep] = useState<Step>('account');
   const [isLoginMode, setIsLoginMode] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
-  // Auth fields
-  const [fullName, setFullName] = useState(student?.fullName || 'Lunga Manana');
-  const [email, setEmail] = useState(student?.email || 'mananalunga62@gmail.com');
-  const [phone, setPhone] = useState(student?.phone || '+27 82 555 0192');
-  const [dob, setDob] = useState(student?.dateOfBirth || '2007-06-15');
-  const [grade, setGrade] = useState(student?.grade || 'Grade 12');
-  const [password, setPassword] = useState('Matric2026!');
+  // Account fields (never prefilled from the demo build)
+  const [fullName, setFullName] = useState(student?.fullName || account?.fullName || '');
+  const [email, setEmail] = useState(student?.email || account?.email || '');
+  const [phone, setPhone] = useState(student?.phone || account?.phone || '');
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
 
-  // Quiz state: 16 questions
+  // Learner detail fields
+  const [dob, setDob] = useState(student?.dateOfBirth || '');
+  const [grade, setGrade] = useState(student?.grade || 'Grade 9');
+  const [country, setCountry] = useState<CountryCode>(student?.country || 'US');
+  const [region, setRegion] = useState(student?.state || '');
+
+  // Subjects
+  const [selectedSubjects, setSelectedSubjects] = useState<string[]>([]);
+
+  // Diagnostic
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
-  const [answers, setAnswers] = useState<Record<number, string>>({});
-  const [calculatedResult, setCalculatedResult] = useState<any>(null);
+  const [answers, setAnswers] = useState<Record<number, string>>(student?.firmament?.rawAnswers || {});
+  const [calculatedResult, setCalculatedResult] = useState<any>(student?.firmament || null);
 
   if (!isOnboardingOpen) return null;
 
-  const handleAuthSubmit = (e: React.FormEvent) => {
+  const regionOptions = REGIONS_BY_COUNTRY[country] || [];
+  const subjectCatalog = SUBJECTS_BY_COUNTRY[country] || [];
+
+  const submitAccount = async (e: React.FormEvent) => {
     e.preventDefault();
-    updateStudentProfile({
-      fullName,
-      email,
-      phone,
-      dateOfBirth: dob,
-      grade,
-    });
+    setError(null);
+    setNotice(null);
+
+    if (!isLoginMode && password !== confirmPassword) {
+      setError('Passwords do not match.');
+      return;
+    }
+
+    setBusy(true);
+    try {
+      if (isLoginMode) {
+        const result = await signInAccount({ email, password });
+        if (!result.ok) {
+          setError(result.error || 'Sign in failed.');
+          return;
+        }
+        // Returning learner with a saved profile is handled by the context,
+        // which closes onboarding. Otherwise continue into the wizard.
+        setFullName(result.account?.fullName || fullName);
+        setPhone(result.account?.phone || phone);
+        setStep(hasCompletedOnboarding ? 'result' : 'details');
+      } else {
+        const result = await signUpAccount({ fullName, email, phone, password });
+        if (!result.ok) {
+          setError(result.error || 'Could not create your account.');
+          return;
+        }
+        if (result.needsEmailConfirmation) {
+          setNotice('Account created. Check your inbox to confirm your email — you can carry on now.');
+        }
+        setStep('details');
+      }
+    } catch (err: any) {
+      setError(err?.message || 'Something went wrong. Please try again.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const dobDate = dob ? new Date(dob) : null;
+  const dobValid = !!dobDate && !Number.isNaN(dobDate.getTime()) && dobDate < new Date() && dobDate.getFullYear() > 1900;
+  const detailsValid = dobValid && !!grade && !!region;
+
+  const toggleSubject = (name: string) => {
+    setSelectedSubjects((prev) =>
+      prev.includes(name) ? prev.filter((s) => s !== name) : [...prev, name]
+    );
+  };
+
+  const submitDetails = (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    if (!detailsValid) {
+      if (!dobValid) {
+        setError('Please enter your date of birth (it must be a past date).');
+        return;
+      }
+      setError(
+        country === 'US'
+          ? 'Please choose your grade and your state.'
+          : 'Please choose your grade and your province.'
+      );
+      return;
+    }
+    setStep('subjects');
+  };
+
+  const submitSubjects = () => {
+    setError(null);
+    if (selectedSubjects.length === 0) {
+      setError('Select at least one subject you take at school.');
+      return;
+    }
     setStep('quiz');
+  };
+
+  const buildSubjectSlots = (): SubjectSlot[] => {
+    return selectedSubjects.map((name, index) => {
+      const catalogEntry = subjectCatalog.find((s) => s.name === name);
+      const existing = student?.subjects?.find((s) => s.name === name);
+      return {
+        id: existing?.id || `sub-${index + 1}`,
+        name,
+        category: (catalogEntry?.category || 'Humanities') as SubjectSlot['category'],
+        previousTermMark: existing?.previousTermMark ?? 60,
+        previousTermName: existing?.previousTermName || 'Previous Term',
+        tutoringLanguage: existing?.tutoringLanguage || 'English',
+        textbook: existing?.textbook,
+      };
+    });
   };
 
   const handleSelectAnswer = (questionId: number, label: string) => {
@@ -57,113 +175,191 @@ export const OnboardingModal: React.FC = () => {
 
     if (currentQuestionIndex < PSYCHOMETRIC_QUESTIONS.length - 1) {
       setCurrentQuestionIndex((prev) => prev + 1);
-    } else {
-      // Completed all 16 questions! Calculate Firmament!
-      const profile = calculateFirmamentFromAnswers(fullName, dob, updated);
-      const profileWithAnswers = { ...profile, rawAnswers: updated, onboardingAnswers: updated };
-      setCalculatedResult(profileWithAnswers);
-      updateFirmament(profileWithAnswers);
-      // Persist user info + 16 answers to Supabase so Firmament rules can be served.
-      updateStudentProfile({ fullName, email, phone, dateOfBirth: dob, grade, firmament: profileWithAnswers });
-      void syncOnboardingToSupabase({
-        profile: { fullName, email, phone, dateOfBirth: dob, grade },
-        firmamentProfile: profileWithAnswers,
-        answers: updated,
-      });
-      setStep('result');
-      try {
-        confetti({
-          particleCount: 150,
-          spread: 80,
-          origin: { y: 0.6 },
-        });
-      } catch (err) {
-        console.error(err);
-      }
+      return;
+    }
+
+    const profile = calculateFirmamentFromAnswers(fullName || account?.fullName || 'Learner', dob, updated);
+    const profileWithAnswers = { ...profile, rawAnswers: updated, onboardingAnswers: updated };
+    setCalculatedResult(profileWithAnswers);
+    setStep('result');
+    try {
+      confetti({ particleCount: 150, spread: 80, origin: { y: 0.6 } });
+    } catch (err) {
+      console.error(err);
     }
   };
 
-  const handleFinish = () => {
-    setIsOnboardingOpen(false);
+  const finishOnboarding = async () => {
+    if (!calculatedResult) return;
+    setBusy(true);
+    try {
+      await completeOnboarding({
+        fullName: fullName || account?.fullName || 'Learner',
+        email: email || account?.email || '',
+        phone,
+        dateOfBirth: dob,
+        grade,
+        country,
+        state: region,
+        subjects: buildSubjectSlots(),
+        firmament: calculatedResult,
+        answers,
+      });
+    } finally {
+      setBusy(false);
+    }
   };
 
   const currentQ = PSYCHOMETRIC_QUESTIONS[currentQuestionIndex];
   const progressPercent = Math.round(((currentQuestionIndex + 1) / PSYCHOMETRIC_QUESTIONS.length) * 100);
+  const stepIndex = ['account', 'details', 'subjects', 'quiz', 'result'].indexOf(step);
+
+  // Returning learner viewing their profile/firmament summary.
+  if (!isGate) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-md overflow-y-auto">
+        <div className="metallic-card w-full max-w-2xl rounded-3xl border border-slate-800 p-6 sm:p-8 relative my-8">
+          <button
+            onClick={() => setIsOnboardingOpen(false)}
+            className="absolute top-5 right-5 p-2 rounded-xl bg-slate-800 text-slate-400 hover:text-white transition-colors"
+            aria-label="Close"
+          >
+            <X className="w-5 h-5" />
+          </button>
+          <div className="text-center mb-6">
+            <div className="w-14 h-14 rounded-2xl btn-accent flex items-center justify-center mx-auto mb-3 shadow-lg">
+              <Brain className="w-7 h-7 text-white" />
+            </div>
+            <h2 className="text-2xl font-black text-white">Your Firmament Profile</h2>
+            <p className="text-xs text-slate-400 mt-1">
+              {student?.fullName} · {student?.grade} · {student?.state} ({student?.country === 'US' ? 'United States' : 'South Africa'})
+            </p>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-left">
+            <div className="bg-slate-900/90 p-4 rounded-2xl border border-slate-800">
+              <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1">Archetype</span>
+              <p className="text-sm font-extrabold text-white">{student?.firmament?.lifePath.profile}</p>
+            </div>
+            <div className="bg-slate-900/90 p-4 rounded-2xl border border-slate-800">
+              <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1">Modality</span>
+              <p className="text-sm font-extrabold text-white">{student?.firmament?.cognitiveVector.primaryModality}</p>
+            </div>
+            <div className="bg-slate-900/90 p-4 rounded-2xl border border-slate-800">
+              <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1">Processing Speed</span>
+              <p className="text-sm font-extrabold text-white">{student?.firmament?.processingSpeed}</p>
+            </div>
+            <div className="bg-slate-900/90 p-4 rounded-2xl border border-slate-800">
+              <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1">Subjects</span>
+              <p className="text-sm font-extrabold text-white">{student?.subjects.length} active</p>
+            </div>
+          </div>
+          <button
+            onClick={() => setIsOnboardingOpen(false)}
+            className="w-full btn-accent py-3 rounded-xl font-bold text-sm mt-6 cursor-pointer"
+          >
+            Back to my workspace
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-md overflow-y-auto">
-      <div className="metallic-card w-full max-w-2xl rounded-3xl border border-slate-700/80 shadow-2xl p-6 sm:p-8 relative">
-        {/* Close Button */}
-        <button
-          onClick={() => setIsOnboardingOpen(false)}
-          className="absolute top-5 right-5 p-2 rounded-xl bg-slate-800 text-slate-400 hover:text-white transition-colors"
-        >
-          <X className="w-5 h-5" />
-        </button>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/90 backdrop-blur-md overflow-y-auto">
+      <div className="metallic-card w-full max-w-2xl rounded-3xl border border-slate-800 p-6 sm:p-8 relative my-8">
+        <div className="flex items-center justify-between mb-5">
+          <div className="flex items-center gap-2">
+            <GraduationCap className="w-5 h-5 text-sky-400" />
+            <span className="text-xs font-black uppercase tracking-wider text-slate-300">
+              {step === 'account' && 'Step 1 of 4 · Create your account'}
+              {step === 'details' && 'Step 2 of 4 · About you'}
+              {step === 'subjects' && 'Step 3 of 4 · Your subjects'}
+              {step === 'quiz' && 'Step 4 of 4 · Firmament diagnostic'}
+              {step === 'result' && 'You are all set'}
+            </span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            {[0, 1, 2, 3].map((i) => (
+              <span
+                key={i}
+                className={`h-1.5 w-6 rounded-full ${stepIndex >= i ? 'btn-accent' : 'bg-slate-800'}`}
+              />
+            ))}
+          </div>
+        </div>
 
-        {/* STEP 1: AUTH (Sign up / Sign in) */}
-        {step === 'auth' && (
+        {error && (
+          <div className="mb-4 flex items-start gap-2 bg-rose-950/60 border border-rose-800 rounded-xl px-3 py-2">
+            <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+            <p className="text-[11px] text-rose-200 leading-snug">{error}</p>
+          </div>
+        )}
+        {notice && (
+          <div className="mb-4 flex items-start gap-2 bg-amber-950/50 border border-amber-800 rounded-xl px-3 py-2">
+            <CheckCircle2 className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+            <p className="text-[11px] text-amber-200 leading-snug">{notice}</p>
+          </div>
+        )}
+
+        {/* STEP 1: ACCOUNT */}
+        {step === 'account' && (
           <div>
-            <div className="text-center mb-6">
-              <div className="w-12 h-12 rounded-2xl btn-accent flex items-center justify-center mx-auto mb-3 shadow-lg">
-                <GraduationCap className="w-6 h-6 text-white" />
-              </div>
+            <div className="text-center mb-5">
               <h2 className="text-2xl font-black text-white">
-                {isLoginMode ? 'Welcome Back to MyTutorZA' : 'Create Your MyTutorZA Account'}
+                {isLoginMode ? 'Welcome back' : 'Create your learner account'}
               </h2>
               <p className="text-xs text-slate-400 mt-1">
-                South Africa’s premier CAPS AI Tutor for Grades 4 to 12
+                Personalized tutoring grounded in your state's standards, your grade and your Firmament profile.
               </p>
             </div>
 
-            <form onSubmit={handleAuthSubmit} className="space-y-4">
+            <form onSubmit={submitAccount} className="space-y-3.5">
               {!isLoginMode && (
                 <div>
-                  <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
-                    Learner Full Name
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={fullName}
-                    onChange={(e) => setFullName(e.target.value)}
-                    placeholder="e.g. Lunga Manana"
-                    className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500"
-                  />
+                  <label className={labelClass}>Full name</label>
+                  <div className="relative">
+                    <User className="w-4 h-4 text-slate-500 absolute left-3 top-3 pointer-events-none" />
+                    <input
+                      type="text"
+                      required
+                      autoComplete="name"
+                      value={fullName}
+                      onChange={(e) => setFullName(e.target.value)}
+                      placeholder="e.g. Alex Johnson"
+                      className={`${inputClass} pl-9`}
+                    />
+                  </div>
                 </div>
               )}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
-                    Email Address
-                  </label>
+                  <label className={labelClass}>Email</label>
                   <div className="relative">
                     <Mail className="w-4 h-4 text-slate-500 absolute left-3 top-3 pointer-events-none" />
                     <input
                       type="email"
                       required
+                      autoComplete="email"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
-                      placeholder="student@gmail.com"
-                      className="w-full bg-slate-900 border border-slate-700 rounded-xl pl-9 pr-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none"
+                      placeholder="student@example.com"
+                      className={`${inputClass} pl-9`}
                     />
                   </div>
                 </div>
-
                 <div>
-                  <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
-                    Phone Number
-                  </label>
+                  <label className={labelClass}>Mobile number</label>
                   <div className="relative">
                     <Phone className="w-4 h-4 text-slate-500 absolute left-3 top-3 pointer-events-none" />
                     <input
                       type="tel"
                       required
+                      autoComplete="tel"
                       value={phone}
                       onChange={(e) => setPhone(e.target.value)}
-                      placeholder="+27 82 000 0000"
-                      className="w-full bg-slate-900 border border-slate-700 rounded-xl pl-9 pr-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none"
+                      placeholder="+1 555 000 0000"
+                      className={`${inputClass} pl-9`}
                     />
                   </div>
                 </div>
@@ -171,29 +367,101 @@ export const OnboardingModal: React.FC = () => {
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
-                    Date of Birth (For Cognitive Profile)
-                  </label>
+                  <label className={labelClass}>Password</label>
                   <div className="relative">
-                    <Calendar className="w-4 h-4 text-slate-500 absolute left-3 top-3 pointer-events-none" />
+                    <Lock className="w-4 h-4 text-slate-500 absolute left-3 top-3 pointer-events-none" />
                     <input
-                      type="date"
+                      type="password"
                       required
-                      value={dob}
-                      onChange={(e) => setDob(e.target.value)}
-                      className="w-full bg-slate-900 border border-slate-700 rounded-xl pl-9 pr-3 py-2.5 text-sm text-white focus:outline-none"
+                      minLength={8}
+                      autoComplete={isLoginMode ? 'current-password' : 'new-password'}
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder="At least 8 characters"
+                      className={`${inputClass} pl-9`}
                     />
                   </div>
                 </div>
+                {!isLoginMode && (
+                  <div>
+                    <label className={labelClass}>Confirm password</label>
+                    <div className="relative">
+                      <Lock className="w-4 h-4 text-slate-500 absolute left-3 top-3 pointer-events-none" />
+                      <input
+                        type="password"
+                        required
+                        minLength={8}
+                        autoComplete="new-password"
+                        value={confirmPassword}
+                        onChange={(e) => setConfirmPassword(e.target.value)}
+                        placeholder="Repeat password"
+                        className={`${inputClass} pl-9`}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
 
-                <div>
-                  <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
-                    Grade Level
-                  </label>
+              <button
+                type="submit"
+                disabled={busy}
+                className="w-full btn-accent py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-60 cursor-pointer"
+              >
+                {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" />}
+                {isLoginMode ? 'Sign in' : 'Create account & continue'}
+              </button>
+            </form>
+
+            <p className="text-[11px] text-slate-400 text-center mt-4">
+              {isLoginMode ? 'New to MyTutorZA?' : 'Already have an account?'}{' '}
+              <button
+                onClick={() => {
+                  setIsLoginMode((v) => !v);
+                  setError(null);
+                  setNotice(null);
+                }}
+                className="text-sky-400 font-bold hover:underline cursor-pointer"
+              >
+                {isLoginMode ? 'Create one' : 'Sign in'}
+              </button>
+            </p>
+          </div>
+        )}
+
+        {/* STEP 2: LEARNER DETAILS (DOB, GRADE, COUNTRY, STATE) */}
+        {step === 'details' && (
+          <form onSubmit={submitDetails} className="space-y-4">
+            <div>
+              <h2 className="text-xl font-black text-white">Tell us about you</h2>
+              <p className="text-xs text-slate-400 mt-1">
+                Your birthday, grade and {country === 'US' ? 'state' : 'province'} decide which curriculum is pushed to your agents.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className={labelClass}>Date of birth</label>
+                <div className="relative">
+                  <Calendar className="w-4 h-4 text-slate-500 absolute left-3 top-3 pointer-events-none" />
+                  <input
+                    type="date"
+                    required
+                    max={new Date().toISOString().slice(0, 10)}
+                    value={dob}
+                    onChange={(e) => setDob(e.target.value)}
+                    className={`${inputClass} pl-9`}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className={labelClass}>Grade</label>
+                <div className="relative">
+                  <GraduationCap className="w-4 h-4 text-slate-500 absolute left-3 top-3 pointer-events-none" />
                   <select
                     value={grade}
                     onChange={(e) => setGrade(e.target.value)}
-                    className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm font-bold text-white focus:outline-none"
+                    className={`${inputClass} pl-9 appearance-none cursor-pointer`}
                   >
                     {GRADES.map((g) => (
                       <option key={g} value={g}>
@@ -203,80 +471,142 @@ export const OnboardingModal: React.FC = () => {
                   </select>
                 </div>
               </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className={labelClass}>Country</label>
+                <select
+                  value={country}
+                  onChange={(e) => {
+                    setCountry(e.target.value as CountryCode);
+                    setRegion('');
+                  }}
+                  className={`${inputClass} appearance-none cursor-pointer`}
+                >
+                  <option value="US">United States</option>
+                  <option value="ZA">South Africa</option>
+                </select>
+              </div>
 
               <div>
-                <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
-                  Password
-                </label>
+                <label className={labelClass}>{country === 'US' ? 'State' : 'Province'}</label>
                 <div className="relative">
-                  <Lock className="w-4 h-4 text-slate-500 absolute left-3 top-3 pointer-events-none" />
-                  <input
-                    type="password"
+                  <MapPin className="w-4 h-4 text-slate-500 absolute left-3 top-3 pointer-events-none" />
+                  <select
                     required
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="••••••••"
-                    className="w-full bg-slate-900 border border-slate-700 rounded-xl pl-9 pr-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none"
-                  />
+                    value={region}
+                    onChange={(e) => setRegion(e.target.value)}
+                    className={`${inputClass} pl-9 appearance-none cursor-pointer`}
+                  >
+                    <option value="">Select {country === 'US' ? 'your state' : 'your province'}…</option>
+                    {regionOptions.map((r) => (
+                      <option key={r} value={r}>
+                        {r}
+                      </option>
+                    ))}
+                  </select>
                 </div>
               </div>
+            </div>
 
+            <div className="flex items-center gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setStep('account')}
+                className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-200 py-2 px-3 rounded-lg bg-slate-800"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" /> Back
+              </button>
               <button
                 type="submit"
-                className="w-full btn-accent py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2 mt-4 cursor-pointer"
+                className="flex-1 btn-accent py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2 cursor-pointer"
               >
-                <span>{isLoginMode ? 'Sign In & Launch Tutor' : 'Continue to Diagnostic Assessment (16 Questions)'}</span>
-                <ArrowRight className="w-4 h-4" />
+                Continue <ArrowRight className="w-4 h-4" />
               </button>
+            </div>
+          </form>
+        )}
 
-              <div className="text-center pt-2">
-                <button
-                  type="button"
-                  onClick={() => setIsLoginMode(!isLoginMode)}
-                  className="text-xs text-slate-400 hover:text-white underline"
-                >
-                  {isLoginMode ? "Don't have an account? Sign up" : 'Already registered? Sign in'}
-                </button>
-              </div>
-            </form>
+        {/* STEP 3: SUBJECTS */}
+        {step === 'subjects' && (
+          <div className="space-y-4">
+            <div>
+              <h2 className="text-xl font-black text-white">Which subjects do you take?</h2>
+              <p className="text-xs text-slate-400 mt-1">
+                Pick every subject on your school timetable ({selectedSubjects.length} selected).
+              </p>
+            </div>
+
+            <div className="max-h-72 overflow-y-auto pr-1 grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {subjectCatalog.map((s) => {
+                const active = selectedSubjects.includes(s.name);
+                return (
+                  <button
+                    key={s.name}
+                    type="button"
+                    onClick={() => toggleSubject(s.name)}
+                    className={`p-3 rounded-xl border text-left flex items-start gap-2 transition-all cursor-pointer ${
+                      active
+                        ? 'bg-sky-500/20 border-sky-500 text-white'
+                        : 'bg-slate-900/80 border-slate-800 hover:border-slate-700 text-slate-200'
+                    }`}
+                  >
+                    <BookOpen className={`w-4 h-4 shrink-0 mt-0.5 ${active ? 'text-sky-300' : 'text-slate-500'}`} />
+                    <span className="text-xs leading-snug flex-1">{s.name}</span>
+                    {active && <CheckCircle2 className="w-4 h-4 text-sky-400 shrink-0" />}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setStep('details')}
+                className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-200 py-2 px-3 rounded-lg bg-slate-800"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" /> Back
+              </button>
+              <button
+                type="button"
+                onClick={submitSubjects}
+                className="flex-1 btn-accent py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2 cursor-pointer"
+              >
+                Continue to diagnostic <ArrowRight className="w-4 h-4" />
+              </button>
+            </div>
           </div>
         )}
 
-        {/* STEP 2: THE 16 PSYCHOMETRIC QUESTIONS */}
+        {/* STEP 4: THE 16 PSYCHOMETRIC QUESTIONS */}
         {step === 'quiz' && currentQ && (
-          <div className="space-y-6">
+          <div className="space-y-5">
             <div>
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2">
                   <Brain className="w-5 h-5 text-sky-400" />
                   <span className="text-xs font-black uppercase tracking-wider text-slate-300">
-                    The Firmament Diagnostic Assessment
+                    The Firmament Diagnostic
                   </span>
                 </div>
                 <span className="text-xs font-bold text-slate-400">
-                  Question {currentQuestionIndex + 1} of {PSYCHOMETRIC_QUESTIONS.length}
+                  {currentQuestionIndex + 1} / {PSYCHOMETRIC_QUESTIONS.length}
                 </span>
               </div>
-
-              {/* Progress bar with active gradient */}
               <div className="w-full h-2 rounded-full bg-slate-800 overflow-hidden">
-                <div
-                  className="h-full accent-gradient-bg transition-all duration-300"
-                  style={{ width: `${progressPercent}%` }}
-                />
+                <div className="h-full accent-gradient-bg transition-all duration-300" style={{ width: `${progressPercent}%` }} />
               </div>
             </div>
 
             <div className="bg-slate-900/90 rounded-2xl p-5 border border-slate-800">
               <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded bg-sky-950 text-sky-300 border border-sky-800 tracking-wider">
-                Category: {currentQ.category}
+                {currentQ.category}
               </span>
-              <h3 className="text-base sm:text-lg font-bold text-white mt-2 leading-relaxed">
-                {currentQ.question}
-              </h3>
+              <h3 className="text-base sm:text-lg font-bold text-white mt-2 leading-relaxed">{currentQ.question}</h3>
             </div>
 
-            <div className="space-y-3">
+            <div className="space-y-2.5">
               {currentQ.options.map((opt) => {
                 const isSelected = answers[currentQ.id] === opt.label;
                 return (
@@ -289,11 +619,7 @@ export const OnboardingModal: React.FC = () => {
                         : 'bg-slate-900/80 border-slate-800 hover:border-slate-700 text-slate-200'
                     }`}
                   >
-                    <span
-                      className={`w-6 h-6 rounded-lg flex items-center justify-center text-xs font-black shrink-0 ${
-                        isSelected ? 'btn-accent text-white' : 'bg-slate-800 text-slate-400'
-                      }`}
-                    >
+                    <span className={`w-6 h-6 rounded-lg flex items-center justify-center text-xs font-black shrink-0 ${isSelected ? 'btn-accent text-white' : 'bg-slate-800 text-slate-400'}`}>
                       {opt.label}
                     </span>
                     <span className="text-xs sm:text-sm leading-snug">{opt.text}</span>
@@ -302,84 +628,62 @@ export const OnboardingModal: React.FC = () => {
               })}
             </div>
 
-            {/* Back button */}
             {currentQuestionIndex > 0 && (
-              <div className="flex justify-start pt-2">
-                <button
-                  onClick={() => setCurrentQuestionIndex((prev) => prev - 1)}
-                  className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-200 py-1 px-3 rounded-lg bg-slate-800"
-                >
-                  <ArrowLeft className="w-3.5 h-3.5" />
-                  <span>Previous Question</span>
-                </button>
-              </div>
+              <button
+                onClick={() => setCurrentQuestionIndex((prev) => prev - 1)}
+                className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-200 py-1.5 px-3 rounded-lg bg-slate-800"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" /> Previous question
+              </button>
             )}
           </div>
         )}
 
-        {/* STEP 3: RESULT CELEBRATION */}
+        {/* STEP 5: RESULT */}
         {step === 'result' && calculatedResult && (
-          <div className="text-center space-y-6 py-2">
+          <div className="text-center space-y-5">
             <div>
               <div className="w-16 h-16 rounded-3xl btn-accent flex items-center justify-center mx-auto mb-3 shadow-xl">
                 <Sparkles className="w-8 h-8 text-white" />
               </div>
-              <h2 className="text-2xl font-black text-white">Cognitive DNA Calibrated!</h2>
+              <h2 className="text-2xl font-black text-white">Firmament calibrated!</h2>
               <p className="text-xs text-slate-400 mt-1">
-                Your Firmament profile is now permanently linked to your AI tutoring agents.
+                {fullName || account?.fullName} · {grade} · {region} · {selectedSubjects.length || student?.subjects.length || 0} subjects
               </p>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-left">
               <div className="bg-slate-900/90 p-4 rounded-2xl border border-slate-800">
-                <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1">
-                  Cognitive Score
-                </span>
+                <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1">Archetype</span>
                 <p className="text-sm font-extrabold text-white">
-                  {calculatedResult.lifePath.profile} ({calculatedResult.cognitiveVector.primaryModality})
+                  {calculatedResult.lifePath?.profile} ({calculatedResult.cognitiveVector?.primaryModality})
                 </p>
-                <p className="text-[10px] text-slate-400 mt-0.5">{calculatedResult.processingSpeed}</p>
               </div>
-
               <div className="bg-slate-900/90 p-4 rounded-2xl border border-slate-800">
-                <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1">
-                  Processing Engine Pacing
-                </span>
-                <p className="text-sm font-extrabold text-amber-300">
-                  {calculatedResult.mercury.element} Element
-                </p>
-                <p className="text-[10px] text-slate-400 mt-0.5">{calculatedResult.mercury.pacingStyle}</p>
+                <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1">Engine</span>
+                <p className="text-sm font-extrabold text-amber-300">{calculatedResult.mercury?.element} element</p>
               </div>
-
               <div className="bg-slate-900/90 p-4 rounded-2xl border border-slate-800">
-                <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1">
-                  Retention & Scaffolding
-                </span>
-                <p className="text-sm font-extrabold text-emerald-300">
-                  {calculatedResult.cognitiveVector.primaryModality} Modality
-                </p>
-                <p className="text-[10px] text-slate-400 mt-0.5">{calculatedResult.retentionProfile}</p>
+                <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1">Retention</span>
+                <p className="text-sm font-extrabold text-emerald-300">{calculatedResult.processingSpeed}</p>
               </div>
             </div>
 
-            {/* Firmament Guardrail Assurance */}
             <div className="bg-slate-900/60 p-3.5 rounded-2xl border border-cyan-500/30 text-left flex items-start gap-3">
-              <div className="w-7 h-7 rounded-lg bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center shrink-0 mt-0.5">
-                <Sparkles className="w-4 h-4 text-cyan-400" />
-              </div>
-              <div>
-                <h4 className="text-xs font-bold text-cyan-300">Firmament Guardrails Locked & Active</h4>
-                <p className="text-[11px] text-slate-400 leading-relaxed mt-0.5">
-                  Generic teaching is disabled. The AI is forced to adapt to your exact {calculatedResult.cognitiveVector.primaryModality} cognitive modality, CAPS syllabus standards, and guided discovery rules. Your account starts with a 3-day trial; upgrade via Billing to continue.
-                </p>
-              </div>
+              <Sparkles className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
+              <p className="text-[11px] text-slate-400 leading-relaxed">
+                Guardrails locked. Your Tutoring, Study and Exam agents are now bound to your
+                {' '}{calculatedResult.cognitiveVector?.primaryModality} modality, {grade} standards for {region}.
+              </p>
             </div>
 
             <button
-              onClick={handleFinish}
-              className="w-full btn-accent py-3.5 rounded-xl font-bold text-sm cursor-pointer"
+              onClick={finishOnboarding}
+              disabled={busy}
+              className="w-full btn-accent py-3.5 rounded-xl font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-60 cursor-pointer"
             >
-              Enter MyTutorZA Workspace
+              {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" />}
+              Enter my workspace
             </button>
           </div>
         )}

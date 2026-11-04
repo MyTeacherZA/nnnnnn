@@ -15,6 +15,10 @@ export interface FirmamentPromptParams {
   grade: string;
   previousMark?: number;
   language?: string;
+  /** US state name (e.g. 'Texas') or South African province. */
+  state?: string;
+  /** 'US' | 'ZA' — selects the curriculum framework pushed to the model. */
+  country?: string;
   textbook?: { title?: string; publisher?: string; authors?: string[] };
   userQuery?: string;
   taskType?: 'tutoring' | 'spark-notes' | 'roadmap' | 'exam' | 'topic-summary';
@@ -27,10 +31,19 @@ export function buildFirmamentSystemPrompt(params: FirmamentPromptParams): strin
     grade = 'Grade 12',
     previousMark = 50,
     language = 'English',
+    state = '',
+    country = 'ZA',
     textbook,
     userQuery = '',
     taskType = 'tutoring',
   } = params;
+
+  const countryCode = (country || 'ZA').toUpperCase();
+  const isUS = countryCode === 'US';
+  const regionLabel = state || (isUS ? 'the United States' : 'South Africa');
+  const frameworkLabel = isUS
+    ? `${regionLabel} state academic standards`
+    : 'the South African CAPS (DBE) curriculum';
 
   const archetype = firmamentProfile?.lifePath?.archetype || 'The Architect';
   const lifePathNumber = firmamentProfile?.lifePath?.number || 7;
@@ -38,8 +51,19 @@ export function buildFirmamentSystemPrompt(params: FirmamentPromptParams): strin
   const pacingStyle = firmamentProfile?.mercury?.pacingStyle || 'Conceptual & Socratic Dialogue';
   const primaryModality = firmamentProfile?.cognitiveVector?.primaryModality || 'Logical-Rule';
   const secondaryModality = firmamentProfile?.cognitiveVector?.secondaryModality || 'Visual';
-  const analogySet = firmamentProfile?.cognitiveVector?.southAfricanAnalogySet || 'Gautrain systems, Eskom circuits, Drakensberg gradients';
-  const reasoningScaffold = firmamentProfile?.cognitiveVector?.reasoningScaffold || 'Deductive Axiom → Intermediate Substitution → Final Statement with DBE Reason';
+  const rawAnalogySet =
+    firmamentProfile?.cognitiveVector?.southAfricanAnalogySet ||
+    'Gautrain systems, Eskom circuits, Drakensberg gradients';
+  const analogySet = isUS
+    ? `${regionLabel} everyday contexts (local weather, high-school sports, road trips, dollars and cents)`
+    : rawAnalogySet;
+
+  const rawReasoningScaffold =
+    firmamentProfile?.cognitiveVector?.reasoningScaffold ||
+    'Deductive Axiom → Intermediate Substitution → Final Statement with DBE Reason';
+  const reasoningScaffold = isUS
+    ? rawReasoningScaffold.replace(/DBE/g, 'state-standard')
+    : rawReasoningScaffold;
   
   const cognitiveScore = firmamentProfile?.cognitiveScore || `${archetype}-${primaryModality} (${mercuryElement} Engine)`;
   const processingSpeed = firmamentProfile?.processingSpeed || 'Dynamic';
@@ -49,8 +73,18 @@ export function buildFirmamentSystemPrompt(params: FirmamentPromptParams): strin
   const mark = Number(previousMark) || 50;
   const diagnosticScaffold = mark < 60 ? 'REMEDIAL_SCAFFOLD' : 'ADVANCEMENT_SCAFFOLD';
 
-  // Retrieve raw selective DBE CAPS curriculum text for this subject, grade, and query
-  const rawCapsDocument = getSelectiveCapsCurriculumContext(subject, grade, userQuery);
+  // Curriculum grounding: CAPS vault text for South African learners, or an
+  // explicit US state-standards directive so the model never mixes frameworks.
+  const rawCurriculum = isUS
+    ? `
+[US STATE STANDARDS MODE — ACTIVE]
+Curriculum framework: ${regionLabel} state academic standards for ${grade} ${subject}.
+- Align every explanation, worked example and assessment item to ${regionLabel} standards.
+- Use US conventions: US spelling, dollars, miles/feet/inches, US civic and historical context.
+- Where ${regionLabel} has adopted the Common Core (or similar) standards, follow those grade-level expectations.
+- Reference the style of ${regionLabel} state assessments / end-of-course exams for ${grade}.
+- You must NOT reference DBE, CAPS, NSC, ATP, South African provinces, or South African exams.`
+    : getSelectiveCapsCurriculumContext(subject, grade, userQuery);
   const rawAnswers = firmamentProfile?.rawAnswers || firmamentProfile?.onboardingAnswers || {};
 
   return `
@@ -58,15 +92,14 @@ export function buildFirmamentSystemPrompt(params: FirmamentPromptParams): strin
 MYTUTORZA MASTER SYSTEM INSTRUCTION: THE FIRMAMENT COGNITIVE ENGINE
 ================================================================================
 
-YOU ARE NOT A GENERIC CHATBOT. YOU ARE MYTUTORZA'S SOCRATIC DBE CAPS TUTOR.
+YOU ARE NOT A GENERIC CHATBOT. YOU ARE MYTUTORZA'S SOCRATIC TUTOR FOR ${frameworkLabel.toUpperCase()}.
 GENERIC TEACHING STYLES ARE PERMANENTLY DISABLED IN YOUR INFERENCE ENGINE.
 YOU ARE BOUND BY THE NON-NEGOTIABLE "LAWS OF THE FIRMAMENT" CODIFIED BELOW.
 
-PRIMARY SOURCE OF TRUTH (FIRST POINT OF REFERENCE): THE CAPS CURRICULUM VAULT
-(450 DBE CAPS PDFs - Annual Teaching Plans, Examination Guidelines, Formula
-Sheets, chief examiner traps). Consult these documents before any reasoning:
+PRIMARY SOURCE OF TRUTH (FIRST POINT OF REFERENCE): ${isUS ? `${regionLabel.toUpperCase()} STATE ACADEMIC STANDARDS` : 'THE CAPS CURRICULUM VAULT'}
+${isUS ? `(Grade-level standards and state assessment expectations for ${grade} ${subject}). Consult these before any reasoning:` : '(450 DBE CAPS PDFs - Annual Teaching Plans, Examination Guidelines, Formula\nSheets, chief examiner traps). Consult these documents before any reasoning:'}
 
-${rawCapsDocument}
+${rawCurriculum}
 
 --------------------------------------------------------------------------------
 LAYER 0: THE 16 FIRMAMENT DIAGNOSTIC ANSWERS (CAPTURED IN SUPABASE)
@@ -95,7 +128,7 @@ LAYER 1: THE FOUNDATION — ACTIVE USER COGNITIVE PROFILE (RAW JSON)
   "cognitiveVector": {
     "primaryModality": "${primaryModality}",
     "secondaryModality": "${secondaryModality}",
-    "southAfricanAnalogySet": "${analogySet}",
+    "analogySet": "${analogySet}",
     "reasoningScaffold": "${reasoningScaffold}"
   },
   "baselineDiagnostic": {
@@ -130,28 +163,74 @@ LAW 3: COGNITIVE PROCESSING & RETENTION SCAFFOLDING
   * If student has Low / Scaffolded Retention: Embed spaced retrieval checkpoints (e.g. "Before we plug into this formula, what does each variable represent?").
 - Sensory Modality: Calibrated to "${primaryModality}".
   * Visual: Frame problems spatially (mental coordinates, free-body diagram arrows, geometric relationships).
-  * Logical-Rule: Emphasize formal axioms, algebraic preconditions, and mandatory DBE reasons.
+  * Logical-Rule: Emphasize formal axioms, algebraic preconditions, and ${isUS ? 'standards-cited justifications' : 'mandatory DBE reasons'}.
   * Kinesthetic: Ground problems in tactile, dynamic physical scenarios (inertia in a taxi, sports momentum, cooking).
   * Auditory: Use conversational debate, rhythmic mnemonics, and verbal articulation.
 
-LAW 4: REAL-TIME DBE CAPS SYLLABUS GROUNDING
-- You are looking directly at the raw text of the Department of Basic Education documents (attached in Layer 3).
-- You CANNOT hallucinate syllabus requirements.
-- Quote exact CAPS requirements, formula sheet conventions, and chief examiner trap warnings verbatim.
-- Mark allocations: Always remind the learner how DBE allocates marks (Formula, Substitution, Final Answer with Units).
+LAW 4: REAL-TIME CURRICULUM SYLLABUS GROUNDING
+- Framework in force: ${frameworkLabel}.
+- You cannot hallucinate syllabus requirements: stay inside the ${isUS ? `${regionLabel} standards` : 'DBE CAPS'} scope for ${grade} ${subject}.
+- ${isUS
+    ? `Quote ${regionLabel} standard codes/strands where helpful and mirror state assessment command words.`
+    : 'Quote exact CAPS requirements, formula sheet conventions, and chief examiner trap warnings verbatim.'}
+- Mark allocations: always show the learner how marks are earned (method, substitution, final answer, units).
 
-LAW 5: SOUTH AFRICAN CULTURAL & LINGUISTIC AUTHENTICITY
+LAW 5: REGIONAL, CULTURAL & LINGUISTIC AUTHENTICITY
 - Tutoring Language: ${language}.
-  * If an indigenous South African language is chosen (${language}), communicate warmly and naturally in ${language}, maintaining standard mathematical/scientific notation.
-- Real-World Analogies: Exclusively use authentic South African contexts (${analogySet}).
+  * If a language other than English is chosen (${language}), communicate warmly and naturally in ${language}, maintaining standard mathematical/scientific notation.
+- Region: ${regionLabel} (${isUS ? 'United States' : 'South Africa'}).
+- Real-World Analogies: ${isUS
+    ? `Use authentic ${regionLabel}/US contexts (local weather, sports, transport, currency in dollars) and avoid South African-only references.`
+    : `Exclusively use authentic South African contexts (${analogySet}).`}
 
 ${textbook?.title ? `--------------------------------------------------------------------------------\nTEXTBOOK ALIGNMENT:\n- Active Textbook: "${textbook.title}" (Publisher: ${textbook.publisher || 'DBE Approved'}). Align chapter names and conventions with this book.\n--------------------------------------------------------------------------------` : ''}
 
 --------------------------------------------------------------------------------
-CAPS VAULT (450 PDFs) REMAINS THE FIRST POINT OF REFERENCE (SEE TOP OF PROMPT)
+${isUS ? `${regionLabel.toUpperCase()} STATE STANDARDS REMAIN THE FIRST POINT OF REFERENCE (SEE TOP OF PROMPT)` : 'CAPS VAULT (450 PDFs) REMAINS THE FIRST POINT OF REFERENCE (SEE TOP OF PROMPT)'}
 ================================================================================
 TASK TYPE: ${taskType.toUpperCase()}
-FIRMAMENT RULES AND CAPS GROUNDING ARE PERMANENTLY ACTIVE. BEGIN NOW.
+FIRMAMENT RULES AND ${isUS ? `${regionLabel.toUpperCase()} STANDARDS` : 'CAPS'} GROUNDING ARE PERMANENTLY ACTIVE. BEGIN NOW.
 ================================================================================
 `.trim();
+}
+
+/**
+ * Describes the curriculum framework in force for a learner.
+ * Used by the Study / Exam / Roadmap generators so they stop hard-coding CAPS.
+ */
+export function describeCurriculum(country?: string, state?: string) {
+  const isUS = (country || 'ZA').toUpperCase() === 'US';
+  const regionLabel = state || (isUS ? 'the United States' : 'South Africa');
+  return {
+    isUS,
+    regionLabel,
+    frameworkLabel: isUS
+      ? `${regionLabel} state academic standards`
+      : 'South Africa\'s CAPS (DBE) curriculum',
+    curriculumName: isUS ? `${regionLabel} State Academic Standards` : 'South African CAPS Curriculum',
+  };
+}
+
+/**
+ * Returns the curriculum grounding block for a generator prompt.
+ * ZA -> raw CAPS vault text; US -> explicit state-standards directive.
+ */
+export function getCurriculumDirective(params: {
+  subject: string;
+  grade: string;
+  topic?: string;
+  state?: string;
+  country?: string;
+}): string {
+  const { isUS, regionLabel } = describeCurriculum(params.country, params.state);
+  if (!isUS) {
+    return getSelectiveCapsCurriculumContext(params.subject, params.grade, params.topic);
+  }
+  return `[US STATE STANDARDS MODE — ${regionLabel.toUpperCase()}]
+- Framework: ${regionLabel} academic standards for ${params.grade} ${params.subject}${
+    params.topic ? ` (focus: ${params.topic})` : ''
+  }.
+- Follow ${regionLabel} grade-level expectations and the command words used by its state assessments.
+- Use US conventions (US spelling, dollars, miles/feet) and US cultural/historical context.
+- Do NOT reference CAPS, DBE, NSC, ATP, South African provinces or South African exams.`;
 }

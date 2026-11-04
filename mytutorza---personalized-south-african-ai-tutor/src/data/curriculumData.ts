@@ -85,6 +85,112 @@ export const GRADES = [
   'Grade 12',
 ];
 
+/** US states + DC — each runs its own academic standards. */
+export const US_STATES: { code: string; name: string }[] = [
+  { code: 'AL', name: 'Alabama' },
+  { code: 'AK', name: 'Alaska' },
+  { code: 'AZ', name: 'Arizona' },
+  { code: 'AR', name: 'Arkansas' },
+  { code: 'CA', name: 'California' },
+  { code: 'CO', name: 'Colorado' },
+  { code: 'CT', name: 'Connecticut' },
+  { code: 'DE', name: 'Delaware' },
+  { code: 'DC', name: 'District of Columbia' },
+  { code: 'FL', name: 'Florida' },
+  { code: 'GA', name: 'Georgia' },
+  { code: 'HI', name: 'Hawaii' },
+  { code: 'ID', name: 'Idaho' },
+  { code: 'IL', name: 'Illinois' },
+  { code: 'IN', name: 'Indiana' },
+  { code: 'IA', name: 'Iowa' },
+  { code: 'KS', name: 'Kansas' },
+  { code: 'KY', name: 'Kentucky' },
+  { code: 'LA', name: 'Louisiana' },
+  { code: 'ME', name: 'Maine' },
+  { code: 'MD', name: 'Maryland' },
+  { code: 'MA', name: 'Massachusetts' },
+  { code: 'MI', name: 'Michigan' },
+  { code: 'MN', name: 'Minnesota' },
+  { code: 'MS', name: 'Mississippi' },
+  { code: 'MO', name: 'Missouri' },
+  { code: 'MT', name: 'Montana' },
+  { code: 'NE', name: 'Nebraska' },
+  { code: 'NV', name: 'Nevada' },
+  { code: 'NH', name: 'New Hampshire' },
+  { code: 'NJ', name: 'New Jersey' },
+  { code: 'NM', name: 'New Mexico' },
+  { code: 'NY', name: 'New York' },
+  { code: 'NC', name: 'North Carolina' },
+  { code: 'ND', name: 'North Dakota' },
+  { code: 'OH', name: 'Ohio' },
+  { code: 'OK', name: 'Oklahoma' },
+  { code: 'OR', name: 'Oregon' },
+  { code: 'PA', name: 'Pennsylvania' },
+  { code: 'RI', name: 'Rhode Island' },
+  { code: 'SC', name: 'South Carolina' },
+  { code: 'SD', name: 'South Dakota' },
+  { code: 'TN', name: 'Tennessee' },
+  { code: 'TX', name: 'Texas' },
+  { code: 'UT', name: 'Utah' },
+  { code: 'VT', name: 'Vermont' },
+  { code: 'VA', name: 'Virginia' },
+  { code: 'WA', name: 'Washington' },
+  { code: 'WV', name: 'West Virginia' },
+  { code: 'WI', name: 'Wisconsin' },
+  { code: 'WY', name: 'Wyoming' },
+];
+
+/** South African provinces (kept for the CAPS (DBE) pathway). */
+export const SA_PROVINCES = [
+  'Eastern Cape',
+  'Free State',
+  'Gauteng',
+  'KwaZulu-Natal',
+  'Limpopo',
+  'Mpumalanga',
+  'Northern Cape',
+  'North West',
+  'Western Cape',
+];
+
+export const REGIONS_BY_COUNTRY = {
+  US: US_STATES.map((s) => s.name),
+  ZA: SA_PROVINCES,
+};
+
+/** Subjects commonly taken in US middle/high schools (state standards are per-state). */
+export const US_ALL_SUBJECTS = [
+  { name: 'English Language Arts', category: 'Language' as const },
+  { name: 'Mathematics', category: 'Mathematics' as const },
+  { name: 'Algebra I', category: 'Mathematics' as const },
+  { name: 'Geometry', category: 'Mathematics' as const },
+  { name: 'Algebra II', category: 'Mathematics' as const },
+  { name: 'Pre-Calculus', category: 'Mathematics' as const },
+  { name: 'AP Calculus AB', category: 'Mathematics' as const },
+  { name: 'Statistics', category: 'Mathematics' as const },
+  { name: 'Biology', category: 'Sciences' as const },
+  { name: 'Chemistry', category: 'Sciences' as const },
+  { name: 'Physics', category: 'Sciences' as const },
+  { name: 'Earth & Space Science', category: 'Sciences' as const },
+  { name: 'Environmental Science', category: 'Sciences' as const },
+  { name: 'Anatomy & Physiology', category: 'Sciences' as const },
+  { name: 'US History', category: 'Humanities' as const },
+  { name: 'World History', category: 'Humanities' as const },
+  { name: 'US Government & Civics', category: 'Humanities' as const },
+  { name: 'Economics', category: 'Commerce' as const },
+  { name: 'Geography', category: 'Humanities' as const },
+  { name: 'Psychology', category: 'Humanities' as const },
+  { name: 'Spanish', category: 'Language' as const },
+  { name: 'French', category: 'Language' as const },
+  { name: 'Computer Science', category: 'Technology' as const },
+  { name: 'Health & Physical Education', category: 'Services' as const },
+  { name: 'Art / Visual Arts', category: 'Services' as const },
+  { name: 'Music', category: 'Services' as const },
+];
+
+
+
+
 export const DBE_ALL_SUBJECTS = [
   // Languages
   { name: 'English Home Language', category: 'Language' as const },
@@ -574,4 +680,10 @@ export const NSC_EXAM_BLUEPRINTS = {
     purpose: 'Comprehensive 100% curriculum test covering all 4 Terms under strict national standard benchmarking.',
     markingStandard: 'NSC Senior Marker Memo with breakdown into CA (Consistent Accuracy), M (Method), A (Accuracy), S (Statement), R (Reason).',
   },
+};
+
+/** Subject catalog per country — declared last because it references the DBE list. */
+export const SUBJECTS_BY_COUNTRY = {
+  US: US_ALL_SUBJECTS,
+  ZA: DBE_ALL_SUBJECTS,
 };

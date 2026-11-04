@@ -69,6 +69,8 @@ export const StudyRoadmapTab: React.FC = () => {
           targetExam,
           focusTopic: focusTopic.trim() || undefined,
           language: activeSubject.tutoringLanguage,
+          state: student?.state,
+          country: student?.country,
         }),
       });
 

@@ -5,7 +5,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { createClient } from '@supabase/supabase-js';
-import { buildFirmamentSystemPrompt } from './serverFirmamentRules';
+import { buildFirmamentSystemPrompt, describeCurriculum, getCurriculumDirective } from './serverFirmamentRules';
 import { getSelectiveCapsCurriculumContext } from './serverCapsVault';
 import {
   buildCapsVaultIndex,
@@ -484,6 +484,8 @@ app.post('/api/tutoring/chat', async (req: Request, res: Response) => {
       history,
       homeworkMode,
       askMode,
+      state,
+      country,
     } = req.body;
 
     if (!message) {
@@ -500,6 +502,8 @@ app.post('/api/tutoring/chat', async (req: Request, res: Response) => {
       grade: grade || 'Grade 12',
       previousMark: mark,
       language: targetLang,
+      state,
+      country,
       textbook,
       userQuery: message,
       taskType: 'tutoring',
@@ -545,7 +549,10 @@ app.post('/api/tutoring/chat', async (req: Request, res: Response) => {
     }
 
     // Offline Socratic fallback
-    const reply = `Sawubona! Working in ${subject} (${targetLang}). Based on your ${
+    const isUSLearner = (country || 'ZA').toUpperCase() === 'US';
+    const greeting = isUSLearner ? 'Hi there!' : 'Sawubona!';
+    const frameworkWord = isUSLearner ? `${state || 'state'} standards` : 'CAPS';
+    const reply = `${greeting} Working in ${subject} (${targetLang}) against ${frameworkWord}. Based on your ${
       firmamentProfile?.cognitiveVector?.primaryModality || 'Logical'
     } profile and ${mark}% baseline, let us break this down step-by-step. What is the very first rule or formula we need to write down before substituting?`;
     return res.json({ reply, source: 'firmament-engine-local' });
@@ -553,7 +560,7 @@ app.post('/api/tutoring/chat', async (req: Request, res: Response) => {
     console.error('Tutoring API error:', err);
     return res.json({
       reply:
-        'Sawubona! Let us examine this CAPS topic together. What is the fundamental formula or theorem we should apply first?',
+        'Let us work through this together step by step. What is the fundamental formula or theorem we should apply first?',
       source: 'safe-fallback',
     });
   }
@@ -1005,9 +1012,10 @@ app.delete('/api/spark-notes/:id', async (req: Request, res: Response) => {
 
 app.post('/api/study/generate', async (req: Request, res: Response) => {
   try {
-    const { subject, grade, topic, term, language } = req.body;
+    const { subject, grade, topic, term, language, state, country } = req.body;
+    const curriculum = describeCurriculum(country, state);
     const cacheKey =
-      `study:${grade}:${subject}:${topic}:${term}:${language || 'English'}`
+      `study:${country || 'ZA'}:${state || ''}:${grade}:${subject}:${topic}:${term}:${language || 'English'}`
         .toLowerCase()
         .replace(/\s+/g, '_');
 
@@ -1016,11 +1024,11 @@ app.post('/api/study/generate', async (req: Request, res: Response) => {
       return res.json({ ...cached, source: 'cache' });
     }
 
-    const rawCaps = getSelectiveCapsCurriculumContext(subject, grade, topic);
+    const rawCaps = getCurriculumDirective({ subject, grade, topic, state, country });
 
     const systemInstruction = `
-You are MyTutorZA's Study AI Agent for South Africa's CAPS Curriculum.
-Your task is to generate high-yield, CAPS-aligned study notes and spark notes for:
+You are MyTutorZA's Study AI Agent for ${curriculum.curriculumName}.
+Your task is to generate high-yield, ${curriculum.isUS ? 'standards-aligned' : 'CAPS-aligned'} study notes and spark notes for:
 Subject: ${subject}
 Grade: ${grade}
 Topic: ${topic || 'Core Curriculum Overview'}
@@ -1565,16 +1573,17 @@ function getFirmamentRoadmapFallback(
 
 app.post('/api/roadmap/generate', async (req: Request, res: Response) => {
   try {
-    const { subject, grade, firmamentProfile, previousMark, targetExam, focusTopic, language } =
+    const { subject, grade, firmamentProfile, previousMark, targetExam, focusTopic, language, state, country } =
       req.body;
     const targetSubject = subject || 'Mathematics (Pure)';
     const targetGrade = grade || 'Grade 12';
     const mark = previousMark !== undefined ? Number(previousMark) : 50;
     const isRemedial = mark < 60;
     const targetLang = language || 'English';
+    const curriculum = describeCurriculum(country, state);
 
     const cacheKey =
-      `roadmap:${targetGrade}:${targetSubject}:${mark}:${targetExam || 'general'}:${
+      `roadmap:${country || 'ZA'}:${state || ''}:${targetGrade}:${targetSubject}:${mark}:${targetExam || 'general'}:${
         focusTopic || 'all'
       }:${targetLang}`
         .toLowerCase()
@@ -1585,7 +1594,7 @@ app.post('/api/roadmap/generate', async (req: Request, res: Response) => {
     }
 
     const systemInstruction = `
-You are MyTutorZA's Master Academic Director and Chief Strategist for South African CAPS curriculum (Grades 4-12).
+You are MyTutorZA's Master Academic Director and Chief Strategist for ${curriculum.curriculumName} (Grades 4-12).
 Your task is to build a bespoke, highly motivating, structured 4-WEEK STUDY ROADMAP tailored specifically to the student's psychological profile under THE FIRMAMENT ENGINE:
 
 STUDENT'S FIRMAMENT PSYCHOMETRIC PROFILE:
@@ -1608,12 +1617,12 @@ ${isRemedial
 CURRICULUM SPECIFICATIONS:
 - Subject: ${targetSubject}
 - Grade: ${targetGrade}
-- Target Milestones: ${targetExam || 'Upcoming DBE Assessment'}
-- Focus Area: ${focusTopic || 'Full CAPS Syllabus'}
+- Target Milestones: ${targetExam || (curriculum.isUS ? 'Upcoming state assessment' : 'Upcoming DBE Assessment')}
+- Focus Area: ${focusTopic || (curriculum.isUS ? 'Full state standards for this grade' : 'Full CAPS Syllabus')}
 - Language of instruction: ${targetLang}
 
-RAW DBE CAPS ANNUAL TEACHING PLAN (ATP) CONTEXT:
-${getSelectiveCapsCurriculumContext(targetSubject, targetGrade, focusTopic)}
+CURRICULUM GROUNDING (${curriculum.frameworkLabel}):
+${getCurriculumDirective({ subject: targetSubject, grade: targetGrade, topic: focusTopic, state, country })}
 
 RETURN STRICT JSON matching this schema:
 {
@@ -1716,12 +1725,13 @@ RETURN STRICT JSON matching this schema:
 // ---------------------------------------------------------------------
 app.post('/api/exam/generate', async (req: Request, res: Response) => {
   try {
-    const { subject, grade, examType, durationMinutes, topic, term } = req.body;
+    const { subject, grade, examType, durationMinutes, topic, term, state, country } = req.body;
     const dur = Number(durationMinutes) || 60;
     const paperType = examType || 'November Final Exam';
+    const curriculum = describeCurriculum(country, state);
 
     const cacheKey =
-      `exam:${grade}:${subject}:${paperType}:${dur}:${topic || 'general'}`
+      `exam:${country || 'ZA'}:${state || ''}:${grade}:${subject}:${paperType}:${dur}:${topic || 'general'}`
         .toLowerCase()
         .replace(/\s+/g, '_');
     const cached = await getCache(cacheKey);
@@ -1730,20 +1740,20 @@ app.post('/api/exam/generate', async (req: Request, res: Response) => {
     }
 
     const systemInstruction = `
-You are the DBE Senior Chief Marking Examiner & Chief Invigilator for South African National Senior Certificate (NSC) Examinations.
-You must construct an authentic, rigorous South African DBE Exam Paper with 90% real-life accuracy to past NSC papers for:
+You are the Chief Examiner & Chief Invigilator for ${curriculum.isUS ? `${curriculum.regionLabel} state assessments` : 'South African National Senior Certificate (NSC) Examinations'}.
+You must construct an authentic, rigorous ${curriculum.isUS ? `${curriculum.regionLabel} standards-aligned` : 'South African DBE'} exam paper with high real-life accuracy to past papers for:
 Subject: ${subject}
 Grade: ${grade}
 Examination: ${paperType} (${
       paperType.includes('June') ? 'Mid-Year Examination' : 'November Final Examination'
     })
 Allocated Time: ${dur} minutes
-Topic Focus: ${topic ? topic : 'Full CAPS Syllabus for this exam stage'}
+Topic Focus: ${topic ? topic : curriculum.isUS ? 'Full state standards for this course' : 'Full CAPS Syllabus for this exam stage'}
 
-RAW CAPS SYLLABUS & EXAM SPECIFICATION:
-${getSelectiveCapsCurriculumContext(subject, grade, topic)}
+CURRICULUM & EXAM SPECIFICATION (${curriculum.frameworkLabel}):
+${getCurriculumDirective({ subject, grade, topic, state, country })}
 
-STRICT NSC DBE EXAM GEOMETRY MANDATE:
+STRICT EXAM STRUCTURE MANDATE:
 1. SECTION A: Objective Questions (MCQs, matching items, or short 1-word concepts) - approx 20-25% of marks.
 2. SECTION B: Routine & Complex Procedures (Structured multi-part questions, calculations, diagram analysis, step-by-step problem solving) - approx 55-60% of marks.
 3. SECTION C: Problem Solving / Synthesis / Essay / Application - approx 20% of marks.
@@ -1752,7 +1762,7 @@ CRITICAL REQUIREMENTS:
 - Provide authentic question numbers (e.g. 1.1, 1.2, 1.3, 2.1.1, 2.1.2).
 - Every question must have an EXACT MARK ALLOCATION with explicit sub-mark allocations (e.g., "[1.1.1 (2 marks: Formula 1, Substitution 1)]").
 - Provide an exhaustive, accurate OFFICIAL MEMORANDUM showing step-by-step solutions, mark breakdowns, and explicit "EXAMINER TRAPS" (common misconceptions students fall for).
-- Follow South African CAPS question conventions (e.g., BODMAS, DBE geometric reasons, SARS tax brackets, SI units).
+- Follow ${curriculum.isUS ? `${curriculum.regionLabel} state assessment question conventions (US spelling, dollars, customary units, US civic/historical references).` : 'South African CAPS question conventions (e.g., BODMAS, DBE geometric reasons, SARS tax brackets, SI units).'}
 
 Return valid JSON conforming strictly to:
 {
@@ -2290,6 +2300,9 @@ app.post('/api/profile/sync', async (req: Request, res: Response) => {
           phone: safeProfile.phone || null,
           date_of_birth: safeProfile.dateOfBirth || safeProfile.date_of_birth || null,
           grade: safeProfile.grade || null,
+          country: safeProfile.country || null,
+          state: safeProfile.state || null,
+          subjects: safeProfile.subjects || null,
           trial_started_at: new Date().toISOString(),
           trial_expires_at: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
           subscription_status: 'trial',

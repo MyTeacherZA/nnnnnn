@@ -127,6 +127,8 @@ export const TutoringAgentTab: React.FC = () => {
           grade: student?.grade,
           previousMark: activeSubject.previousTermMark,
           language: activeSubject.tutoringLanguage,
+          state: student?.state,
+          country: student?.country,
           textbook: activeSubject.textbook,
           homeworkMode,
           askMode,

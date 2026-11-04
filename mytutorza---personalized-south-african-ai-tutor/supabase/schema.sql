@@ -101,12 +101,20 @@ CREATE TABLE IF NOT EXISTS public.student_profiles (
   phone TEXT,
   date_of_birth DATE,
   grade TEXT,
+  country TEXT,
+  state TEXT,
+  subjects JSONB DEFAULT '[]'::jsonb,
   trial_started_at TIMESTAMPTZ DEFAULT now(),
   trial_expires_at TIMESTAMPTZ DEFAULT (now() + interval '3 days'),
   subscription_status TEXT DEFAULT 'trial',
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
+
+-- 7b. Existing deployments: add the newer learner columns safely
+ALTER TABLE public.student_profiles ADD COLUMN IF NOT EXISTS country TEXT;
+ALTER TABLE public.student_profiles ADD COLUMN IF NOT EXISTS state TEXT;
+ALTER TABLE public.student_profiles ADD COLUMN IF NOT EXISTS subjects JSONB DEFAULT '[]'::jsonb;
 
 ALTER TABLE public.student_profiles ENABLE ROW LEVEL SECURITY;
 
