@@ -71,6 +71,7 @@ export const ExamAgentTab: React.FC = () => {
           topic: topicFocus,
           state: student?.state,
           country: student?.country,
+          nation: student?.nation,
           term: examType.includes('June') ? 'Term 2' : 'Term 4',
         }),
       });

@@ -29,7 +29,9 @@ export interface OnboardingPayload {
   phone: string;
   dateOfBirth: string;
   grade: string;
-  country: 'US' | 'ZA';
+  country: 'US' | 'UK' | 'ZA';
+  /** UK nation when country === 'UK'. */
+  nation?: string;
   state: string;
   subjects: SubjectSlot[];
   firmament: FirmamentProfile;
@@ -103,6 +105,7 @@ function syncProfileToServer(profile: StudentProfile, answers?: Record<number, s
           dateOfBirth: profile.dateOfBirth,
           grade: profile.grade,
           country: profile.country,
+          nation: profile.nation,
           state: profile.state,
           subjects: profile.subjects.map((s) => ({ name: s.name, category: s.category })),
         },
@@ -210,6 +213,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       dateOfBirth: payload.dateOfBirth,
       grade: payload.grade,
       country: payload.country,
+      nation: payload.nation,
       state: payload.state,
       avatar: student?.avatar || DEFAULT_AVATAR,
       firmament: payload.firmament,

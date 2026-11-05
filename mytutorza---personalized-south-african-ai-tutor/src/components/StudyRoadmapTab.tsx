@@ -71,6 +71,7 @@ export const StudyRoadmapTab: React.FC = () => {
           language: activeSubject.tutoringLanguage,
           state: student?.state,
           country: student?.country,
+          nation: student?.nation,
         }),
       });
 

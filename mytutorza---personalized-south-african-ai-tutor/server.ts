@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { createClient } from '@supabase/supabase-js';
 import { buildFirmamentSystemPrompt, describeCurriculum, getCurriculumDirective } from './serverFirmamentRules';
+import { isMailConfigured, sendMail } from './serverMailer';
 import { getSelectiveCapsCurriculumContext } from './serverCapsVault';
 import {
   buildCapsVaultIndex,
@@ -486,6 +487,7 @@ app.post('/api/tutoring/chat', async (req: Request, res: Response) => {
       askMode,
       state,
       country,
+      nation,
     } = req.body;
 
     if (!message) {
@@ -504,6 +506,7 @@ app.post('/api/tutoring/chat', async (req: Request, res: Response) => {
       language: targetLang,
       state,
       country,
+      nation,
       textbook,
       userQuery: message,
       taskType: 'tutoring',
@@ -549,9 +552,13 @@ app.post('/api/tutoring/chat', async (req: Request, res: Response) => {
     }
 
     // Offline Socratic fallback
-    const isUSLearner = (country || 'ZA').toUpperCase() === 'US';
-    const greeting = isUSLearner ? 'Hi there!' : 'Sawubona!';
-    const frameworkWord = isUSLearner ? `${state || 'state'} standards` : 'CAPS';
+    const fallbackCurriculum = describeCurriculum(country, state, nation);
+    const greeting = fallbackCurriculum.isUS ? 'Hi there!' : fallbackCurriculum.isUK ? 'Hello!' : 'Sawubona!';
+    const frameworkWord = fallbackCurriculum.isUS
+      ? `${state || 'state'} standards`
+      : fallbackCurriculum.isUK
+      ? `${fallbackCurriculum.ukFramework.qualifications} (${fallbackCurriculum.ukNation})`
+      : 'CAPS';
     const reply = `${greeting} Working in ${subject} (${targetLang}) against ${frameworkWord}. Based on your ${
       firmamentProfile?.cognitiveVector?.primaryModality || 'Logical'
     } profile and ${mark}% baseline, let us break this down step-by-step. What is the very first rule or formula we need to write down before substituting?`;
@@ -1012,8 +1019,8 @@ app.delete('/api/spark-notes/:id', async (req: Request, res: Response) => {
 
 app.post('/api/study/generate', async (req: Request, res: Response) => {
   try {
-    const { subject, grade, topic, term, language, state, country } = req.body;
-    const curriculum = describeCurriculum(country, state);
+    const { subject, grade, topic, term, language, state, country, nation } = req.body;
+    const curriculum = describeCurriculum(country, state, nation);
     const cacheKey =
       `study:${country || 'ZA'}:${state || ''}:${grade}:${subject}:${topic}:${term}:${language || 'English'}`
         .toLowerCase()
@@ -1024,7 +1031,7 @@ app.post('/api/study/generate', async (req: Request, res: Response) => {
       return res.json({ ...cached, source: 'cache' });
     }
 
-    const rawCaps = getCurriculumDirective({ subject, grade, topic, state, country });
+    const rawCaps = getCurriculumDirective({ subject, grade, topic, state, country, nation });
 
     const systemInstruction = `
 You are MyTutorZA's Study AI Agent for ${curriculum.curriculumName}.
@@ -1573,14 +1580,14 @@ function getFirmamentRoadmapFallback(
 
 app.post('/api/roadmap/generate', async (req: Request, res: Response) => {
   try {
-    const { subject, grade, firmamentProfile, previousMark, targetExam, focusTopic, language, state, country } =
+    const { subject, grade, firmamentProfile, previousMark, targetExam, focusTopic, language, state, country, nation } =
       req.body;
     const targetSubject = subject || 'Mathematics (Pure)';
     const targetGrade = grade || 'Grade 12';
     const mark = previousMark !== undefined ? Number(previousMark) : 50;
     const isRemedial = mark < 60;
     const targetLang = language || 'English';
-    const curriculum = describeCurriculum(country, state);
+    const curriculum = describeCurriculum(country, state, nation);
 
     const cacheKey =
       `roadmap:${country || 'ZA'}:${state || ''}:${targetGrade}:${targetSubject}:${mark}:${targetExam || 'general'}:${
@@ -1622,7 +1629,7 @@ CURRICULUM SPECIFICATIONS:
 - Language of instruction: ${targetLang}
 
 CURRICULUM GROUNDING (${curriculum.frameworkLabel}):
-${getCurriculumDirective({ subject: targetSubject, grade: targetGrade, topic: focusTopic, state, country })}
+${getCurriculumDirective({ subject: targetSubject, grade: targetGrade, topic: focusTopic, state, country, nation })}
 
 RETURN STRICT JSON matching this schema:
 {
@@ -1725,10 +1732,10 @@ RETURN STRICT JSON matching this schema:
 // ---------------------------------------------------------------------
 app.post('/api/exam/generate', async (req: Request, res: Response) => {
   try {
-    const { subject, grade, examType, durationMinutes, topic, term, state, country } = req.body;
+    const { subject, grade, examType, durationMinutes, topic, term, state, country, nation } = req.body;
     const dur = Number(durationMinutes) || 60;
     const paperType = examType || 'November Final Exam';
-    const curriculum = describeCurriculum(country, state);
+    const curriculum = describeCurriculum(country, state, nation);
 
     const cacheKey =
       `exam:${country || 'ZA'}:${state || ''}:${grade}:${subject}:${paperType}:${dur}:${topic || 'general'}`
@@ -1740,18 +1747,18 @@ app.post('/api/exam/generate', async (req: Request, res: Response) => {
     }
 
     const systemInstruction = `
-You are the Chief Examiner & Chief Invigilator for ${curriculum.isUS ? `${curriculum.regionLabel} state assessments` : 'South African National Senior Certificate (NSC) Examinations'}.
-You must construct an authentic, rigorous ${curriculum.isUS ? `${curriculum.regionLabel} standards-aligned` : 'South African DBE'} exam paper with high real-life accuracy to past papers for:
+You are the Chief Examiner & Chief Invigilator for ${curriculum.isUS ? `${curriculum.regionLabel} state assessments` : curriculum.isUK ? `${curriculum.ukFramework.qualifications} examinations (${curriculum.ukNation})` : 'South African National Senior Certificate (NSC) Examinations'}.
+You must construct an authentic, rigorous ${curriculum.isUS ? `${curriculum.regionLabel} standards-aligned` : curriculum.isUK ? `${curriculum.ukNation} curriculum-aligned` : 'South African DBE'} exam paper with high real-life accuracy to past papers for:
 Subject: ${subject}
 Grade: ${grade}
 Examination: ${paperType} (${
       paperType.includes('June') ? 'Mid-Year Examination' : 'November Final Examination'
     })
 Allocated Time: ${dur} minutes
-Topic Focus: ${topic ? topic : curriculum.isUS ? 'Full state standards for this course' : 'Full CAPS Syllabus for this exam stage'}
+Topic Focus: ${topic ? topic : curriculum.isUS ? 'Full state standards for this course' : curriculum.isUK ? 'Full specification content for this qualification' : 'Full CAPS Syllabus for this exam stage'}
 
 CURRICULUM & EXAM SPECIFICATION (${curriculum.frameworkLabel}):
-${getCurriculumDirective({ subject, grade, topic, state, country })}
+${getCurriculumDirective({ subject, grade, topic, state, country, nation })}
 
 STRICT EXAM STRUCTURE MANDATE:
 1. SECTION A: Objective Questions (MCQs, matching items, or short 1-word concepts) - approx 20-25% of marks.
@@ -1762,7 +1769,7 @@ CRITICAL REQUIREMENTS:
 - Provide authentic question numbers (e.g. 1.1, 1.2, 1.3, 2.1.1, 2.1.2).
 - Every question must have an EXACT MARK ALLOCATION with explicit sub-mark allocations (e.g., "[1.1.1 (2 marks: Formula 1, Substitution 1)]").
 - Provide an exhaustive, accurate OFFICIAL MEMORANDUM showing step-by-step solutions, mark breakdowns, and explicit "EXAMINER TRAPS" (common misconceptions students fall for).
-- Follow ${curriculum.isUS ? `${curriculum.regionLabel} state assessment question conventions (US spelling, dollars, customary units, US civic/historical references).` : 'South African CAPS question conventions (e.g., BODMAS, DBE geometric reasons, SARS tax brackets, SI units).'}
+- Follow ${curriculum.isUS ? `${curriculum.regionLabel} state assessment question conventions (US spelling, dollars, customary units, US civic/historical references).` : curriculum.isUK ? `${curriculum.ukNation} exam-board conventions (British English, pounds sterling, SI/metric units, command words and mark-scheme phrasing).` : 'South African CAPS question conventions (e.g., BODMAS, DBE geometric reasons, SARS tax brackets, SI units).'}
 
 Return valid JSON conforming strictly to:
 {
@@ -2291,31 +2298,71 @@ app.post('/api/profile/sync', async (req: Request, res: Response) => {
 
   try {
     const safeProfile = profile || {};
-    const { data: profileRow, error: profileErr } = await client
-      .from('student_profiles')
-      .insert([
-        {
-          full_name: safeProfile.fullName || safeProfile.full_name || null,
-          email: safeProfile.email || null,
-          phone: safeProfile.phone || null,
-          date_of_birth: safeProfile.dateOfBirth || safeProfile.date_of_birth || null,
-          grade: safeProfile.grade || null,
-          country: safeProfile.country || null,
-          state: safeProfile.state || null,
-          subjects: safeProfile.subjects || null,
-          trial_started_at: new Date().toISOString(),
-          trial_expires_at: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
-          subscription_status: 'trial',
-        },
-      ])
-      .select('id')
-      .single();
+    const email = String(safeProfile.email || '').trim().toLowerCase();
 
-    if (profileErr) {
-      console.warn('Profile insert error:', profileErr.message);
+    // Only the profile fields we own are written; trial fields are preserved on
+    // update so re-saving a profile never restarts a learner's trial.
+    const profileFields: Record<string, any> = {
+      full_name: safeProfile.fullName || safeProfile.full_name || null,
+      email: email || null,
+      phone: safeProfile.phone || null,
+      date_of_birth: safeProfile.dateOfBirth || safeProfile.date_of_birth || null,
+      grade: safeProfile.grade || null,
+      country: safeProfile.country || null,
+      nation: safeProfile.nation || null,
+      state: safeProfile.state || null,
+      subjects: safeProfile.subjects || null,
+    };
+
+    // Upsert by email so repeated saves never create duplicate learner rows.
+    let profileId: string | null = null;
+    let profileErr: any = null;
+
+    if (email) {
+      const existing = await client
+        .from('student_profiles')
+        .select('id')
+        .eq('email', email)
+        .limit(1)
+        .maybeSingle();
+
+      if (existing.data?.id) {
+        profileId = existing.data.id;
+        const upd = await client
+          .from('student_profiles')
+          .update({ ...profileFields, updated_at: new Date().toISOString() })
+          .eq('id', profileId);
+        profileErr = upd.error;
+      }
     }
 
-    const profileId = profileRow?.id || null;
+    if (!profileId) {
+      const ins = await client
+        .from('student_profiles')
+        .insert([
+          {
+            ...profileFields,
+            trial_started_at: new Date().toISOString(),
+            trial_expires_at: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
+            subscription_status: 'trial',
+          },
+        ])
+        .select('id')
+        .single();
+      profileErr = ins.error;
+      profileId = ins.data?.id ?? null;
+    }
+
+    if (profileErr) {
+      console.warn('Profile upsert error:', profileErr.message);
+    }
+
+    // Replace the previous firmament snapshot instead of appending to it.
+    if (profileId) {
+      await client.from('firmament_onboarding_answers').delete().eq('user_id', profileId);
+      await client.from('firmament_profiles').delete().eq('user_id', profileId);
+    }
+
 
     let answersSynced = false;
     if (answers && profileId) {
@@ -2355,13 +2402,113 @@ app.post('/api/profile/sync', async (req: Request, res: Response) => {
     return res.json({
       success: true,
       synced: true,
-      syncedProfile: !!profileRow,
+      syncedProfile: !!profileId,
       syncedAnswers: answersSynced,
       syncedFirmament: firmamentSynced,
     });
   } catch (err: any) {
     console.warn('Profile sync failed:', err?.message || err);
     return res.json({ success: true, synced: false, error: err?.message || String(err) });
+  }
+});
+
+// ---------------------------------------------------------------------
+// PASSWORD RECOVERY (Supabase Auth + branded email)
+// The reset link is generated with the Supabase service role key and emailed
+// through the configured SMTP mailbox (e.g. lexiparcio@gmail.com).
+// ---------------------------------------------------------------------
+app.get('/api/auth/mail-status', (req: Request, res: Response) => {
+  const admin = getServiceSupabaseClient();
+  return res.json({
+    supabaseAuthAvailable: !!admin,
+    smtpConfigured: isMailConfigured(),
+    senderEmail: isMailConfigured() ? process.env.SMTP_FROM || process.env.SMTP_USER : null,
+  });
+});
+
+app.post('/api/auth/request-password-reset', async (req: Request, res: Response) => {
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+    return res.status(400).json({ ok: false, error: 'Please provide a valid email address.' });
+  }
+
+  const admin = getServiceSupabaseClient();
+  if (!admin) {
+    return res.json({
+      ok: true,
+      delivered: false,
+      reason: 'supabase_not_configured',
+      message:
+        'Password reset by email needs Supabase Auth to be configured (SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY).',
+    });
+  }
+
+  if (!isMailConfigured()) {
+    return res.json({
+      ok: true,
+      delivered: false,
+      reason: 'smtp_not_configured',
+      message:
+        'Email delivery is not configured yet (SMTP_HOST / SMTP_USER / SMTP_PASS / SMTP_FROM).',
+    });
+  }
+
+  const appUrl =
+    process.env.APP_URL || `${req.protocol}://${req.get('host') || 'localhost'}`;
+
+  try {
+    const { data, error } = await admin.auth.admin.generateLink({
+      type: 'recovery',
+      email,
+      options: { redirectTo: appUrl },
+    });
+
+    const link = (data as any)?.properties?.action_link || (data as any)?.action_link;
+
+    // Never reveal whether an account exists for this address.
+    if (error || !link) {
+      console.warn('Password reset link generation failed:', error?.message || 'no link');
+      return res.json({
+        ok: true,
+        delivered: false,
+        reason: 'link_failed',
+        message: 'If that email has an account, a reset link has been sent.',
+      });
+    }
+
+    await sendMail({
+      to: email,
+      subject: 'Reset your MyTutorZA password',
+      text: `Reset your MyTutorZA password using this link (expires shortly):
+${link}
+
+If you did not request this, you can ignore this email.`,
+      html: `
+        <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:520px;margin:0 auto;padding:24px;background:#0f172a;border-radius:16px;color:#e2e8f0">
+          <h2 style="margin:0 0 8px;color:#ffffff">Reset your password</h2>
+          <p style="margin:0 0 16px;font-size:14px;color:#94a3b8">
+            Tap the button below to choose a new password for your MyTutorZA learner account.
+          </p>
+          <p style="margin:0 0 20px">
+            <a href="${link}" style="display:inline-block;background:#0ea5e9;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:10px;font-weight:700;font-size:14px">
+              Choose a new password
+            </a>
+          </p>
+          <p style="margin:0;font-size:12px;color:#64748b">
+            If you did not request this, you can safely ignore this email.
+          </p>
+        </div>`,
+    });
+
+    return res.json({ ok: true, delivered: true, message: 'Reset link sent.' });
+  } catch (err: any) {
+    console.warn('Password reset email failed:', err?.message || err);
+    return res.json({
+      ok: true,
+      delivered: false,
+      reason: 'send_failed',
+      message: 'We could not send the email right now. Please try again shortly.',
+    });
   }
 });
 

@@ -7,3 +7,6 @@ coverage/
 .env.*
 !.env.example
 .DS_Store
+
+# Local test scaffolding (browser smoke tests)
+.tests/

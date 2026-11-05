@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { PSYCHOMETRIC_QUESTIONS, calculateFirmamentFromAnswers } from '../data/psychometrics';
-import { GRADES, REGIONS_BY_COUNTRY, SUBJECTS_BY_COUNTRY } from '../data/curriculumData';
+import { GRADES, REGIONS_BY_COUNTRY, SUBJECTS_BY_COUNTRY, UK_NATIONS, UK_REGIONS } from '../data/curriculumData';
 import { CountryCode, SubjectSlot } from '../types';
 import confetti from 'canvas-confetti';
 import {
@@ -46,6 +46,7 @@ export const OnboardingModal: React.FC = () => {
   const [step, setStep] = useState<Step>('account');
   const [isLoginMode, setIsLoginMode] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [resetBusy, setResetBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -60,6 +61,7 @@ export const OnboardingModal: React.FC = () => {
   const [dob, setDob] = useState(student?.dateOfBirth || '');
   const [grade, setGrade] = useState(student?.grade || 'Grade 9');
   const [country, setCountry] = useState<CountryCode>(student?.country || 'US');
+  const [nation, setNation] = useState(student?.nation || 'England');
   const [region, setRegion] = useState(student?.state || '');
 
   // Subjects
@@ -72,7 +74,17 @@ export const OnboardingModal: React.FC = () => {
 
   if (!isOnboardingOpen) return null;
 
-  const regionOptions = REGIONS_BY_COUNTRY[country] || [];
+  const regionOptions =
+    country === 'UK'
+      ? UK_REGIONS[nation] || []
+      : (REGIONS_BY_COUNTRY as Record<string, string[]>)[country] || [];
+  const regionNoun = country === 'US' ? 'state' : country === 'UK' ? 'region' : 'province';
+  const regionHint =
+    country === 'US'
+      ? 'your state'
+      : country === 'UK'
+      ? 'your county, council area or district'
+      : 'your province';
   const subjectCatalog = SUBJECTS_BY_COUNTRY[country] || [];
 
   const submitAccount = async (e: React.FormEvent) => {
@@ -116,6 +128,34 @@ export const OnboardingModal: React.FC = () => {
     }
   };
 
+  const requestPasswordReset = async () => {
+    setError(null);
+    setNotice(null);
+    if (!email.trim()) {
+      setError('Enter your email address first, then tap "Forgot password?".');
+      return;
+    }
+    setResetBusy(true);
+    try {
+      const res = await fetch('/api/auth/request-password-reset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim() }),
+      });
+      const data = await res.json();
+      setNotice(
+        data?.message ||
+          (data?.delivered
+            ? 'Reset link sent — check your inbox.'
+            : 'We could not send a reset link right now.')
+      );
+    } catch (err: any) {
+      setError(err?.message || 'Could not request a password reset.');
+    } finally {
+      setResetBusy(false);
+    }
+  };
+
   const dobDate = dob ? new Date(dob) : null;
   const dobValid = !!dobDate && !Number.isNaN(dobDate.getTime()) && dobDate < new Date() && dobDate.getFullYear() > 1900;
   const detailsValid = dobValid && !!grade && !!region;
@@ -134,11 +174,7 @@ export const OnboardingModal: React.FC = () => {
         setError('Please enter your date of birth (it must be a past date).');
         return;
       }
-      setError(
-        country === 'US'
-          ? 'Please choose your grade and your state.'
-          : 'Please choose your grade and your province.'
-      );
+      setError(`Please choose your grade and your ${regionNoun}.`);
       return;
     }
     setStep('subjects');
@@ -200,6 +236,7 @@ export const OnboardingModal: React.FC = () => {
         dateOfBirth: dob,
         grade,
         country,
+        nation: country === 'UK' ? nation : undefined,
         state: region,
         subjects: buildSubjectSlots(),
         firmament: calculatedResult,
@@ -425,6 +462,19 @@ export const OnboardingModal: React.FC = () => {
                 {isLoginMode ? 'Create one' : 'Sign in'}
               </button>
             </p>
+
+            {isLoginMode && (
+              <p className="text-[11px] text-center mt-2">
+                <button
+                  type="button"
+                  onClick={requestPasswordReset}
+                  disabled={resetBusy}
+                  className="text-slate-400 hover:text-sky-300 hover:underline disabled:opacity-50 cursor-pointer"
+                >
+                  {resetBusy ? 'Sending reset link…' : 'Forgot password?'}
+                </button>
+              </p>
+            )}
           </div>
         )}
 
@@ -434,7 +484,7 @@ export const OnboardingModal: React.FC = () => {
             <div>
               <h2 className="text-xl font-black text-white">Tell us about you</h2>
               <p className="text-xs text-slate-400 mt-1">
-                Your birthday, grade and {country === 'US' ? 'state' : 'province'} decide which curriculum is pushed to your agents.
+                Your birthday, grade and {regionNoun} decide which curriculum is pushed to your agents.
               </p>
             </div>
 
@@ -479,18 +529,43 @@ export const OnboardingModal: React.FC = () => {
                 <select
                   value={country}
                   onChange={(e) => {
-                    setCountry(e.target.value as CountryCode);
+                    const next = e.target.value as CountryCode;
+                    setCountry(next);
                     setRegion('');
+                    if (next === 'UK') setNation('England');
                   }}
                   className={`${inputClass} appearance-none cursor-pointer`}
                 >
                   <option value="US">United States</option>
+                  <option value="UK">United Kingdom</option>
                   <option value="ZA">South Africa</option>
                 </select>
               </div>
 
+              {country === 'UK' && (
+                <div>
+                  <label className={labelClass}>Nation</label>
+                  <select
+                    value={nation}
+                    onChange={(e) => {
+                      setNation(e.target.value);
+                      setRegion('');
+                    }}
+                    className={`${inputClass} appearance-none cursor-pointer`}
+                  >
+                    {UK_NATIONS.map((n) => (
+                      <option key={n} value={n}>
+                        {n}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
               <div>
-                <label className={labelClass}>{country === 'US' ? 'State' : 'Province'}</label>
+                <label className={labelClass}>
+                  {country === 'UK' ? `${nation} region` : country === 'US' ? 'State' : 'Province'}
+                </label>
                 <div className="relative">
                   <MapPin className="w-4 h-4 text-slate-500 absolute left-3 top-3 pointer-events-none" />
                   <select
@@ -499,7 +574,7 @@ export const OnboardingModal: React.FC = () => {
                     onChange={(e) => setRegion(e.target.value)}
                     className={`${inputClass} pl-9 appearance-none cursor-pointer`}
                   >
-                    <option value="">Select {country === 'US' ? 'your state' : 'your province'}…</option>
+                    <option value="">Select {regionHint}…</option>
                     {regionOptions.map((r) => (
                       <option key={r} value={r}>
                         {r}
@@ -648,7 +723,7 @@ export const OnboardingModal: React.FC = () => {
               </div>
               <h2 className="text-2xl font-black text-white">Firmament calibrated!</h2>
               <p className="text-xs text-slate-400 mt-1">
-                {fullName || account?.fullName} · {grade} · {region} · {selectedSubjects.length || student?.subjects.length || 0} subjects
+                {fullName || account?.fullName} · {grade} · {country === 'UK' ? `${nation} · ` : ''}{region} · {selectedSubjects.length || student?.subjects.length || 0} subjects
               </p>
             </div>
 

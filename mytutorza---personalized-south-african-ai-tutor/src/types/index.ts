@@ -14,7 +14,10 @@ export type OfficialLanguage =
 export type DisplayMode = 'dark' | 'light' | 'normal';
 
 /** Country the learner is schooling in. Drives which curriculum framework applies. */
-export type CountryCode = 'US' | 'ZA';
+export type CountryCode = 'US' | 'UK' | 'ZA';
+
+/** UK nation — each has its own curriculum and qualifications body. */
+export type UKNation = 'England' | 'Scotland' | 'Wales' | 'Northern Ireland';
 
 /** Curricula frameworks an agent can be grounded in. */
 export type CurriculumFramework = 'US_STATE_STANDARDS' | 'CAPS_DBE';
@@ -106,7 +109,9 @@ export interface StudentProfile {
   grade: string;
   /** Country of schooling — determines the curriculum framework pushed to agents. */
   country: CountryCode;
-  /** US state name (e.g. 'California') or South African province (e.g. 'Gauteng'). */
+  /** UK nation (England / Scotland / Wales / Northern Ireland). Undefined elsewhere. */
+  nation?: string;
+  /** US state name (e.g. 'California'), UK region, or South African province. */
   state: string;
   avatar: string;
   firmament: FirmamentProfile;

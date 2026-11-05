@@ -17,6 +17,7 @@ import { OnboardingModal } from './components/OnboardingModal';
 import { SettingsModal } from './components/SettingsModal';
 import { TextbookModal } from './components/TextbookModal';
 import { ContactModal } from './components/ContactModal';
+import { PasswordRecovery } from './components/PasswordRecovery';
 
 const AppContent: React.FC = () => {
   const { activeTab, displayMode, hasCompletedOnboarding } = useApp();
@@ -69,6 +70,7 @@ const AppContent: React.FC = () => {
         </main>
 
         <OnboardingModal />
+        <PasswordRecovery />
       </div>
     );
   }
@@ -123,6 +125,7 @@ const AppContent: React.FC = () => {
 
       {/* Modals */}
       <OnboardingModal />
+      <PasswordRecovery />
       <SettingsModal />
       <TextbookModal />
       <ContactModal />

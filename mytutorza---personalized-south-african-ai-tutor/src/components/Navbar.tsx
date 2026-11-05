@@ -33,6 +33,9 @@ export const Navbar: React.FC = () => {
     logout,
   } = useApp();
 
+  // The 11 official SA languages only apply to South African CAPS learners.
+  const offersSaLanguages = student?.country === 'ZA';
+
   const isLight = displayMode === 'light';
   const isSilver = displayMode === 'normal';
 
@@ -107,8 +110,8 @@ export const Navbar: React.FC = () => {
             </div>
           )}
 
-          {/* Language Selector for Active Subject */}
-          {activeSubject && (
+          {/* Language Selector for Active Subject (South African learners only) */}
+          {activeSubject && offersSaLanguages && (
             <div className={`hidden md:flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 ${selectContainerClass}`}>
               <Globe2 className="w-4 h-4 text-sky-500" />
               <span className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">
@@ -252,7 +255,7 @@ export const Navbar: React.FC = () => {
             </div>
           )}
 
-          {activeSubject && (
+          {activeSubject && offersSaLanguages && (
             <div className="w-36 shrink-0">
               <select
                 value={activeSubject.tutoringLanguage}

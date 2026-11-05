@@ -190,6 +190,7 @@ export const SettingsModal: React.FC = () => {
                       <option value="Term 4">Term 4</option>
                     </select>
 
+                    {student?.country === 'ZA' && (
                     <select
                       value={sub.tutoringLanguage}
                       onChange={(e) =>
@@ -203,6 +204,7 @@ export const SettingsModal: React.FC = () => {
                         </option>
                       ))}
                     </select>
+                    )}
 
                     {!sub.isMandatory && (
                       <button

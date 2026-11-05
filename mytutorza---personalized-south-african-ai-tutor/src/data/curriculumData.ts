@@ -158,6 +158,90 @@ export const REGIONS_BY_COUNTRY = {
   ZA: SA_PROVINCES,
 };
 
+/**
+ * UK regions by nation. The UK has no "states" — each nation is divided into
+ * counties / council areas / principal areas / districts, and each nation runs
+ * its own curriculum:
+ *   England          -> National Curriculum (GCSE / A-level, Ofqual)
+ *   Scotland         -> Curriculum for Excellence (National 4/5, Highers, SQA)
+ *   Wales            -> Curriculum for Wales (GCSE, WJEC)
+ *   Northern Ireland -> Northern Ireland Curriculum (GCSE / A-level, CCEA)
+ */
+export const UK_REGIONS: Record<string, string[]> = {
+  England: [
+    'Bedfordshire', 'Berkshire', 'Bristol', 'Buckinghamshire', 'Cambridgeshire', 'Cheshire',
+    'City of London', 'Cornwall', 'Cumbria', 'Derbyshire', 'Devon', 'Dorset', 'Durham',
+    'East Riding of Yorkshire', 'East Sussex', 'Essex', 'Gloucestershire', 'Greater London',
+    'Greater Manchester', 'Hampshire', 'Herefordshire', 'Hertfordshire', 'Isle of Wight',
+    'Kent', 'Lancashire', 'Leicestershire', 'Lincolnshire', 'Merseyside', 'Norfolk',
+    'North Yorkshire', 'Northamptonshire', 'Northumberland', 'Nottinghamshire', 'Oxfordshire',
+    'Rutland', 'Shropshire', 'Somerset', 'South Yorkshire', 'Staffordshire', 'Suffolk',
+    'Surrey', 'Tyne and Wear', 'Warwickshire', 'West Midlands', 'West Sussex', 'West Yorkshire',
+    'Wiltshire', 'Worcestershire',
+  ],
+  Scotland: [
+    'Aberdeen City', 'Aberdeenshire', 'Angus', 'Argyll and Bute', 'Clackmannanshire',
+    'Dumfries and Galloway', 'Dundee City', 'East Ayrshire', 'East Dunbartonshire',
+    'East Lothian', 'East Renfrewshire', 'City of Edinburgh', 'Na h-Eileanan Siar',
+    'Falkirk', 'Fife', 'Glasgow City', 'Highland', 'Inverclyde', 'Midlothian', 'Moray',
+    'North Ayrshire', 'North Lanarkshire', 'Orkney Islands', 'Perth and Kinross',
+    'Renfrewshire', 'Scottish Borders', 'Shetland Islands', 'South Ayrshire',
+    'South Lanarkshire', 'Stirling', 'West Dunbartonshire', 'West Lothian',
+  ],
+  Wales: [
+    'Blaenau Gwent', 'Bridgend', 'Caerphilly', 'Cardiff', 'Carmarthenshire', 'Ceredigion',
+    'Conwy', 'Denbighshire', 'Flintshire', 'Gwynedd', 'Isle of Anglesey', 'Merthyr Tydfil',
+    'Monmouthshire', 'Neath Port Talbot', 'Newport', 'Pembrokeshire', 'Powys',
+    'Rhondda Cynon Taf', 'Swansea', 'Torfaen', 'Vale of Glamorgan', 'Wrexham',
+  ],
+  'Northern Ireland': [
+    'Antrim and Newtownabbey', 'Ards and North Down', 'Armagh City, Banbridge and Craigavon',
+    'Belfast', 'Causeway Coast and Glens', 'Derry City and Strabane', 'Fermanagh and Omagh',
+    'Lisburn and Castlereagh', 'Mid and East Antrim', 'Mid Ulster', 'Newry, Mourne and Down',
+  ],
+};
+
+export const UK_NATIONS = Object.keys(UK_REGIONS);
+
+/** Curriculum label + qualifications body per UK nation. */
+export const UK_CURRICULUM_BY_NATION: Record<string, { curriculum: string; qualifications: string }> = {
+  England: { curriculum: 'National Curriculum (England)', qualifications: 'GCSE / A-level (Ofqual)' },
+  Scotland: { curriculum: 'Curriculum for Excellence', qualifications: 'National 4/5, Highers (SQA)' },
+  Wales: { curriculum: 'Curriculum for Wales', qualifications: 'GCSE / A-level (WJEC)' },
+  'Northern Ireland': { curriculum: 'Northern Ireland Curriculum', qualifications: 'GCSE / A-level (CCEA)' },
+};
+
+/** Subjects commonly taken in UK secondary schools (GCSE / National 5 / A-level). */
+export const UK_ALL_SUBJECTS = [
+  { name: 'English Language', category: 'Language' as const },
+  { name: 'English Literature', category: 'Language' as const },
+  { name: 'Mathematics', category: 'Mathematics' as const },
+  { name: 'Further Mathematics', category: 'Mathematics' as const },
+  { name: 'Biology', category: 'Sciences' as const },
+  { name: 'Chemistry', category: 'Sciences' as const },
+  { name: 'Physics', category: 'Sciences' as const },
+  { name: 'Combined Science', category: 'Sciences' as const },
+  { name: 'History', category: 'Humanities' as const },
+  { name: 'Geography', category: 'Humanities' as const },
+  { name: 'Religious Studies', category: 'Humanities' as const },
+  { name: 'Citizenship / PSHE', category: 'Humanities' as const },
+  { name: 'French', category: 'Language' as const },
+  { name: 'Spanish', category: 'Language' as const },
+  { name: 'German', category: 'Language' as const },
+  { name: 'Computer Science', category: 'Technology' as const },
+  { name: 'Business Studies', category: 'Commerce' as const },
+  { name: 'Economics', category: 'Commerce' as const },
+  { name: 'Design and Technology', category: 'Technology' as const },
+  { name: 'Art and Design', category: 'Services' as const },
+  { name: 'Music', category: 'Services' as const },
+  { name: 'Drama', category: 'Services' as const },
+  { name: 'Physical Education', category: 'Services' as const },
+  { name: 'Food Preparation and Nutrition', category: 'Services' as const },
+  { name: 'Psychology', category: 'Humanities' as const },
+  { name: 'Sociology', category: 'Humanities' as const },
+  { name: 'Media Studies', category: 'Humanities' as const },
+];
+
 /** Subjects commonly taken in US middle/high schools (state standards are per-state). */
 export const US_ALL_SUBJECTS = [
   { name: 'English Language Arts', category: 'Language' as const },
@@ -685,5 +769,6 @@ export const NSC_EXAM_BLUEPRINTS = {
 /** Subject catalog per country — declared last because it references the DBE list. */
 export const SUBJECTS_BY_COUNTRY = {
   US: US_ALL_SUBJECTS,
+  UK: UK_ALL_SUBJECTS,
   ZA: DBE_ALL_SUBJECTS,
 };

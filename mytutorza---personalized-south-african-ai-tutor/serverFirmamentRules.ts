@@ -9,6 +9,14 @@
 
 import { getSelectiveCapsCurriculumContext } from './serverCapsVault';
 
+/** Curriculum + qualifications body per UK nation (curricula are nation-based). */
+export const UK_FRAMEWORKS: Record<string, { curriculum: string; qualifications: string }> = {
+  England: { curriculum: 'the National Curriculum (England)', qualifications: 'GCSE / A-level, Ofqual' },
+  Scotland: { curriculum: 'Curriculum for Excellence', qualifications: 'National 4/5 and Highers, SQA' },
+  Wales: { curriculum: 'Curriculum for Wales', qualifications: 'GCSE / A-level, WJEC' },
+  'Northern Ireland': { curriculum: 'the Northern Ireland Curriculum', qualifications: 'GCSE / A-level, CCEA' },
+};
+
 export interface FirmamentPromptParams {
   firmamentProfile: any;
   subject: string;
@@ -17,8 +25,10 @@ export interface FirmamentPromptParams {
   language?: string;
   /** US state name (e.g. 'Texas') or South African province. */
   state?: string;
-  /** 'US' | 'ZA' — selects the curriculum framework pushed to the model. */
+  /** 'US' | 'UK' | 'ZA' — selects the curriculum framework pushed to the model. */
   country?: string;
+  /** UK nation (England / Scotland / Wales / Northern Ireland). */
+  nation?: string;
   textbook?: { title?: string; publisher?: string; authors?: string[] };
   userQuery?: string;
   taskType?: 'tutoring' | 'spark-notes' | 'roadmap' | 'exam' | 'topic-summary';
@@ -33,6 +43,7 @@ export function buildFirmamentSystemPrompt(params: FirmamentPromptParams): strin
     language = 'English',
     state = '',
     country = 'ZA',
+    nation = '',
     textbook,
     userQuery = '',
     taskType = 'tutoring',
@@ -40,9 +51,18 @@ export function buildFirmamentSystemPrompt(params: FirmamentPromptParams): strin
 
   const countryCode = (country || 'ZA').toUpperCase();
   const isUS = countryCode === 'US';
-  const regionLabel = state || (isUS ? 'the United States' : 'South Africa');
+  const isUK = countryCode === 'UK' || countryCode === 'GB';
+  const ukNation = isUK ? nation || 'England' : '';
+  const ukFramework = UK_FRAMEWORKS[ukNation] || UK_FRAMEWORKS.England;
+  const regionLabel = isUS
+    ? state || 'the United States'
+    : isUK
+    ? `${state ? `${state}, ` : ''}${ukNation}`
+    : state || 'South Africa';
   const frameworkLabel = isUS
     ? `${regionLabel} state academic standards`
+    : isUK
+    ? `${ukFramework.curriculum} (${ukFramework.qualifications})`
     : 'the South African CAPS (DBE) curriculum';
 
   const archetype = firmamentProfile?.lifePath?.archetype || 'The Architect';
@@ -56,6 +76,8 @@ export function buildFirmamentSystemPrompt(params: FirmamentPromptParams): strin
     'Gautrain systems, Eskom circuits, Drakensberg gradients';
   const analogySet = isUS
     ? `${regionLabel} everyday contexts (local weather, high-school sports, road trips, dollars and cents)`
+    : isUK
+    ? `${regionLabel} everyday contexts (Premier League football, weather, rail and bus travel, pounds sterling)`
     : rawAnalogySet;
 
   const rawReasoningScaffold =
@@ -63,6 +85,8 @@ export function buildFirmamentSystemPrompt(params: FirmamentPromptParams): strin
     'Deductive Axiom → Intermediate Substitution → Final Statement with DBE Reason';
   const reasoningScaffold = isUS
     ? rawReasoningScaffold.replace(/DBE/g, 'state-standard')
+    : isUK
+    ? rawReasoningScaffold.replace(/DBE/g, 'exam-board')
     : rawReasoningScaffold;
   
   const cognitiveScore = firmamentProfile?.cognitiveScore || `${archetype}-${primaryModality} (${mercuryElement} Engine)`;
@@ -84,6 +108,14 @@ Curriculum framework: ${regionLabel} state academic standards for ${grade} ${sub
 - Where ${regionLabel} has adopted the Common Core (or similar) standards, follow those grade-level expectations.
 - Reference the style of ${regionLabel} state assessments / end-of-course exams for ${grade}.
 - You must NOT reference DBE, CAPS, NSC, ATP, South African provinces, or South African exams.`
+    : isUK
+    ? `
+[UK CURRICULUM MODE — ${ukNation.toUpperCase()}]
+Curriculum framework: ${ukFramework.curriculum}. Qualifications: ${ukFramework.qualifications}.
+- Align every explanation, worked example and assessment item to the ${ukNation} curriculum for ${grade} ${subject}.
+- Use UK conventions: British English spelling, pounds sterling (£), metric units, and UK exam command words.
+- Match the command words and mark-scheme style of ${ukFramework.qualifications}.
+- Do NOT reference CAPS, DBE, NSC, ATP or South African provinces, and do NOT reference US Common Core or US state standards.`
     : getSelectiveCapsCurriculumContext(subject, grade, userQuery);
   const rawAnswers = firmamentProfile?.rawAnswers || firmamentProfile?.onboardingAnswers || {};
 
@@ -96,8 +128,8 @@ YOU ARE NOT A GENERIC CHATBOT. YOU ARE MYTUTORZA'S SOCRATIC TUTOR FOR ${framewor
 GENERIC TEACHING STYLES ARE PERMANENTLY DISABLED IN YOUR INFERENCE ENGINE.
 YOU ARE BOUND BY THE NON-NEGOTIABLE "LAWS OF THE FIRMAMENT" CODIFIED BELOW.
 
-PRIMARY SOURCE OF TRUTH (FIRST POINT OF REFERENCE): ${isUS ? `${regionLabel.toUpperCase()} STATE ACADEMIC STANDARDS` : 'THE CAPS CURRICULUM VAULT'}
-${isUS ? `(Grade-level standards and state assessment expectations for ${grade} ${subject}). Consult these before any reasoning:` : '(450 DBE CAPS PDFs - Annual Teaching Plans, Examination Guidelines, Formula\nSheets, chief examiner traps). Consult these documents before any reasoning:'}
+PRIMARY SOURCE OF TRUTH (FIRST POINT OF REFERENCE): ${isUS ? `${regionLabel.toUpperCase()} STATE ACADEMIC STANDARDS` : isUK ? `${ukNation.toUpperCase()} CURRICULUM (${ukFramework.qualifications.toUpperCase()})` : 'THE CAPS CURRICULUM VAULT'}
+${isUS ? `(Grade-level standards and state assessment expectations for ${grade} ${subject}). Consult these before any reasoning:` : isUK ? `(National curriculum requirements and exam-board mark-scheme conventions for ${grade} ${subject}). Consult these before any reasoning:` : '(450 DBE CAPS PDFs - Annual Teaching Plans, Examination Guidelines, Formula\nSheets, chief examiner traps). Consult these documents before any reasoning:'}
 
 ${rawCurriculum}
 
@@ -163,33 +195,37 @@ LAW 3: COGNITIVE PROCESSING & RETENTION SCAFFOLDING
   * If student has Low / Scaffolded Retention: Embed spaced retrieval checkpoints (e.g. "Before we plug into this formula, what does each variable represent?").
 - Sensory Modality: Calibrated to "${primaryModality}".
   * Visual: Frame problems spatially (mental coordinates, free-body diagram arrows, geometric relationships).
-  * Logical-Rule: Emphasize formal axioms, algebraic preconditions, and ${isUS ? 'standards-cited justifications' : 'mandatory DBE reasons'}.
+  * Logical-Rule: Emphasize formal axioms, algebraic preconditions, and ${isUS ? 'standards-cited justifications' : isUK ? 'exam-board mark-scheme justifications' : 'mandatory DBE reasons'}.
   * Kinesthetic: Ground problems in tactile, dynamic physical scenarios (inertia in a taxi, sports momentum, cooking).
   * Auditory: Use conversational debate, rhythmic mnemonics, and verbal articulation.
 
 LAW 4: REAL-TIME CURRICULUM SYLLABUS GROUNDING
 - Framework in force: ${frameworkLabel}.
-- You cannot hallucinate syllabus requirements: stay inside the ${isUS ? `${regionLabel} standards` : 'DBE CAPS'} scope for ${grade} ${subject}.
+- You cannot hallucinate syllabus requirements: stay inside the ${isUS ? `${regionLabel} standards` : isUK ? `${ukNation} curriculum` : 'DBE CAPS'} scope for ${grade} ${subject}.
 - ${isUS
     ? `Quote ${regionLabel} standard codes/strands where helpful and mirror state assessment command words.`
+    : isUK
+    ? `Quote ${ukFramework.qualifications} specification points and mirror their command words (e.g. "calculate", "describe", "evaluate").`
     : 'Quote exact CAPS requirements, formula sheet conventions, and chief examiner trap warnings verbatim.'}
 - Mark allocations: always show the learner how marks are earned (method, substitution, final answer, units).
 
 LAW 5: REGIONAL, CULTURAL & LINGUISTIC AUTHENTICITY
 - Tutoring Language: ${language}.
   * If a language other than English is chosen (${language}), communicate warmly and naturally in ${language}, maintaining standard mathematical/scientific notation.
-- Region: ${regionLabel} (${isUS ? 'United States' : 'South Africa'}).
+- Region: ${regionLabel} (${isUS ? 'United States' : isUK ? 'United Kingdom' : 'South Africa'}).
 - Real-World Analogies: ${isUS
     ? `Use authentic ${regionLabel}/US contexts (local weather, sports, transport, currency in dollars) and avoid South African-only references.`
+    : isUK
+    ? `Use authentic ${regionLabel} contexts (UK weather, football, rail and bus travel, pounds sterling) and avoid South African- and US-only references.`
     : `Exclusively use authentic South African contexts (${analogySet}).`}
 
 ${textbook?.title ? `--------------------------------------------------------------------------------\nTEXTBOOK ALIGNMENT:\n- Active Textbook: "${textbook.title}" (Publisher: ${textbook.publisher || 'DBE Approved'}). Align chapter names and conventions with this book.\n--------------------------------------------------------------------------------` : ''}
 
 --------------------------------------------------------------------------------
-${isUS ? `${regionLabel.toUpperCase()} STATE STANDARDS REMAIN THE FIRST POINT OF REFERENCE (SEE TOP OF PROMPT)` : 'CAPS VAULT (450 PDFs) REMAINS THE FIRST POINT OF REFERENCE (SEE TOP OF PROMPT)'}
+${isUS ? `${regionLabel.toUpperCase()} STATE STANDARDS REMAIN THE FIRST POINT OF REFERENCE (SEE TOP OF PROMPT)` : isUK ? `${ukNation.toUpperCase()} CURRICULUM SPECIFICATIONS REMAIN THE FIRST POINT OF REFERENCE (SEE TOP OF PROMPT)` : 'CAPS VAULT (450 PDFs) REMAINS THE FIRST POINT OF REFERENCE (SEE TOP OF PROMPT)'}
 ================================================================================
 TASK TYPE: ${taskType.toUpperCase()}
-FIRMAMENT RULES AND ${isUS ? `${regionLabel.toUpperCase()} STANDARDS` : 'CAPS'} GROUNDING ARE PERMANENTLY ACTIVE. BEGIN NOW.
+FIRMAMENT RULES AND ${isUS ? `${regionLabel.toUpperCase()} STANDARDS` : isUK ? `${ukNation.toUpperCase()} CURRICULUM` : 'CAPS'} GROUNDING ARE PERMANENTLY ACTIVE. BEGIN NOW.
 ================================================================================
 `.trim();
 }
@@ -198,22 +234,43 @@ FIRMAMENT RULES AND ${isUS ? `${regionLabel.toUpperCase()} STANDARDS` : 'CAPS'} 
  * Describes the curriculum framework in force for a learner.
  * Used by the Study / Exam / Roadmap generators so they stop hard-coding CAPS.
  */
-export function describeCurriculum(country?: string, state?: string) {
-  const isUS = (country || 'ZA').toUpperCase() === 'US';
-  const regionLabel = state || (isUS ? 'the United States' : 'South Africa');
+export function describeCurriculum(country?: string, state?: string, nation?: string) {
+  const code = (country || 'ZA').toUpperCase();
+  const isUS = code === 'US';
+  const isUK = code === 'UK' || code === 'GB';
+  const ukNation = isUK ? nation || 'England' : '';
+  const ukFramework = UK_FRAMEWORKS[ukNation] || UK_FRAMEWORKS.England;
+
+  const regionLabel = isUS
+    ? state || 'the United States'
+    : isUK
+    ? `${state ? `${state}, ` : ''}${ukNation}`
+    : state || 'South Africa';
+
   return {
+    code,
     isUS,
+    isUK,
+    ukNation,
+    ukFramework,
     regionLabel,
+    countryName: isUS ? 'United States' : isUK ? 'United Kingdom' : 'South Africa',
     frameworkLabel: isUS
       ? `${regionLabel} state academic standards`
-      : 'South Africa\'s CAPS (DBE) curriculum',
-    curriculumName: isUS ? `${regionLabel} State Academic Standards` : 'South African CAPS Curriculum',
+      : isUK
+      ? `${ukFramework.curriculum} (${ukFramework.qualifications})`
+      : "South Africa's CAPS (DBE) curriculum",
+    curriculumName: isUS
+      ? `${regionLabel} State Academic Standards`
+      : isUK
+      ? `${ukNation} Curriculum (${ukFramework.qualifications})`
+      : 'South African CAPS Curriculum',
   };
 }
 
 /**
  * Returns the curriculum grounding block for a generator prompt.
- * ZA -> raw CAPS vault text; US -> explicit state-standards directive.
+ * ZA -> raw CAPS vault text; US -> state-standards directive; UK -> nation curriculum.
  */
 export function getCurriculumDirective(params: {
   subject: string;
@@ -221,16 +278,34 @@ export function getCurriculumDirective(params: {
   topic?: string;
   state?: string;
   country?: string;
+  nation?: string;
 }): string {
-  const { isUS, regionLabel } = describeCurriculum(params.country, params.state);
-  if (!isUS) {
-    return getSelectiveCapsCurriculumContext(params.subject, params.grade, params.topic);
-  }
-  return `[US STATE STANDARDS MODE — ${regionLabel.toUpperCase()}]
+  const { isUS, isUK, ukNation, ukFramework, regionLabel } = describeCurriculum(
+    params.country,
+    params.state,
+    params.nation,
+  );
+
+  if (isUS) {
+    return `[US STATE STANDARDS MODE — ${regionLabel.toUpperCase()}]
 - Framework: ${regionLabel} academic standards for ${params.grade} ${params.subject}${
-    params.topic ? ` (focus: ${params.topic})` : ''
-  }.
+      params.topic ? ` (focus: ${params.topic})` : ''
+    }.
 - Follow ${regionLabel} grade-level expectations and the command words used by its state assessments.
 - Use US conventions (US spelling, dollars, miles/feet) and US cultural/historical context.
 - Do NOT reference CAPS, DBE, NSC, ATP, South African provinces or South African exams.`;
+  }
+
+  if (isUK) {
+    return `[UK CURRICULUM MODE — ${ukNation.toUpperCase()}]
+- Framework: ${ukFramework.curriculum}; qualifications: ${ukFramework.qualifications}.
+- Align to the ${ukNation} curriculum for ${params.grade} ${params.subject}${
+      params.topic ? ` (focus: ${params.topic})` : ''
+    }.
+- Use UK conventions: British English spelling, pounds sterling (£), metric units, UK exam command words.
+- Mirror ${ukFramework.qualifications} mark-scheme style and specification wording.
+- Do NOT reference CAPS, DBE, NSC, ATP or South African provinces, and do NOT reference US Common Core or US state standards.`;
+  }
+
+  return getSelectiveCapsCurriculumContext(params.subject, params.grade, params.topic);
 }

@@ -29,8 +29,8 @@ and never a demo learner. The flow is:
 1. **Create account** — full name, email, mobile number, password (Supabase Auth
    when `VITE_SUPABASE_URL`/`VITE_SUPABASE_ANON_KEY` are set, otherwise a local
    salted-hash account store).
-2. **About you** — date of birth, grade, country (United States / South Africa)
-   and state or province.
+2. **About you** — date of birth, grade, country (**United States / United
+   Kingdom / South Africa**), then state, UK nation + region, or SA province.
 3. **Subjects** — multi-select of the subjects taken at school.
 4. **Firmament diagnostic** — the 16 psychometric questions.
 5. **Result** — the computed cognitive profile, then "Enter my workspace".
@@ -41,10 +41,25 @@ Everything is persisted to `localStorage` (key `mytutorza_profile`) and pushed t
 saved profile; the navbar shows the signed-in learner and a sign-out button that
 returns to the gate.
 
-The saved `country`, `state`, `grade` and `subjects` are sent with every Tutoring,
-Study, Exam and Roadmap request. `serverFirmamentRules.ts` then selects the
-framework: **CAPS (DBE)** for South Africa, or **that state's academic standards**
-for the US (US spelling/units/currency, no CAPS/DBE references).
+The saved `country`, `nation`, `state`, `grade` and `subjects` are sent with every
+Tutoring, Study, Exam and Roadmap request. `serverFirmamentRules.ts` then selects
+the framework:
+
+| Country | Framework pushed to the agents |
+|---------|--------------------------------|
+| United States | That state's academic standards (US spelling, dollars, customary units) |
+| United Kingdom | England: National Curriculum (GCSE/A-level, Ofqual) · Scotland: Curriculum for Excellence (National 4/5, Highers, SQA) · Wales: Curriculum for Wales (WJEC) · Northern Ireland Curriculum (CCEA) |
+| South Africa | CAPS (DBE) vault grounding |
+
+The 11 official South African language selectors only appear for `ZA` learners.
+
+## Password recovery
+
+The sign-in screen has **Forgot password?**. `POST /api/auth/request-password-reset`
+uses the Supabase service-role key to generate a recovery link and emails it via
+SMTP (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` — e.g.
+`lexiparcio@gmail.com`). The learner lands back on the site and sets a new
+password in the recovery dialog. See [../SETUP_GUIDE.md](../SETUP_GUIDE.md) §2.
 
 > Notes: to use real server-side auth, configure `VITE_SUPABASE_*` and run
 > `supabase/schema.sql`. With Supabase Auth, turn off "Confirm email" for instant
