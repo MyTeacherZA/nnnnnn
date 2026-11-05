@@ -73,49 +73,108 @@ Supabase → **Authentication → Sign In / Providers → Email**:
 
 ## 2. Email for password reset (sender: lexiparcio@gmail.com)
 
-Can the app send the reset email itself? **Yes** — the server generates the
-Supabase recovery link with the service-role key and emails it through your own
-SMTP mailbox. You do not need Supabase's built-in SMTP for this.
+### 2.0 First — these are two completely unrelated things
 
-### 2.1 Create a Gmail App Password (5 minutes)
-1. Google Account → **Security** → enable **2-Step Verification** (required).
-2. Google Account → **Security** → **App passwords**.
-3. App: **Mail**, Device: **Other** → type `MyTutorZA` → **Generate**.
-4. Copy the 16-character password (remove the spaces). This is `SMTP_PASS`.
+This is the part that confuses almost everyone:
 
-Your normal Gmail password will **not** work — only the app password will.
+| Thing | What it actually is | Where you do it |
+|-------|--------------------|-----------------|
+| **How you log in to Supabase** (GitHub, Google, email…) | Just the developer dashboard login. Nothing to do with sending email. | supabase.com |
+| **Gmail App Password** | A **16-character password** that lets a *program* (your server) send email **as your Gmail account**. | myaccount.google.com |
 
-> Gmail limits: ~500 recipients/day on a free account. For a real launch, switch
-> `SMTP_HOST` to Resend/Brevo/SendGrid and keep the same variables — no code change.
-> Also prefer sending from your domain (e.g. `no-reply@mytutorza.online`) once it
-> is verified with that provider, so it doesn't land in spam.
+So the fact that you sign in to Supabase with GitHub, and that your GitHub uses your
+Gmail address, makes **no difference at all** here. You are not looking for Supabase
+inside Google, and Supabase is not asking for a Gmail password.
 
-### 2.2 How the reset flow works
-1. Learner taps **Forgot password?** on the sign-in screen and enters their email.
+Also: the page you found — **“Linked apps” / “Third-party apps with account access”** —
+is *not* App passwords. Different setting, different purpose. Ignore it.
+
+### 2.1 Does the app send the reset email itself? Yes
+
+1. Learner taps **Forgot password?** and enters their email.
 2. Browser calls `POST /api/auth/request-password-reset`.
-3. Server calls Supabase `auth.admin.generateLink({ type: 'recovery' })`.
-4. Server emails that link from `lexiparcio@gmail.com` (branded HTML).
-5. Learner taps the link → Supabase verifies → redirects to your Site URL with a
-   recovery session → the **Choose a new password** dialog appears.
-6. New password is saved through `supabase.auth.updateUser({ password })`.
+3. Server asks Supabase for a recovery link (`auth.admin.generateLink`).
+4. Server emails that link **from `lexiparcio@gmail.com`** as branded HTML.
+5. Learner taps it → Supabase verifies → back on your site a
+   **“Choose a new password”** dialog appears.
+6. New password is saved via `supabase.auth.updateUser({ password })`.
 
-Safety: the endpoint always answers the same way whether or not the address is
-registered, so it can't be used to discover accounts.
+### 2.2 Option A — Gmail SMTP (what you asked for)
 
-### 2.3 Check it is wired (after deploy)
+**Requirement:** 2-Step Verification must be ON for that Google account. App
+passwords cannot be created without it.
+
+1. Go directly to **https://myaccount.google.com/apppasswords**
+   (path: Google Account → **Security** → *How you sign in to Google* →
+   **2-Step Verification** → scroll down → **App passwords**).
+2. Name it `MyTutorZA` → **Create**.
+3. Google shows **four groups of four letters** (e.g. `abcd efgh ijkl mnop`).
+   Copy all 16 characters, **remove the spaces** → that is `SMTP_PASS`.
+
+**If “App passwords” is not shown at all**, it is one of these three (per Google):
+- your 2-Step Verification uses **security keys only** → add an authenticator app
+  (Google Authenticator) as a second step, then the option appears;
+- you are on a **work/school (Workspace)** account and the admin disabled it;
+- the account has **Advanced Protection** enabled.
+
+**Env values for Option A:**
+
+```
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=465
+SMTP_SECURE=true
+SMTP_USER=lexiparcio@gmail.com
+SMTP_PASS=abcdefghijklmnop        # 16 chars, no spaces
+SMTP_FROM=MyTutorZA <lexiparcio@gmail.com>
+```
+
+Trade-offs: the sender is a `@gmail.com` address, Gmail caps you around 500
+recipients/day, and some mail may land in spam. Fine to launch, not ideal at scale.
+
+### 2.3 Option B — a proper email provider (recommended once you have users)
+
+Same env variables, **no code change** — just swap the four values. Verify the domain
+`mytutorza.online` first (SPF/DKIM), then send from your own address.
+
+| Provider | `SMTP_HOST` | `SMTP_PORT` | `SMTP_USER` | `SMTP_PASS` | Free tier |
+|----------|-------------|-------------|-------------|-------------|-----------|
+| Resend | `smtp.resend.com` | `465` (`SMTP_SECURE=true`) | `resend` | API key (`re_...`) | ~3 000/month |
+| Brevo | `smtp-relay.brevo.com` | `587` (`SMTP_SECURE=false`) | your login email | SMTP key | ~300/day |
+| SendGrid | `smtp.sendgrid.net` | `587` (`SMTP_SECURE=false`) | `apikey` | API key | ~100/day |
+
+Then set `SMTP_FROM="MyTutorZA <no-reply@mytutorza.online>"`.
+
+> **Do not rely on Supabase’s built-in mailer in production.** It only delivers to
+> your own project team members and is limited to roughly **2 messages per hour**.
+
+### 2.4 Test your credentials before deploying
+
+```bash
+cd mytutorza---personalized-south-african-ai-tutor
+npm run mail:test -- lexiparcio@gmail.com
+```
+
+It prints the settings in use (never the password) and sends a real test email.
+
+| Output | Meaning / fix |
+|--------|---------------|
+| `✗ SMTP is not configured` | one of the four env vars is missing |
+| `Invalid login` / `535` / `Username and Password not accepted` | Gmail needs the 16-char **App Password** (2FA on), not your normal password |
+| `ECONNREFUSED` / `ETIMEDOUT` / `ENOTFOUND` | wrong `SMTP_HOST`/`SMTP_PORT`, or outbound port blocked |
+| `certificate` / `self signed` | use `SMTP_PORT=465` with `SMTP_SECURE=true` |
+| `✓ Sent` | delivery works — the same code path sends password resets |
+
+After deploying, confirm the live wiring:
 
 ```bash
 curl -s https://mytutorza.online/api/auth/mail-status
-# -> {"supabaseAuthAvailable":true,"smtpConfigured":true,"senderEmail":"..."}
-
-curl -s -X POST https://mytutorza.online/api/auth/request-password-reset \
-  -H 'Content-Type: application/json' \
-  -d '{"email":"your-own-test@example.com"}'
-# -> {"ok":true,"delivered":true,"message":"Reset link sent."}
 ```
 
-If `smtpConfigured` is `false`, the env vars in step 3 are missing.
-If it returns `supabase_not_configured`, `SUPABASE_SERVICE_ROLE_KEY` is missing.
+Expected: `{"supabaseAuthAvailable":true,"smtpConfigured":true,"senderEmail":"..."}`.
+
+If `smtpConfigured` is `false`, the env vars are missing on Render. If a reset request
+returns `supabase_not_configured`, then `SUPABASE_SERVICE_ROLE_KEY` is missing — that
+key is what generates the recovery link.
 
 ---
 
