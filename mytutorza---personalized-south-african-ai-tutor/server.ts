@@ -1853,9 +1853,24 @@ Return valid JSON conforming strictly to:
 // ---------------------------------------------------------------------
 // 4. USER FEEDBACK / CONTACT US
 // ---------------------------------------------------------------------
-app.post('/api/feedback', (req: Request, res: Response) => {
+app.post('/api/feedback', async (req: Request, res: Response) => {
   const { name, email, subject, message, grade } = req.body;
   console.log(`Feedback received from ${name} (${email}): [${grade}] ${subject} - ${message}`);
+
+  const recipient = process.env.SMTP_USER || 'lexiparcio@gmail.com';
+  try {
+    if (isMailConfigured()) {
+      await sendMail({
+        to: recipient,
+        subject: `[MyTutorZA Contact] ${subject || 'General feedback'} — ${name}`,
+        text: `From: ${name} <${email}>\nGrade: ${grade || 'n/a'}\nSubject: ${subject}\n\n${message}`,
+        html: `<p><strong>From:</strong> ${name} &lt;${email}&gt;</p><p><strong>Grade:</strong> ${grade || 'n/a'}</p><p><strong>Subject:</strong> ${subject}</p><hr/><p>${String(message).replace(/</g, '&lt;').replace(/\n/g, '<br/>')}</p>`,
+      });
+    }
+  } catch (err: any) {
+    console.error('Feedback email failed:', err?.message || err);
+  }
+
   return res.json({
     success: true,
     message:
@@ -1937,7 +1952,122 @@ app.post('/api/billing/checkout', (req: Request, res: Response) => {
 });
 
 // ---------------------------------------------------------------------
-// TERM TESTS / EXAMS PRE-GENERATION (batch job)
+// PAYPAL SUBSCRIPTIONS
+// ---------------------------------------------------------------------
+const PAYPAL_MODE = (process.env.PAYPAL_MODE || 'sandbox').toLowerCase();
+const PAYPAL_BASE = PAYPAL_MODE === 'live' ? 'https://api-m.paypal.com' : 'https://api-m.sandbox.paypal.com';
+
+async function paypalAccessToken(): Promise<string> {
+  const id = process.env.PAYPAL_CLIENT_ID || '';
+  const secret = process.env.PAYPAL_CLIENT_SECRET || '';
+  const basic = Buffer.from(`${id}:${secret}`).toString('base64');
+  const r = await fetch(`${PAYPAL_BASE}/v1/oauth2/token`, {
+    method: 'POST',
+    headers: { Authorization: `Basic ${basic}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'grant_type=client_credentials',
+  });
+  const j: any = await r.json();
+  if (!j.access_token) throw new Error(j.error_description || 'PayPal auth failed');
+  return j.access_token;
+}
+
+const PAYPAL_PLANS: Record<string, { planId: string; label: string; price: string; currency: string; cycle: string }> = {
+  weekly_usd: { planId: process.env.PAYPAL_PLAN_WEEKLY_USD || '', label: '7 days', price: '2.99', currency: 'USD', cycle: 'weekly' },
+  monthly_usd: { planId: process.env.PAYPAL_PLAN_MONTHLY_USD || '', label: '1 month', price: '10.99', currency: 'USD', cycle: 'monthly' },
+  weekly_gbp: { planId: process.env.PAYPAL_PLAN_WEEKLY_GBP || '', label: '7 days', price: '2.50', currency: 'GBP', cycle: 'weekly' },
+  monthly_gbp: { planId: process.env.PAYPAL_PLAN_MONTHLY_GBP || '', label: '1 month', price: '10.50', currency: 'GBP', cycle: 'monthly' },
+};
+
+app.get('/api/billing/paypal/plans', (_req: Request, res: Response) => {
+  return res.json({ configured: !!process.env.PAYPAL_CLIENT_ID, plans: PAYPAL_PLANS });
+});
+
+app.post('/api/billing/paypal/create-subscription', async (req: Request, res: Response) => {
+  const { planKey, userId, returnUrl, cancelUrl } = req.body || {};
+  const plan = PAYPAL_PLANS[planKey];
+  if (!plan || !plan.planId) return res.status(400).json({ error: 'Unknown or unconfigured plan' });
+  try {
+    const token = await paypalAccessToken();
+    const r = await fetch(`${PAYPAL_BASE}/v1/billing/subscriptions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        plan_id: plan.planId,
+        custom_id: userId || '',
+        application_context: {
+          brand_name: 'MyTutorZA',
+          user_action: 'SUBSCRIBE_NOW',
+          return_url: returnUrl || `${process.env.APP_URL || ''}/?paypal=success`,
+          cancel_url: cancelUrl || `${process.env.APP_URL || ''}/?paypal=cancel`,
+        },
+      }),
+    });
+    const j: any = await r.json();
+    const approval = (j.links || []).find((l: any) => l.rel === 'approve');
+    if (!approval) return res.status(500).json({ error: j.message || 'No approval link', raw: j });
+    return res.json({ subscriptionId: j.id, approvalUrl: approval.href, status: j.status });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+app.post('/api/billing/paypal/webhook', async (req: Request, res: Response) => {
+  const webhookId = process.env.PAYPAL_WEBHOOK_ID;
+  const headers = req.headers;
+  try {
+    const token = await paypalAccessToken();
+    const verifyBody = {
+      auth_algo: headers['paypal-auth-algo'],
+      cert_url: headers['paypal-cert-url'],
+      transmission_id: headers['paypal-transmission-id'],
+      transmission_sig: headers['paypal-transmission-sig'],
+      transmission_time: headers['paypal-transmission-time'],
+      webhook_id: webhookId,
+      webhook_event: req.body,
+    };
+    const vr = await fetch(`${PAYPAL_BASE}/v1/notifications/verify-webhook-signature`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(verifyBody),
+    });
+    const vj: any = await vr.json();
+    if (vj.verification_status !== 'SUCCESS') {
+      return res.status(400).json({ error: 'Invalid signature' });
+    }
+  } catch (err: any) {
+    return res.status(400).json({ error: 'Verification failed: ' + (err?.message || err) });
+  }
+
+  const event = req.body || {};
+  const eventType = event.event_type;
+  const resource = event.resource || {};
+  const subId = resource.id;
+  const status = (resource.status || '').toLowerCase();
+  const supa = getServiceSupabaseClient();
+  if (supa && subId) {
+    try {
+      await supa.from('subscriptions').upsert(
+        {
+          provider: 'paypal',
+          provider_subscription_id: subId,
+          plan_id: resource.plan_id || null,
+          status: status || eventType,
+          raw_event: event,
+        },
+        { onConflict: 'provider_subscription_id' }
+      );
+      const uid = resource.custom_id;
+      if (uid) {
+        const active = status === 'active' || status === 'approved';
+        await supa.from('student_profiles').update({ subscription_status: active ? 'active' : status || 'pending' }).eq('id', uid);
+      }
+    } catch (e: any) {
+      console.error('Webhook DB upsert failed:', e?.message || e);
+    }
+  }
+  return res.json({ received: true });
+});
+
 // ---------------------------------------------------------------------
 app.post('/api/termtests/generate', async (req: Request, res: Response) => {
   const { subject, grade, term, examType, durationMinutes } = req.body || {};
