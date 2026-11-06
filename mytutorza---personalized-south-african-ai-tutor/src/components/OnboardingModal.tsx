@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { PSYCHOMETRIC_QUESTIONS, calculateFirmamentFromAnswers } from '../data/psychometrics';
-import { GRADES, REGIONS_BY_COUNTRY, SUBJECTS_BY_COUNTRY, UK_NATIONS, UK_REGIONS } from '../data/curriculumData';
+import { GRADES, US_GRADES, UK_GRADES, REGIONS_BY_COUNTRY, SUBJECTS_BY_COUNTRY, UK_NATIONS, UK_REGIONS } from '../data/curriculumData';
 import { CountryCode, SubjectSlot } from '../types';
 import confetti from 'canvas-confetti';
 import {
@@ -513,7 +513,7 @@ export const OnboardingModal: React.FC = () => {
                     onChange={(e) => setGrade(e.target.value)}
                     className={`${inputClass} pl-9 appearance-none cursor-pointer`}
                   >
-                    {GRADES.map((g) => (
+                    {(country === 'US' ? US_GRADES : country === 'UK' ? UK_GRADES : GRADES).map((g) => (
                       <option key={g} value={g}>
                         {g}
                       </option>

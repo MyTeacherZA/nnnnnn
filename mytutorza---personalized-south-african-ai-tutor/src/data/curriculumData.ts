@@ -85,6 +85,20 @@ export const GRADES = [
   'Grade 12',
 ];
 
+export const US_GRADES = [
+  'Kindergarten',
+  'Grade 1', 'Grade 2', 'Grade 3', 'Grade 4', 'Grade 5',
+  'Grade 6', 'Grade 7', 'Grade 8', 'Grade 9', 'Grade 10',
+  'Grade 11', 'Grade 12',
+];
+
+export const UK_GRADES = [
+  'Year 1', 'Year 2', 'Year 3', 'Year 4', 'Year 5', 'Year 6',
+  'Year 7', 'Year 8', 'Year 9', 'Year 10', 'Year 11',
+  'Year 12', 'Year 13',
+];
+
+
 /** US states + DC — each runs its own academic standards. */
 export const US_STATES: { code: string; name: string }[] = [
   { code: 'AL', name: 'Alabama' },

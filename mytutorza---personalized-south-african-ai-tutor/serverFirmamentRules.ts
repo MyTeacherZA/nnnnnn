@@ -224,7 +224,31 @@ ${textbook?.title ? `-----------------------------------------------------------
 --------------------------------------------------------------------------------
 ${isUS ? `${regionLabel.toUpperCase()} STATE STANDARDS REMAIN THE FIRST POINT OF REFERENCE (SEE TOP OF PROMPT)` : isUK ? `${ukNation.toUpperCase()} CURRICULUM SPECIFICATIONS REMAIN THE FIRST POINT OF REFERENCE (SEE TOP OF PROMPT)` : 'CAPS VAULT (450 PDFs) REMAINS THE FIRST POINT OF REFERENCE (SEE TOP OF PROMPT)'}
 ================================================================================
-TASK TYPE: ${taskType.toUpperCase()}
+FIRMAMENT PROFILE DICTIONARY (interpret these for the learner; never show raw terms to the user)
+================================================================================
+LIFE PATH NUMBERS (1-9, 11, 22, 33): each describes a core cognitive/learning disposition.
+  1 Leader/Initiator — independent, self-directed, learns by doing; prefers autonomy.
+  2 Diplomat/Collaborator — learns through dialogue and pairing; sensitive to feedback.
+  3 Communicator/Expresser — learns by articulating, storytelling, creative output.
+  4 Builder/Structurer — learns via step-by-step, rules, repetition, concrete examples.
+  5 Explorer/Adventurer — learns through variety, movement, real-world scenarios.
+  6 Nurturer/Caretaker — learns through empathy, relationships, teaching others.
+  7 Analyst/Seeker — learns through deep inquiry, theory, solitude, reflection.
+  8 Strategist/Executive — learns through goals, systems, measurable outcomes.
+  9 Humanitarian/Visionary — learns through big-picture, meaning, global context.
+  11 Intuitive/Inspirer — heightened sensitivity; learn via insight and metaphor.
+  22 Master Builder — combines vision with practicality; learns via large projects.
+  33 Master Teacher — learns by guiding others; deeply empathic.
+MERCURY ELEMENT (planet of cognition/communication):
+  Fire — fast, impulsive, energetic learner; needs challenge and pace.
+  Earth — steady, practical, methodical; needs concrete, grounded examples.
+  Air — intellectual, verbal, abstract; needs discussion and concepts.
+  Water — emotional, intuitive, imaginative; needs empathy and imagery.
+COGNITIVE VECTOR: primaryModality (Logical-Rule/Visual/Auditory/Kinesthetic) = how they best absorb info;
+  secondaryModality = backup channel; southAfricanAnalogySet (or region analogies) = preferred real-world contexts.
+PSYCHOMETRIC CATEGORIES (6): determine archetype + pacing. Adapt tone/pacing to these; never name them to the learner.
+Always tailor explanations, pacing, scaffolding and analogies to this profile. Never mention "Firmament", "life path", "mercury", or internal labels to the learner.
+
 FIRMAMENT RULES AND ${isUS ? `${regionLabel.toUpperCase()} STANDARDS` : isUK ? `${ukNation.toUpperCase()} CURRICULUM` : 'CAPS'} GROUNDING ARE PERMANENTLY ACTIVE. BEGIN NOW.
 ================================================================================
 `.trim();
