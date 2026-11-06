@@ -17,10 +17,12 @@ import { OnboardingModal } from './components/OnboardingModal';
 import { SettingsModal } from './components/SettingsModal';
 import { TextbookModal } from './components/TextbookModal';
 import { ContactModal } from './components/ContactModal';
+import { SubscriptionModal } from './components/SubscriptionModal';
 import { PasswordRecovery } from './components/PasswordRecovery';
 
 const AppContent: React.FC = () => {
   const { activeTab, displayMode, hasCompletedOnboarding } = useApp();
+  const [showSub, setShowSub] = React.useState(false);
 
   const isLight = displayMode === 'light';
   const isSilver = displayMode === 'normal';
@@ -129,6 +131,7 @@ const AppContent: React.FC = () => {
       <SettingsModal />
       <TextbookModal />
       <ContactModal />
+      <SubscriptionModal open={showSub} onClose={() => setShowSub(false)} />
     </div>
   );
 };
