@@ -1879,7 +1879,54 @@ app.post('/api/feedback', async (req: Request, res: Response) => {
 });
 
 // ---------------------------------------------------------------------
-// CAPS PDF INGESTION (450 in-app PDFs)
+// LLM TUTOR (firmament-guarded, cost-efficient)
+// ---------------------------------------------------------------------
+app.post('/api/tutor/chat', async (req: Request, res: Response) => {
+  const { firmamentProfile, subject, grade, country, state, nation, language, userQuery, taskType } = req.body || {};
+  if (!userQuery) return res.status(400).json({ error: 'userQuery required' });
+
+  const baseUrl = process.env.LLAMA_BASE_URL || 'https://api.groq.com/openai/v1';
+  const apiKey = process.env.LLAMA_API_KEY || '';
+  const model = process.env.LLAMA_MODEL || 'llama-3.3-70b-versatile';
+  if (!apiKey) return res.status(500).json({ error: 'LLAMA_API_KEY not configured' });
+
+  const systemPrompt = buildFirmamentSystemPrompt({
+    firmamentProfile: firmamentProfile || {},
+    subject: subject || 'Mathematics',
+    grade: grade || 'Grade 12',
+    language: language || 'English',
+    state: state || '',
+    country: country || 'ZA',
+    nation: nation || '',
+    userQuery,
+    taskType: taskType || 'tutoring',
+  });
+
+  try {
+    const r = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userQuery },
+        ],
+        temperature: 0.3,
+        max_tokens: 400,
+        top_p: 0.9,
+      }),
+    });
+    const j: any = await r.json();
+    const content = j?.choices?.[0]?.message?.content || '';
+    if (!content) return res.status(500).json({ error: j?.error?.message || 'No response', raw: j });
+    return res.json({ reply: content, model, usage: j?.usage });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+
 // ---------------------------------------------------------------------
 app.post('/api/caps/ingest', async (req: Request, res: Response) => {
   const client = getServiceSupabaseClient() || getSupabaseServerClient(req);
