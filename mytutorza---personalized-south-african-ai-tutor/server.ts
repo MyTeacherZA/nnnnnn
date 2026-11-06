@@ -1883,7 +1883,9 @@ app.post('/api/feedback', async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------
 app.post('/api/tutor/chat', async (req: Request, res: Response) => {
   const { firmamentProfile, subject, grade, country, state, nation, language, userQuery, taskType } = req.body || {};
-  if (!userQuery) return res.status(400).json({ error: 'userQuery required' });
+  // Cap user input to ~1500 words to control cost.
+  const words = userQuery.split(/\s+/);
+  const cappedQuery = words.length > 1500 ? words.slice(0, 1500).join(' ') + '…' : userQuery;
 
   const baseUrl = process.env.LLAMA_BASE_URL || 'https://api.groq.com/openai/v1';
   const apiKey = process.env.LLAMA_API_KEY || '';
@@ -1898,7 +1900,7 @@ app.post('/api/tutor/chat', async (req: Request, res: Response) => {
     state: state || '',
     country: country || 'ZA',
     nation: nation || '',
-    userQuery,
+    userQuery: cappedQuery,
     taskType: taskType || 'tutoring',
   });
 
@@ -1910,7 +1912,7 @@ app.post('/api/tutor/chat', async (req: Request, res: Response) => {
         model,
         messages: [
           { role: 'system', content: systemPrompt },
-          { role: 'user', content: userQuery },
+          { role: 'user', content: cappedQuery },
         ],
         temperature: 0.3,
         max_tokens: 2000,
