@@ -1913,7 +1913,7 @@ app.post('/api/tutor/chat', async (req: Request, res: Response) => {
           { role: 'user', content: userQuery },
         ],
         temperature: 0.3,
-        max_tokens: 400,
+        max_tokens: 2000,
         top_p: 0.9,
       }),
     });
