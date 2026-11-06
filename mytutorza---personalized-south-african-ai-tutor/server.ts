@@ -1881,8 +1881,9 @@ app.post('/api/feedback', async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------
 // LLM TUTOR (firmament-guarded, cost-efficient)
 // ---------------------------------------------------------------------
-app.post('/api/tutor/chat', async (req: Request, res: Response) => {
-  const { firmamentProfile, subject, grade, country, state, nation, language, userQuery, taskType } = req.body || {};
+app.post('/api/tutoring/chat', async (req: Request, res: Response) => {
+  const { message, firmamentProfile, subject, grade, country, state, nation, language, taskType } = req.body || {};
+  const userQuery = message;
   // Cap user input to ~1500 words to control cost.
   const words = userQuery.split(/\s+/);
   const cappedQuery = words.length > 1500 ? words.slice(0, 1500).join(' ') + '…' : userQuery;
