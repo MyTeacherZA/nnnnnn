@@ -2967,10 +2967,20 @@ app.post('/api/profile/sync', async (req: Request, res: Response) => {
     };
     await supa.from('student_profiles').upsert(row, { onConflict: 'email' });
     if (firmamentProfile) {
-      await supa.from('firmament_profiles').upsert(
-        { user_id: profile.id || null, email: profile.email, profile: firmamentProfile },
-        { onConflict: 'email' }
-      ).catch(() => {});
+      if (profile.id) await supa.from('firmament_profiles').delete().eq('user_id', profile.id);
+      await supa.from('firmament_profiles').insert({
+        user_id: profile.id || null,
+        cognitive_score: firmamentProfile.cognitiveScore || null,
+        processing_speed: firmamentProfile.processingSpeed || null,
+        retention_profile: firmamentProfile.retentionProfile || null,
+        scaffold_needs: firmamentProfile.supportNeeds || null,
+        firmament_rules: firmamentProfile.firmamentRules || [],
+        life_path: firmamentProfile.lifePath || {},
+        mercury: firmamentProfile.mercury || {},
+        cognitive_vector: firmamentProfile.cognitiveVector || {},
+        raw_answers: firmamentProfile.rawAnswers || {},
+        calculated_at: firmamentProfile.calculatedAt || new Date().toISOString(),
+      });
     }
     return res.json({ success: true, persisted: true });
   } catch (err: any) {
