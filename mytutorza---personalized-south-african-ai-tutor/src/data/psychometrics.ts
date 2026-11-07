@@ -18,6 +18,7 @@ export function mercuryElementFromDOB(dob: string): 'Fire' | 'Earth' | 'Air' | '
   }
 }
 
+export interface PsychometricQuestion {
   id: number;
   question: string;
   category: 'LifePath' | 'Processing Engine' | 'Modality' | 'Reasoning';
