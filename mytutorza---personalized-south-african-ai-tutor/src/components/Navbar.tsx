@@ -173,27 +173,6 @@ export const Navbar: React.FC = () => {
               <span className="hidden sm:inline">Formula Sheets</span>
             </button>
 
-            {/* Firmament Profile Badge */}
-            {student?.firmament && (
-              <button
-                onClick={() => setIsOnboardingOpen(true)}
-                className={`hidden md:flex items-center gap-2 px-3 py-1.5 rounded-xl transition-colors ${pillButtonClass}`}
-                title="The Firmament Cognitive Vector"
-              >
-                <div className="w-6 h-6 rounded-lg btn-accent flex items-center justify-center text-[11px] font-black">
-                  {student.firmament.lifePath.number}
-                </div>
-                <div className="text-left">
-                  <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider leading-none">
-                    {student.firmament.mercury.element} Engine
-                  </p>
-                  <p className="text-xs font-extrabold leading-tight">
-                    {student.firmament.lifePath.profile}
-                  </p>
-                </div>
-              </button>
-            )}
-
             {/* Contact Us button */}
             <button
               onClick={() => setIsContactModalOpen(true)}
