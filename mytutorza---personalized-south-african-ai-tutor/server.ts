@@ -2945,6 +2945,54 @@ app.get('*', (req: Request, res: Response) => {
 });
 
 // ---------------------------------------------------------------------
+// PROFILE SYNC (Supabase persistence)
+// ---------------------------------------------------------------------
+app.post('/api/profile/sync', async (req: Request, res: Response) => {
+  const { profile, firmamentProfile } = req.body || {};
+  if (!profile || !profile.email) return res.status(400).json({ error: 'profile.email required' });
+  const supa = getServiceSupabaseClient();
+  if (!supa) return res.json({ success: true, persisted: false, reason: 'no_supabase' });
+  try {
+    const row = {
+      user_id: profile.id || null,
+      full_name: profile.fullName,
+      email: profile.email,
+      phone: profile.phone,
+      date_of_birth: profile.dateOfBirth || null,
+      grade: profile.grade,
+      country: profile.country,
+      nation: profile.nation,
+      state: profile.state,
+      subjects: profile.subjects || [],
+    };
+    await supa.from('student_profiles').upsert(row, { onConflict: 'email' });
+    if (firmamentProfile) {
+      await supa.from('firmament_profiles').upsert(
+        { user_id: profile.id || null, email: profile.email, profile: firmamentProfile },
+        { onConflict: 'email' }
+      ).catch(() => {});
+    }
+    return res.json({ success: true, persisted: true });
+  } catch (err: any) {
+    console.error('Profile sync failed:', err?.message || err);
+    return res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+app.get('/api/profile/get', async (req: Request, res: Response) => {
+  const email = (req.query.email as string) || '';
+  if (!email) return res.status(400).json({ error: 'email required' });
+  const supa = getServiceSupabaseClient();
+  if (!supa) return res.json({ profile: null });
+  try {
+    const { data } = await supa.from('student_profiles').select('*').ilike('email', email).maybeSingle();
+    return res.json({ profile: data || null });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+// ---------------------------------------------------------------------
 // START SERVER
 // Cloud Run requires listening on 0.0.0.0 and the PORT env var (8080).
 // ---------------------------------------------------------------------
