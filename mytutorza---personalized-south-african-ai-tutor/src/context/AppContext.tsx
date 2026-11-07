@@ -279,7 +279,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const logout = () => {
     void logoutAccount();
-    localStorage.removeItem(PROFILE_KEY);
+    // Keep the learner profile so returning sign-in restores their data;
+    // only clear the active session/account pointers.
     setAccount(null);
     setStudent(null);
     setActiveSubjectId('');
