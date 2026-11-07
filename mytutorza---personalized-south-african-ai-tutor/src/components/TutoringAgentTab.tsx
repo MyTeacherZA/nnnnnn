@@ -357,65 +357,6 @@ export const TutoringAgentTab: React.FC = () => {
 
       {/* Right Cognitive Vector & Case Sidebar (3 cols) */}
       <div className="lg:col-span-4 xl:col-span-3 space-y-4">
-        {/* Cognitive Vector Card */}
-        <div className="metallic-card rounded-2xl p-4 sm:p-5 border border-slate-700/60 shadow-xl space-y-4">
-          <div className="flex items-center gap-2">
-            <BrainCircuit className="w-5 h-5 text-sky-400" />
-            <h3 className="font-black text-sm text-white tracking-wide uppercase">
-              The Firmament Engine
-            </h3>
-          </div>
-
-          <div className="space-y-3 text-xs">
-            <div className="bg-slate-900/80 p-3 rounded-xl border border-slate-800">
-              <span className="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">
-                Cognitive Score & Foundation
-              </span>
-              <p className="font-extrabold text-white text-sm">
-                {student?.firmament.cognitiveScore || `${student?.firmament.lifePath.profile}-${student?.firmament.cognitiveVector.primaryModality}`}
-              </p>
-              <p className="text-slate-400 mt-1 text-[11px] leading-tight">
-                {student?.firmament.lifePath.description}
-              </p>
-            </div>
-
-            <div className="bg-slate-900/80 p-3 rounded-xl border border-slate-800">
-              <span className="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">
-                Processing Speed & Rhythm
-              </span>
-              <p className="font-extrabold text-amber-300 text-sm">
-                {student?.firmament.processingSpeed || `${student?.firmament.mercury.element} Element`}
-              </p>
-              <p className="text-slate-400 mt-1 text-[11px]">
-                {student?.firmament.mercury.pacingStyle}
-              </p>
-            </div>
-
-            <div className="bg-slate-900/80 p-3 rounded-xl border border-slate-800">
-              <span className="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">
-                Retention & Modality Scaffolding
-              </span>
-              <p className="font-extrabold text-emerald-300 text-sm">
-                {student?.firmament.cognitiveVector.primaryModality} Modality
-              </p>
-              <p className="text-slate-400 mt-1 text-[11px]">
-                {student?.firmament.retentionProfile || 'Scaffolded spaced retrieval'}
-              </p>
-            </div>
-
-            {/* Guardrail Lock Indicator */}
-            <div className="p-2.5 rounded-xl bg-cyan-950/30 border border-cyan-500/30 text-[11px] text-cyan-200">
-              <span className="font-bold flex items-center gap-1.5 mb-0.5">
-                <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
-                Firmament Guardrails Locked
-              </span>
-              <span className="text-slate-400 text-[10px] block leading-tight">
-                Model forced to adapt to active profile. Selective CAPS documents injected into active context window.
-              </span>
-            </div>
-          </div>
-        </div>
-
         {/* Diagnostic Case Card */}
         <div className="metallic-card rounded-2xl p-4 sm:p-5 border border-slate-700/60 shadow-xl">
           <div className="flex items-center gap-2 mb-3">
