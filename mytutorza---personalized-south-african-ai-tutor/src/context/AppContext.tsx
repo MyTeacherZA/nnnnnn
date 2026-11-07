@@ -195,7 +195,55 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const result = await loginAccount(input);
     if (result.ok && result.account) {
       setAccount(result.account);
-      const stored = readStoredProfile();
+      let stored = readStoredProfile();
+      if (!stored || stored.email.toLowerCase() !== result.account.email.toLowerCase()) {
+        // Try server
+        try {
+          const r = await fetch(`/api/profile/get?email=${encodeURIComponent(result.account.email)}`);
+          const j = await r.json();
+          if (j.profile) {
+            const p = j.profile;
+            const subjects = Array.isArray(p.subjects) ? p.subjects.map((s: any, i: number) => ({
+              id: s.id || `sub-${i}`,
+              name: s.name,
+              category: s.category || 'Mathematics',
+              previousTermMark: s.previousTermMark ?? 50,
+              previousTermName: s.previousTermName || 'Term 1',
+              tutoringLanguage: s.tutoringLanguage || 'English',
+              textbook: s.textbook,
+            })) : [];
+            const profile: StudentProfile = {
+              id: p.user_id || result.account.id,
+              fullName: p.full_name || result.account.fullName,
+              email: p.email,
+              phone: p.phone || result.account.phone,
+              dateOfBirth: p.date_of_birth || '',
+              grade: p.grade || 'Grade 9',
+              country: (p.country as any) || 'US',
+              nation: p.nation,
+              state: p.state || '',
+              avatar: DEFAULT_AVATAR,
+              firmament: (j.firmament && (j.firmament as any).life_path) ? {
+                cognitiveScore: j.firmament.cognitive_score,
+                processingSpeed: j.firmament.processing_speed,
+                retentionProfile: j.firmament.retention_profile,
+                supportNeeds: j.firmament.scaffold_needs,
+                firmamentRules: j.firmament.firmament_rules || [],
+                lifePath: j.firmament.life_path || {},
+                mercury: j.firmament.mercury || {},
+                cognitiveVector: j.firmament.cognitive_vector || {},
+                rawAnswers: j.firmament.raw_answers || {},
+                calculatedAt: j.firmament.calculated_at,
+              } as any : (stored?.firmament || {} as any),
+              subjects,
+              onboardingComplete: true,
+              createdAt: p.created_at || new Date().toISOString(),
+            };
+            stored = profile;
+            localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
+          }
+        } catch {}
+      }
       if (stored && stored.email.toLowerCase() === result.account.email.toLowerCase()) {
         setStudent(stored);
         setIsOnboardingOpen(false);

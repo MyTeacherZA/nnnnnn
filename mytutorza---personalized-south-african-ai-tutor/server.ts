@@ -2995,8 +2995,13 @@ app.get('/api/profile/get', async (req: Request, res: Response) => {
   const supa = getServiceSupabaseClient();
   if (!supa) return res.json({ profile: null });
   try {
-    const { data } = await supa.from('student_profiles').select('*').ilike('email', email).maybeSingle();
-    return res.json({ profile: data || null });
+    const { data: profile } = await supa.from('student_profiles').select('*').ilike('email', email).maybeSingle();
+    let firmament = null;
+    if (profile?.id) {
+      const { data: f } = await supa.from('firmament_profiles').select('*').eq('user_id', profile.id).maybeSingle();
+      firmament = f;
+    }
+    return res.json({ profile: profile || null, firmament: firmament || null });
   } catch (err: any) {
     return res.status(500).json({ error: err?.message || String(err) });
   }
