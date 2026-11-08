@@ -107,7 +107,7 @@ function syncProfileToServer(profile: StudentProfile, answers?: Record<number, s
           country: profile.country,
           nation: profile.nation,
           state: profile.state,
-          subjects: profile.subjects.map((s) => ({ name: s.name, category: s.category })),
+          subjects: profile.subjects,
         },
         firmamentProfile: profile.firmament,
         answers: answers || profile.firmament?.rawAnswers || {},
@@ -224,19 +224,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               state: p.state || '',
               avatar: DEFAULT_AVATAR,
               firmament: (j.firmament && (j.firmament as any).life_path) ? {
+                studentName: p.full_name || result.account.fullName,
+                calculatedAt: j.firmament.calculated_at,
+                grade: p.grade || 'Grade 9',
+                country: (p.country as any) || 'US',
                 cognitiveScore: j.firmament.cognitive_score,
                 processingSpeed: j.firmament.processing_speed,
                 retentionProfile: j.firmament.retention_profile,
                 supportNeeds: j.firmament.scaffold_needs,
+                scaffoldNeeds: j.firmament.scaffold_needs,
                 firmamentRules: j.firmament.firmament_rules || [],
+                dimensions: j.firmament.cognitive_vector?.dimensions,
+                cognitiveProfileGuide: j.firmament.cognitive_vector?.cognitiveProfileGuide,
                 lifePath: j.firmament.life_path || {},
                 mercury: j.firmament.mercury || {},
                 cognitiveVector: j.firmament.cognitive_vector || {},
                 rawAnswers: j.firmament.raw_answers || {},
-                calculatedAt: j.firmament.calculated_at,
               } as any : (stored?.firmament || {} as any),
               subjects,
-              onboardingComplete: true,
+              // Only treat the server profile as complete when a Firmament
+              // snapshot exists — otherwise the LLM would have no rules to bind.
+              onboardingComplete: Boolean(j.firmament && (j.firmament as any).life_path),
               createdAt: p.created_at || new Date().toISOString(),
             };
             stored = profile;

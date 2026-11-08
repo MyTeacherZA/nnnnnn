@@ -2469,6 +2469,126 @@ app.get('/api/notes', async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------
 // PROFILE & FIRMAMENT SYNC
 // ---------------------------------------------------------------------
+
+/** Map the client Firmament profile into the `firmament_profiles` column shape. */
+function firmamentRowFromProfile(firmamentProfile: any, answers: any) {
+  return {
+    cognitive_score: firmamentProfile?.cognitiveScore || null,
+    processing_speed: firmamentProfile?.processingSpeed || null,
+    retention_profile: firmamentProfile?.retentionProfile || null,
+    // The client has used both names across versions.
+    scaffold_needs: firmamentProfile?.scaffoldNeeds || firmamentProfile?.supportNeeds || null,
+    firmament_rules: Array.isArray(firmamentProfile?.firmamentRules)
+      ? firmamentProfile.firmamentRules
+      : [],
+    life_path: firmamentProfile?.lifePath || {},
+    mercury: firmamentProfile?.mercury || {},
+    // cognitive_vector is JSONB, so the 8-dimension vector and the LLM guide
+    // travel with it without requiring a schema migration.
+    cognitive_vector: {
+      ...(firmamentProfile?.cognitiveVector || {}),
+      dimensions: firmamentProfile?.dimensions || undefined,
+      cognitiveProfileGuide: firmamentProfile?.cognitiveProfileGuide || undefined,
+    },
+    raw_answers: answers || firmamentProfile?.rawAnswers || {},
+    calculated_at: firmamentProfile?.calculatedAt || new Date().toISOString(),
+  };
+}
+
+/**
+ * Upsert the learner row (by email) and replace the Firmament snapshot.
+ * Shared by POST /api/profile/sync and POST /api/profile/get.
+ */
+async function persistProfileBundle(
+  client: any,
+  profileInput: any,
+  firmamentProfile: any,
+  answers: any
+): Promise<{ profileId: string | null; profileError?: string; firmamentSaved: boolean }> {
+  const safeProfile = profileInput || {};
+  const email = String(safeProfile.email || '').trim().toLowerCase();
+
+  // Only the profile fields we own are written; trial fields are preserved on
+  // update so re-saving a profile never restarts a learner's trial.
+  const profileFields: Record<string, any> = {
+    full_name: safeProfile.fullName || safeProfile.full_name || null,
+    email: email || null,
+    phone: safeProfile.phone || null,
+    date_of_birth: safeProfile.dateOfBirth || safeProfile.date_of_birth || null,
+    grade: safeProfile.grade || null,
+    country: safeProfile.country || null,
+    nation: safeProfile.nation || null,
+    state: safeProfile.state || null,
+    subjects: safeProfile.subjects || [],
+  };
+
+  let profileId: string | null = null;
+  let profileError: string | undefined;
+
+  if (email) {
+    const existing = await client
+      .from('student_profiles')
+      .select('id')
+      .ilike('email', email)
+      .limit(1)
+      .maybeSingle();
+
+    if (existing.data?.id) {
+      profileId = existing.data.id;
+      const upd = await client
+        .from('student_profiles')
+        .update({ ...profileFields, updated_at: new Date().toISOString() })
+        .eq('id', profileId);
+      if (upd.error) profileError = upd.error.message;
+    }
+  }
+
+  if (!profileId) {
+    const ins = await client
+      .from('student_profiles')
+      .insert([
+        {
+          ...profileFields,
+          trial_started_at: new Date().toISOString(),
+          trial_expires_at: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
+          subscription_status: 'trial',
+        },
+      ])
+      .select('id')
+      .single();
+    if (ins.error) profileError = ins.error.message;
+    profileId = ins.data?.id ?? null;
+  }
+
+  if (!profileId) return { profileId: null, profileError, firmamentSaved: false };
+
+  // Only replace the Firmament snapshot when a new one is supplied. A
+  // pre-quiz save (subjects/grade/DOB) must never wipe an existing profile.
+  let firmamentSaved = false;
+  if (firmamentProfile) {
+    await client.from('firmament_onboarding_answers').delete().eq('user_id', profileId);
+    await client.from('firmament_profiles').delete().eq('user_id', profileId);
+
+    if (answers && Object.keys(answers).length) {
+      const rows = Object.entries(answers).map(([qid, label]) => ({
+        user_id: profileId,
+        question_id: Number(qid),
+        answer_label: String(label),
+      }));
+      const { error: ansErr } = await client.from('firmament_onboarding_answers').insert(rows);
+      if (ansErr) console.warn('Onboarding answers insert error:', ansErr.message);
+    }
+
+    const { error: firmErr } = await client
+      .from('firmament_profiles')
+      .insert([{ user_id: profileId, ...firmamentRowFromProfile(firmamentProfile, answers) }]);
+    if (!firmErr) firmamentSaved = true;
+    else console.warn('Firmament profile insert error:', firmErr.message);
+  }
+
+  return { profileId, profileError, firmamentSaved };
+}
+
 app.post('/api/profile/sync', async (req: Request, res: Response) => {
   const { profile, firmamentProfile, answers } = req.body || {};
   const client = getServiceSupabaseClient() || getSupabaseServerClient(req);
@@ -2477,118 +2597,144 @@ app.post('/api/profile/sync', async (req: Request, res: Response) => {
   }
 
   try {
-    const safeProfile = profile || {};
-    const email = String(safeProfile.email || '').trim().toLowerCase();
-
-    // Only the profile fields we own are written; trial fields are preserved on
-    // update so re-saving a profile never restarts a learner's trial.
-    const profileFields: Record<string, any> = {
-      full_name: safeProfile.fullName || safeProfile.full_name || null,
-      email: email || null,
-      phone: safeProfile.phone || null,
-      date_of_birth: safeProfile.dateOfBirth || safeProfile.date_of_birth || null,
-      grade: safeProfile.grade || null,
-      country: safeProfile.country || null,
-      nation: safeProfile.nation || null,
-      state: safeProfile.state || null,
-      subjects: safeProfile.subjects || null,
-    };
-
-    // Upsert by email so repeated saves never create duplicate learner rows.
-    let profileId: string | null = null;
-    let profileErr: any = null;
-
-    if (email) {
-      const existing = await client
-        .from('student_profiles')
-        .select('id')
-        .eq('email', email)
-        .limit(1)
-        .maybeSingle();
-
-      if (existing.data?.id) {
-        profileId = existing.data.id;
-        const upd = await client
-          .from('student_profiles')
-          .update({ ...profileFields, updated_at: new Date().toISOString() })
-          .eq('id', profileId);
-        profileErr = upd.error;
-      }
+    const saved = await persistProfileBundle(
+      client,
+      profile,
+      firmamentProfile,
+      answers || firmamentProfile?.rawAnswers
+    );
+    if (!saved.profileId) {
+      return res.json({
+        success: true,
+        synced: false,
+        error: saved.profileError || 'profile not saved',
+      });
     }
-
-    if (!profileId) {
-      const ins = await client
-        .from('student_profiles')
-        .insert([
-          {
-            ...profileFields,
-            trial_started_at: new Date().toISOString(),
-            trial_expires_at: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
-            subscription_status: 'trial',
-          },
-        ])
-        .select('id')
-        .single();
-      profileErr = ins.error;
-      profileId = ins.data?.id ?? null;
-    }
-
-    if (profileErr) {
-      console.warn('Profile upsert error:', profileErr.message);
-    }
-
-    // Replace the previous firmament snapshot instead of appending to it.
-    if (profileId) {
-      await client.from('firmament_onboarding_answers').delete().eq('user_id', profileId);
-      await client.from('firmament_profiles').delete().eq('user_id', profileId);
-    }
-
-
-    let answersSynced = false;
-    if (answers && profileId) {
-      const rows = Object.entries(answers).map(([qid, label]) => ({
-        user_id: profileId,
-        question_id: Number(qid),
-        answer_label: String(label),
-      }));
-      const { error: ansErr } = await client
-        .from('firmament_onboarding_answers')
-        .insert(rows);
-      if (!ansErr) answersSynced = true;
-      else console.warn('Onboarding answers insert error:', ansErr.message);
-    }
-
-    let firmamentSynced = false;
-    const { error: firmErr } = await client.from('firmament_profiles').insert([
-      {
-        user_id: profileId,
-        cognitive_score: firmamentProfile?.cognitiveScore || null,
-        processing_speed: firmamentProfile?.processingSpeed || null,
-        retention_profile: firmamentProfile?.retentionProfile || null,
-        scaffold_needs: firmamentProfile?.scaffoldNeeds || null,
-        firmament_rules: Array.isArray(firmamentProfile?.firmamentRules)
-          ? firmamentProfile.firmamentRules
-          : [],
-        life_path: firmamentProfile?.lifePath || null,
-        mercury: firmamentProfile?.mercury || null,
-        cognitive_vector: firmamentProfile?.cognitiveVector || null,
-        raw_answers: answers || firmamentProfile?.rawAnswers || {},
-        calculated_at: firmamentProfile?.calculatedAt || new Date().toISOString(),
-      },
-    ]);
-    if (!firmErr) firmamentSynced = true;
-    else console.warn('Firmament profile insert error:', firmErr.message);
-
     return res.json({
       success: true,
       synced: true,
-      syncedProfile: !!profileId,
-      syncedAnswers: answersSynced,
-      syncedFirmament: firmamentSynced,
+      syncedProfile: true,
+      syncedFirmament: saved.firmamentSaved,
     });
   } catch (err: any) {
     console.warn('Profile sync failed:', err?.message || err);
     return res.json({ success: true, synced: false, error: err?.message || String(err) });
+  }
+});
+
+// ---------------------------------------------------------------------
+// FIRMAMENT PROFILE — save on POST, read on GET
+// ---------------------------------------------------------------------
+/**
+ * POST /api/profile/get
+ * Accepts the calculated Firmament profile (plus the learner profile/answers),
+ * stores it in Supabase (`student_profiles` + `firmament_profiles`) and returns
+ * the persisted record.
+ *
+ * Payload: { email, profile?: {...}, firmament: {...}, answers?: { [qid]: label } }
+ * The legacy shape `{ action: 'save', profile, email }` is also accepted.
+ */
+app.post('/api/profile/get', async (req: Request, res: Response) => {
+  const body = req.body || {};
+  const profileInput = body.profile || {};
+  const firmamentProfile =
+    body.firmament || body.firmamentProfile || body.profile?.firmament || null;
+  const answers =
+    body.answers || body.onboardingAnswers || firmamentProfile?.rawAnswers || {};
+  const email = String(body.email || profileInput.email || '').trim().toLowerCase();
+
+  if (!email) {
+    return res.status(400).json({ success: false, error: 'email required' });
+  }
+
+  const client = getServiceSupabaseClient() || getSupabaseServerClient(req);
+  if (!client) {
+    return res.json({
+      success: true,
+      persisted: false,
+      reason: 'supabase_not_configured',
+      profile: null,
+      firmament: null,
+    });
+  }
+
+  try {
+    const saved = await persistProfileBundle(
+      client,
+      { ...profileInput, email },
+      firmamentProfile,
+      answers
+    );
+
+    if (!saved.profileId) {
+      return res
+        .status(500)
+        .json({ success: false, error: saved.profileError || 'could not save profile' });
+    }
+
+    const { data: profile } = await client
+      .from('student_profiles')
+      .select('*')
+      .eq('id', saved.profileId)
+      .maybeSingle();
+    const { data: firmament } = await client
+      .from('firmament_profiles')
+      .select('*')
+      .eq('user_id', saved.profileId)
+      .maybeSingle();
+
+    return res.json({
+      success: true,
+      persisted: true,
+      profileId: saved.profileId,
+      profile: profile || null,
+      firmament: firmament || null,
+      firmamentSaved: saved.firmamentSaved,
+    });
+  } catch (err: any) {
+    console.error('Profile save failed:', err?.message || err);
+    return res.status(500).json({ success: false, error: err?.message || String(err) });
+  }
+});
+
+/**
+ * GET /api/profile/get?email=... (or ?id=...)
+ * Returns the stored learner profile and Firmament snapshot.
+ */
+app.get('/api/profile/get', async (req: Request, res: Response) => {
+  const email = String((req.query.email as string) || '').trim().toLowerCase();
+  const id = String((req.query.id as string) || '').trim();
+  if (!email && !id) return res.status(400).json({ error: 'email or id required' });
+
+  const client = getServiceSupabaseClient() || getSupabaseServerClient(req);
+  if (!client) {
+    return res.json({
+      success: false,
+      profile: null,
+      firmament: null,
+      reason: 'supabase_not_configured',
+    });
+  }
+
+  try {
+    let query = client.from('student_profiles').select('*');
+    query = id ? query.eq('id', id) : query.ilike('email', email);
+    const { data: profile, error } = await query.maybeSingle();
+    if (error) console.warn('Profile read error:', error.message);
+
+    let firmament = null;
+    if (profile?.id) {
+      const { data: f } = await client
+        .from('firmament_profiles')
+        .select('*')
+        .eq('user_id', profile.id)
+        .maybeSingle();
+      firmament = f || null;
+    }
+
+    return res.json({ success: true, profile: profile || null, firmament });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || String(err) });
   }
 });
 
@@ -2945,67 +3091,10 @@ app.get('*', (req: Request, res: Response) => {
 });
 
 // ---------------------------------------------------------------------
-// PROFILE SYNC (Supabase persistence)
+// NOTE: profile routes (/api/profile/sync and /api/profile/get) are
+// registered earlier in this file, BEFORE the SPA catch-all. Registering a
+// GET route after `app.get('*')` makes it unreachable.
 // ---------------------------------------------------------------------
-app.post('/api/profile/sync', async (req: Request, res: Response) => {
-  const { profile, firmamentProfile } = req.body || {};
-  if (!profile || !profile.email) return res.status(400).json({ error: 'profile.email required' });
-  const supa = getServiceSupabaseClient();
-  if (!supa) return res.json({ success: true, persisted: false, reason: 'no_supabase' });
-  try {
-    const row = {
-      user_id: profile.id || null,
-      full_name: profile.fullName,
-      email: profile.email,
-      phone: profile.phone,
-      date_of_birth: profile.dateOfBirth || null,
-      grade: profile.grade,
-      country: profile.country,
-      nation: profile.nation,
-      state: profile.state,
-      subjects: profile.subjects || [],
-    };
-    await supa.from('student_profiles').upsert(row, { onConflict: 'email' });
-    if (firmamentProfile) {
-      if (profile.id) await supa.from('firmament_profiles').delete().eq('user_id', profile.id);
-      await supa.from('firmament_profiles').insert({
-        user_id: profile.id || null,
-        cognitive_score: firmamentProfile.cognitiveScore || null,
-        processing_speed: firmamentProfile.processingSpeed || null,
-        retention_profile: firmamentProfile.retentionProfile || null,
-        scaffold_needs: firmamentProfile.supportNeeds || null,
-        firmament_rules: firmamentProfile.firmamentRules || [],
-        life_path: firmamentProfile.lifePath || {},
-        mercury: firmamentProfile.mercury || {},
-        cognitive_vector: firmamentProfile.cognitiveVector || {},
-        raw_answers: firmamentProfile.rawAnswers || {},
-        calculated_at: firmamentProfile.calculatedAt || new Date().toISOString(),
-      });
-    }
-    return res.json({ success: true, persisted: true });
-  } catch (err: any) {
-    console.error('Profile sync failed:', err?.message || err);
-    return res.status(500).json({ error: err?.message || String(err) });
-  }
-});
-
-app.get('/api/profile/get', async (req: Request, res: Response) => {
-  const email = (req.query.email as string) || '';
-  if (!email) return res.status(400).json({ error: 'email required' });
-  const supa = getServiceSupabaseClient();
-  if (!supa) return res.json({ profile: null });
-  try {
-    const { data: profile } = await supa.from('student_profiles').select('*').ilike('email', email).maybeSingle();
-    let firmament = null;
-    if (profile?.id) {
-      const { data: f } = await supa.from('firmament_profiles').select('*').eq('user_id', profile.id).maybeSingle();
-      firmament = f;
-    }
-    return res.json({ profile: profile || null, firmament: firmament || null });
-  } catch (err: any) {
-    return res.status(500).json({ error: err?.message || String(err) });
-  }
-});
 
 // ---------------------------------------------------------------------
 // START SERVER

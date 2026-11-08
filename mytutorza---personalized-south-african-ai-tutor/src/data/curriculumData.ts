@@ -1,4 +1,4 @@
-import { FormulaItem, OfficialLanguage, ThemeAccentConfig } from '../types';
+import { CountryCode, FormulaItem, OfficialLanguage, ThemeAccentConfig } from '../types';
 
 export const OFFICIAL_LANGUAGES: OfficialLanguage[] = [
   'English',
@@ -74,6 +74,7 @@ export const THEME_ACCENTS: ThemeAccentConfig[] = [
 ];
 
 export const GRADES = [
+  'Grade 3',
   'Grade 4',
   'Grade 5',
   'Grade 6',
@@ -786,3 +787,209 @@ export const SUBJECTS_BY_COUNTRY = {
   UK: UK_ALL_SUBJECTS,
   ZA: DBE_ALL_SUBJECTS,
 };
+
+// ============================================================================
+// SUBJECT-PER-GRADE CATALOGUE
+// ----------------------------------------------------------------------------
+// The onboarding wizard must only offer subjects that are actually examinable
+// in the learner's grade, and should steer them towards the recommended core.
+// `SUBJECTS_BY_GRADE` is the CAPS/DBE (South Africa) pathway — the heart of
+// this app — because US/UK curricula are broad enough to offer the full list
+// at every grade.
+// ============================================================================
+
+export type SubjectCategory =
+  | 'Language'
+  | 'Mathematics'
+  | 'Sciences'
+  | 'Commerce'
+  | 'Humanities'
+  | 'Services'
+  | 'Technology';
+
+const CAPS_LANGUAGES = [
+  'English Home Language',
+  'English First Additional Language',
+  'isiZulu Home Language',
+  'isiZulu First Additional Language',
+  'isiXhosa Home Language',
+  'isiXhosa First Additional Language',
+  'Afrikaans Huistaal',
+  'Afrikaans Eerste Addisionele Taal',
+  'Sepedi Home Language',
+  'Sepedi First Additional Language',
+  'Setswana Home Language',
+  'Setswana First Additional Language',
+  'Sesotho Home Language',
+  'Sesotho First Additional Language',
+  'Xitsonga Home Language',
+  'siSwati Home Language',
+  'Tshivenda Home Language',
+  'isiNdebele Home Language',
+];
+
+const CAPS_CORE = ['Mathematics (Pure)', 'Mathematical Literacy', 'Life Orientation'];
+
+/** Grades 4–9 take Mathematics (not Mathematical Literacy yet). */
+const CAPS_JUNIOR_CORE = ['Mathematics (Pure)', 'Life Orientation'];
+
+const CAPS_SENIOR_PHASE_EXTRA = [
+  'Life Sciences (Biology)',
+  'Physical Sciences (Physics & Chemistry)',
+  'Geography',
+  'History',
+  'Religion Studies',
+];
+
+const CAPS_FET_EXTRA = [
+  'Technical Sciences',
+  'Agricultural Sciences',
+  'Agricultural Management Practices',
+  'Accounting',
+  'Business Studies',
+  'Economics',
+  'Information Technology (IT)',
+  'Computer Applications Technology (CAT)',
+  'Engineering Graphics & Design (EGD)',
+  'Tourism',
+  'Consumer Studies',
+  'Hospitality Studies',
+];
+
+/**
+ * Subjects a learner can take in each CAPS/DBE grade.
+ * Grades 4–9 are limited to the subjects offered in the Intermediate/Senior
+ * phase; Grades 10–12 expose the full FET band catalogue.
+ */
+export const SUBJECTS_BY_GRADE: Record<string, string[]> = {
+  'Grade 3': [...CAPS_LANGUAGES, ...CAPS_JUNIOR_CORE, 'Life Sciences (Biology)', 'Geography', 'History'],
+  'Grade 4': [...CAPS_LANGUAGES, ...CAPS_JUNIOR_CORE, 'Life Sciences (Biology)', 'Geography', 'History'],
+  'Grade 5': [...CAPS_LANGUAGES, ...CAPS_JUNIOR_CORE, 'Life Sciences (Biology)', 'Geography', 'History'],
+  'Grade 6': [...CAPS_LANGUAGES, ...CAPS_JUNIOR_CORE, 'Life Sciences (Biology)', 'Geography', 'History'],
+  'Grade 7': [...CAPS_LANGUAGES, ...CAPS_JUNIOR_CORE, ...CAPS_SENIOR_PHASE_EXTRA],
+  'Grade 8': [...CAPS_LANGUAGES, ...CAPS_JUNIOR_CORE, ...CAPS_SENIOR_PHASE_EXTRA],
+  'Grade 9': [...CAPS_LANGUAGES, ...CAPS_JUNIOR_CORE, ...CAPS_SENIOR_PHASE_EXTRA],
+  'Grade 10': [...CAPS_LANGUAGES, ...CAPS_CORE, ...CAPS_SENIOR_PHASE_EXTRA, ...CAPS_FET_EXTRA],
+  'Grade 11': [...CAPS_LANGUAGES, ...CAPS_CORE, ...CAPS_SENIOR_PHASE_EXTRA, ...CAPS_FET_EXTRA],
+  'Grade 12': [...CAPS_LANGUAGES, ...CAPS_CORE, ...CAPS_SENIOR_PHASE_EXTRA, ...CAPS_FET_EXTRA],
+};
+
+/**
+ * The subjects we recommend a learner picks in each grade. Shown first in the
+ * wizard and used by "Select recommended subjects".
+ */
+export const RECOMMENDED_SUBJECTS_PER_GRADE: Record<string, string[]> = {
+  'Grade 3': ['English Home Language', 'English First Additional Language', 'Mathematics (Pure)', 'Life Orientation'],
+  'Grade 4': ['English Home Language', 'English First Additional Language', 'Mathematics (Pure)', 'Life Orientation'],
+  'Grade 5': ['English Home Language', 'English First Additional Language', 'Mathematics (Pure)', 'Life Orientation'],
+  'Grade 6': ['English Home Language', 'English First Additional Language', 'Mathematics (Pure)', 'Life Orientation'],
+  'Grade 7': [
+    'English Home Language',
+    'English First Additional Language',
+    'Mathematics (Pure)',
+    'Life Orientation',
+    'Life Sciences (Biology)',
+    'Geography',
+  ],
+  'Grade 8': [
+    'English Home Language',
+    'English First Additional Language',
+    'Mathematics (Pure)',
+    'Life Orientation',
+    'Life Sciences (Biology)',
+    'Geography',
+  ],
+  'Grade 9': [
+    'English Home Language',
+    'English First Additional Language',
+    'Mathematics (Pure)',
+    'Life Orientation',
+    'Life Sciences (Biology)',
+    'Geography',
+  ],
+  'Grade 10': [
+    'English Home Language',
+    'English First Additional Language',
+    'Mathematics (Pure)',
+    'Life Orientation',
+    'Physical Sciences (Physics & Chemistry)',
+    'Life Sciences (Biology)',
+    'Geography',
+  ],
+  'Grade 11': [
+    'English Home Language',
+    'English First Additional Language',
+    'Mathematics (Pure)',
+    'Life Orientation',
+    'Physical Sciences (Physics & Chemistry)',
+    'Life Sciences (Biology)',
+    'Geography',
+  ],
+  'Grade 12': [
+    'English Home Language',
+    'English First Additional Language',
+    'Mathematics (Pure)',
+    'Life Orientation',
+    'Physical Sciences (Physics & Chemistry)',
+    'Life Sciences (Biology)',
+    'Geography',
+  ],
+};
+
+type GradeBand = 'elementary' | 'middle' | 'high';
+
+const RECOMMENDED_SUBJECTS_BY_BAND: Record<'US' | 'UK', Record<GradeBand, string[]>> = {
+  US: {
+    elementary: ['English Language Arts', 'Mathematics', 'Biology', 'US History'],
+    middle: ['English Language Arts', 'Mathematics', 'Biology', 'US History', 'Geography'],
+    high: ['English Language Arts', 'Algebra I', 'Biology', 'US History', 'Spanish'],
+  },
+  UK: {
+    elementary: ['English Language', 'Mathematics', 'Combined Science', 'History'],
+    middle: ['English Language', 'Mathematics', 'Combined Science', 'History', 'Geography'],
+    high: ['English Language', 'Mathematics', 'Biology', 'Chemistry', 'Physics', 'History'],
+  },
+};
+
+function gradeNumber(grade: string): number {
+  const match = grade.match(/(\d+)/);
+  return match ? Number(match[1]) : 0;
+}
+
+/** Classify a grade into a broad phase so recommendations stay sensible. */
+export function getGradeBand(country: CountryCode, grade: string): GradeBand {
+  const n = gradeNumber(grade);
+  if (country === 'UK') return n <= 6 ? 'elementary' : n <= 9 ? 'middle' : 'high';
+  if (country === 'US') return /^k/i.test(grade) || n <= 5 ? 'elementary' : n <= 8 ? 'middle' : 'high';
+  return n <= 7 ? 'elementary' : n <= 9 ? 'middle' : 'high';
+}
+
+export interface GradeSubjectOption {
+  name: string;
+  category: SubjectCategory;
+  recommended: boolean;
+}
+
+/**
+ * Grade-aware subject list used by the onboarding wizard.
+ * Recommended subjects come first; everything else keeps catalogue order.
+ */
+export function getSubjectsForGrade(country: CountryCode, grade: string): GradeSubjectOption[] {
+  const catalog = SUBJECTS_BY_COUNTRY[country] || SUBJECTS_BY_COUNTRY.ZA;
+  const allowed = country === 'ZA' ? SUBJECTS_BY_GRADE[grade] : undefined;
+  const recommended =
+    country === 'ZA'
+      ? RECOMMENDED_SUBJECTS_PER_GRADE[grade] || []
+      : RECOMMENDED_SUBJECTS_BY_BAND[country][getGradeBand(country, grade)] || [];
+
+  const filtered = allowed && allowed.length ? catalog.filter((s) => allowed.includes(s.name)) : catalog;
+  const recommendedSet = new Set(recommended);
+
+  return filtered
+    .map((s) => ({
+      name: s.name,
+      category: s.category as SubjectCategory,
+      recommended: recommendedSet.has(s.name),
+    }))
+    .sort((a, b) => Number(b.recommended) - Number(a.recommended));
+}

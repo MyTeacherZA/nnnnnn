@@ -329,7 +329,7 @@ export const StudyRoadmapTab: React.FC = () => {
               </div>
             </div>
             <p className="text-xs text-slate-500 leading-snug line-clamp-2">
-              {student?.firmament?.cognitiveVector?.southAfricanAnalogySet || 'South African engineering & systemic models'}
+              {student?.firmament?.cognitiveVector?.analogySet || student?.firmament?.cognitiveVector?.southAfricanAnalogySet || 'Everyday real-world contexts'}
             </p>
           </div>
 

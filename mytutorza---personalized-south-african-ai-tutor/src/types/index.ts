@@ -51,19 +51,52 @@ export interface ThemeAccentConfig {
   secondaryColor: string;
 }
 
+export interface DimensionResult {
+  key: string;
+  /** Raw dimension score: -3 … +3 (3 forced-choice items per dimension). */
+  score: number;
+  /** 0–100 strength of the positive pole. */
+  percentage: number;
+  label: string;
+  poleLabel: string;
+  description: string;
+  aiInstruction: string;
+}
+
+export interface CognitiveProfileGuide {
+  element: 'Fire' | 'Earth' | 'Air' | 'Water';
+  title: string;
+  archetype: string;
+  description: string;
+  strengths: string[];
+  learningAbility: string;
+  digestion: string;
+  logic: string;
+  recollection: string;
+  retention: string;
+  aiInstruction: string;
+}
+
 export interface FirmamentProfile {
   studentName: string;
   calculatedAt: string;
+  /** Grade whose 24-item question set produced this profile. */
+  grade?: string;
+  country?: CountryCode;
   rawAnswers?: Record<number, string>;
   onboardingAnswers?: Record<number, string>;
   cognitiveScore: string;
   processingSpeed: string;
   retentionProfile: string;
   supportNeeds: string;
+  scaffoldNeeds?: string;
   firmamentRules: string[];
+  dimensions?: Record<string, DimensionResult>;
+  cognitiveProfileGuide?: CognitiveProfileGuide;
   lifePath: {
     number: number;
     profile: string;
+    archetype?: string;
     description: string;
     strengths: string[];
   };
@@ -72,12 +105,22 @@ export interface FirmamentProfile {
     pacingStyle: string;
     temperament: string;
     learningRhythm: string;
+    dobElement?: 'Fire' | 'Earth' | 'Air' | 'Water';
   };
   cognitiveVector: {
     primaryModality: 'Visual' | 'Auditory' | 'Kinesthetic' | 'Logical-Rule';
     secondaryModality: string;
+    analogySet?: string;
     southAfricanAnalogySet: string;
     reasoningScaffold: string;
+    fieldStructure?: string;
+    conceptualTempo?: string;
+    loadCapacity?: string;
+    pathway?: string;
+    selfEfficacy?: string;
+    egoThreat?: string;
+    presentation?: string;
+    masteryOrientation?: string;
   };
 }
 

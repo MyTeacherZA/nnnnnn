@@ -8,6 +8,11 @@
  */
 
 import { getSelectiveCapsCurriculumContext } from './serverCapsVault';
+import {
+  COGNITIVE_PROFILE_GUIDE,
+  DIMENSION_GUIDE,
+  type MercuryElement,
+} from './src/data/psychometrics';
 
 /** Curriculum + qualifications body per UK nation (curricula are nation-based). */
 export const UK_FRAMEWORKS: Record<string, { curriculum: string; qualifications: string }> = {
@@ -42,14 +47,14 @@ export function buildFirmamentSystemPrompt(params: FirmamentPromptParams): strin
     previousMark = 50,
     language = 'English',
     state = '',
-    country = 'ZA',
+    country = 'US',
     nation = '',
     textbook,
     userQuery = '',
     taskType = 'tutoring',
   } = params;
 
-  const countryCode = (country || 'ZA').toUpperCase();
+  const countryCode = (country || 'US').toUpperCase();
   const isUS = countryCode === 'US';
   const isUK = countryCode === 'UK' || countryCode === 'GB';
   const ukNation = isUK ? nation || 'England' : '';
@@ -67,11 +72,13 @@ export function buildFirmamentSystemPrompt(params: FirmamentPromptParams): strin
 
   const archetype = firmamentProfile?.lifePath?.archetype || 'The Architect';
   const lifePathNumber = firmamentProfile?.lifePath?.number || 7;
-  const mercuryElement = firmamentProfile?.mercury?.element || 'Air';
+  const mercuryElement = (firmamentProfile?.mercury?.element || 'Air') as MercuryElement;
+  const elementGuide = COGNITIVE_PROFILE_GUIDE[mercuryElement] || COGNITIVE_PROFILE_GUIDE.Air;
   const pacingStyle = firmamentProfile?.mercury?.pacingStyle || 'Conceptual & Socratic Dialogue';
   const primaryModality = firmamentProfile?.cognitiveVector?.primaryModality || 'Logical-Rule';
   const secondaryModality = firmamentProfile?.cognitiveVector?.secondaryModality || 'Visual';
   const rawAnalogySet =
+    firmamentProfile?.cognitiveVector?.analogySet ||
     firmamentProfile?.cognitiveVector?.southAfricanAnalogySet ||
     'Gautrain systems, Eskom circuits, Drakensberg gradients';
   const analogySet = isUS
@@ -93,6 +100,24 @@ export function buildFirmamentSystemPrompt(params: FirmamentPromptParams): strin
   const processingSpeed = firmamentProfile?.processingSpeed || 'Dynamic';
   const retentionProfile = firmamentProfile?.retentionProfile || 'Scaffolded Spaced Retrieval';
   const scaffoldNeeds = firmamentProfile?.scaffoldNeeds || 'Needs scaffolded Socratic guidance, prerequisite checks, and zero direct answer disclosure.';
+
+  // 8-dimension vector. Falls back to the universal dimension dictionary when
+  // an older snapshot has no measured vector.
+  const measuredDimensions: Record<string, any> =
+    firmamentProfile?.dimensions || firmamentProfile?.cognitiveVector?.dimensions || {};
+  const dimensionInstructionBlock = (
+    Object.keys(DIMENSION_GUIDE) as Array<keyof typeof DIMENSION_GUIDE>
+  )
+    .map((key) => {
+      const dimGuide = DIMENSION_GUIDE[key];
+      const measured = measuredDimensions[key];
+      const pole = measured
+        ? `${measured.poleLabel} (${measured.description})`
+        : `${dimGuide.positive.label} — not yet measured`;
+      const instruction = measured?.aiInstruction || dimGuide.positive.aiInstruction;
+      return `- ${dimGuide.label}: ${pole}\n  REQUIRED AI BEHAVIOUR: ${instruction}`;
+    })
+    .join('\n');
 
   const mark = Number(previousMark) || 50;
   const diagnosticScaffold = mark < 60 ? 'REMEDIAL_SCAFFOLD' : 'ADVANCEMENT_SCAFFOLD';
@@ -134,7 +159,7 @@ ${isUS ? `(Grade-level standards and state assessment expectations for ${grade} 
 ${rawCurriculum}
 
 --------------------------------------------------------------------------------
-LAYER 0: THE 16 FIRMAMENT DIAGNOSTIC ANSWERS (CAPTURED IN SUPABASE)
+LAYER 0: THE 24 FIRMAMENT DIAGNOSTIC ANSWERS (CAPTURED IN SUPABASE)
 --------------------------------------------------------------------------------
 ${JSON.stringify(rawAnswers)}
 
@@ -170,6 +195,21 @@ LAYER 1: THE FOUNDATION — ACTIVE USER COGNITIVE PROFILE (RAW JSON)
     "diagnosticTier": "${diagnosticScaffold}"
   }
 }
+
+--------------------------------------------------------------------------------
+LAYER 1.5: COGNITIVE PROFILE GUIDE — ${elementGuide.title}
+--------------------------------------------------------------------------------
+LEARNING ABILITY: ${elementGuide.learningAbility}
+DIGESTION: ${elementGuide.digestion}
+LOGIC FORMATION: ${elementGuide.logic}
+RECOLLECTION TRIGGERS: ${elementGuide.recollection}
+RETENTION: ${elementGuide.retention}
+AI ENGINE INSTRUCTION: ${elementGuide.aiInstruction}
+
+--------------------------------------------------------------------------------
+LAYER 1.6: THE 8-DIMENSION COGNITIVE VECTOR (MEASURED BY THE 24-ITEM DIAGNOSTIC)
+--------------------------------------------------------------------------------
+${dimensionInstructionBlock}
 
 --------------------------------------------------------------------------------
 LAYER 2: THE 5 PERMANENT, NON-NEGOTIABLE LAWS OF THE FIRMAMENT (GUARDRAILS)
@@ -245,8 +285,13 @@ MERCURY ELEMENT (planet of cognition/communication):
   Air — intellectual, verbal, abstract; needs discussion and concepts.
   Water — emotional, intuitive, imaginative; needs empathy and imagery.
 COGNITIVE VECTOR: primaryModality (Logical-Rule/Visual/Auditory/Kinesthetic) = how they best absorb info;
-  secondaryModality = backup channel; southAfricanAnalogySet (or region analogies) = preferred real-world contexts.
-PSYCHOMETRIC CATEGORIES (6): determine archetype + pacing. Adapt tone/pacing to these; never name them to the learner.
+  secondaryModality = backup channel; analogySet (or region analogies) = preferred real-world contexts.
+COGNITIVE PROFILE GUIDE: the Mercury element maps to a learning-ability/digestion/logic/recollection/retention
+  instruction set. Apply it literally; it overrides any generic teaching style.
+PSYCHOMETRIC DIMENSIONS (8): Field Independence/Dependence, Conceptual Tempo, Cognitive Load Capacity,
+  Perceptual Processing Pathway, Academic Self-Efficacy, Ego Threat, Defensive Self-Presentation,
+  Learned Helplessness/Mastery Orientation. Adapt tone, pacing, chunk size and feedback to these; never name
+  them to the learner.
 Always tailor explanations, pacing, scaffolding and analogies to this profile. Never mention "Firmament", "life path", "mercury", or internal labels to the learner.
 
 FIRMAMENT RULES AND ${isUS ? `${regionLabel.toUpperCase()} STANDARDS` : isUK ? `${ukNation.toUpperCase()} CURRICULUM` : 'CAPS'} GROUNDING ARE PERMANENTLY ACTIVE. BEGIN NOW.
@@ -259,7 +304,7 @@ FIRMAMENT RULES AND ${isUS ? `${regionLabel.toUpperCase()} STANDARDS` : isUK ? `
  * Used by the Study / Exam / Roadmap generators so they stop hard-coding CAPS.
  */
 export function describeCurriculum(country?: string, state?: string, nation?: string) {
-  const code = (country || 'ZA').toUpperCase();
+  const code = (country || 'US').toUpperCase();
   const isUS = code === 'US';
   const isUK = code === 'UK' || code === 'GB';
   const ukNation = isUK ? nation || 'England' : '';

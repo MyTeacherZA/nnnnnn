@@ -1,7 +1,13 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
-import { PSYCHOMETRIC_QUESTIONS, calculateFirmamentFromAnswers } from '../data/psychometrics';
-import { GRADES, US_GRADES, UK_GRADES, REGIONS_BY_COUNTRY, SUBJECTS_BY_COUNTRY, UK_NATIONS, UK_REGIONS } from '../data/curriculumData';
+import {
+  getPsychometricQuestions,
+  calculateFirmamentFromAnswers,
+  normalizeGrade,
+  type AnswerMap,
+  type AnswerValue,
+} from '../data/psychometrics';
+import { GRADES, US_GRADES, UK_GRADES, REGIONS_BY_COUNTRY, UK_NATIONS, UK_REGIONS, getSubjectsForGrade } from '../data/curriculumData';
 import { CountryCode, SubjectSlot } from '../types';
 import confetti from 'canvas-confetti';
 import {
@@ -65,11 +71,13 @@ export const OnboardingModal: React.FC = () => {
   const [region, setRegion] = useState(student?.state || '');
 
   // Subjects
-  const [selectedSubjects, setSelectedSubjects] = useState<string[]>([]);
+  const [selectedSubjects, setSelectedSubjects] = useState<string[]>(student?.subjects?.map((s) => s.name) || []);
 
-  // Diagnostic
+  // Diagnostic — only the 24 items for this learner's grade are ever used.
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
-  const [answers, setAnswers] = useState<Record<number, string>>(student?.firmament?.rawAnswers || {});
+  const [answers, setAnswers] = useState<AnswerMap>(
+    (student?.firmament?.rawAnswers as AnswerMap) || {}
+  );
   const [calculatedResult, setCalculatedResult] = useState<any>(student?.firmament || null);
 
   if (!isOnboardingOpen) return null;
@@ -85,7 +93,11 @@ export const OnboardingModal: React.FC = () => {
       : country === 'UK'
       ? 'your county, council area or district'
       : 'your province';
-  const subjectCatalog = SUBJECTS_BY_COUNTRY[country] || [];
+  const subjectOptions = getSubjectsForGrade(country, grade);
+  const recommendedSubjects = subjectOptions.filter((s) => s.recommended);
+  const subjectCatalog = subjectOptions;
+  // Exactly 24 forced-choice items for this learner's grade (Grades 3–12).
+  const questions = getPsychometricQuestions(grade);
 
   const submitAccount = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -166,7 +178,7 @@ export const OnboardingModal: React.FC = () => {
     );
   };
 
-  const submitDetails = (e: React.FormEvent) => {
+  const submitDetails = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     if (!detailsValid) {
@@ -177,15 +189,32 @@ export const OnboardingModal: React.FC = () => {
       setError(`Please choose your grade and your ${regionNoun}.`);
       return;
     }
+    // Store DOB + grade + country/region immediately, before the quiz.
+    setBusy(true);
+    try {
+      await saveProfileBasics();
+    } finally {
+      setBusy(false);
+    }
     setStep('subjects');
   };
 
-  const submitSubjects = () => {
+  const submitSubjects = async () => {
     setError(null);
     if (selectedSubjects.length === 0) {
       setError('Select at least one subject you take at school.');
       return;
     }
+    // Persist grade + DOB + country + subjects BEFORE the diagnostic, so the
+    // learner row exists in the database even if they pause the quiz.
+    setBusy(true);
+    try {
+      await saveProfileBasics();
+    } finally {
+      setBusy(false);
+    }
+    setAnswers({});
+    setCurrentQuestionIndex(0);
     setStep('quiz');
   };
 
@@ -205,32 +234,104 @@ export const OnboardingModal: React.FC = () => {
     });
   };
 
-  const handleSelectAnswer = (questionId: number, label: string) => {
-    const updated = { ...answers, [questionId]: label };
+  /** Canonical learner profile payload shared by the pre-quiz and post-quiz saves. */
+  const buildProfilePayload = () => ({
+    fullName: fullName || account?.fullName || 'Learner',
+    email: email || account?.email || '',
+    phone,
+    dateOfBirth: dob,
+    grade,
+    country,
+    nation: country === 'UK' ? nation : undefined,
+    state: region,
+    subjects: buildSubjectSlots(),
+  });
+
+  /** POST the learner basics (no Firmament yet) as soon as subjects are chosen. */
+  const saveProfileBasics = async (): Promise<boolean> => {
+    const learnerEmail = email || account?.email || '';
+    if (!learnerEmail) return false;
+    try {
+      const response = await fetch('/api/profile/get', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: learnerEmail,
+          profile: buildProfilePayload(),
+          firmament: null,
+        }),
+      });
+      const result = await response.json().catch(() => ({}));
+      return Boolean(result?.success || result?.persisted);
+    } catch (err) {
+      console.warn('Learner basics save failed:', err);
+      return false;
+    }
+  };
+
+  /**
+   * Persist the calculated Firmament profile to Supabase through the API.
+   * This is the data foundation the LLM is bound to (DB -> LLM -> Firmament rules).
+   */
+  const saveFirmamentProfile = async (
+    profile: any,
+    rawAnswers: AnswerMap
+  ): Promise<boolean> => {
+    const learnerEmail = email || account?.email || '';
+    if (!learnerEmail) return false;
+    try {
+      const response = await fetch('/api/profile/get', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: learnerEmail,
+          profile: buildProfilePayload(),
+          firmament: profile,
+          answers: rawAnswers,
+        }),
+      });
+      const result = await response.json().catch(() => ({}));
+      return Boolean(result?.success || result?.persisted);
+    } catch (err) {
+      console.warn('Firmament profile save failed:', err);
+      return false;
+    }
+  };
+
+  const handleSelectAnswer = async (questionId: number, value: AnswerValue) => {
+    setError(null);
+    const updated: AnswerMap = { ...answers, [questionId]: value };
     setAnswers(updated);
 
-    if (currentQuestionIndex < PSYCHOMETRIC_QUESTIONS.length - 1) {
+    if (currentQuestionIndex < questions.length - 1) {
       setCurrentQuestionIndex((prev) => prev + 1);
       return;
     }
 
-    const profile = calculateFirmamentFromAnswers(fullName || account?.fullName || 'Learner', dob, updated);
-    // Send profile to API
-try {
-  const response = await fetch('/api/profile/get', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'save', profile, email })
-  };
-  const result = await response.json();
-  if (result.success) {
-    console.log('Profile saved to Supabase');
-  }
-} catch (error) {
-  console.error('Failed to save profile:', error);
-}
-
+    const profile = calculateFirmamentFromAnswers(
+      fullName || account?.fullName || 'Learner',
+      dob,
+      grade,
+      updated,
+      country
+    );
     const profileWithAnswers = { ...profile, rawAnswers: updated, onboardingAnswers: updated };
+
+    // Save immediately after calculation so the Firmament profile exists in
+    // the database before the learner reaches the LLM-powered workspace.
+    setBusy(true);
+    let saved = false;
+    try {
+      saved = await saveFirmamentProfile(profileWithAnswers, updated);
+    } finally {
+      setBusy(false);
+    }
+    setNotice(
+      saved
+        ? 'Firmament profile saved — your life path, Mercury engine and cognitive vector are now stored.'
+        : 'Firmament calculated. We will retry saving your profile when you enter your workspace.'
+    );
+
     setCalculatedResult(profileWithAnswers);
     setStep('result');
     try {
@@ -243,7 +344,11 @@ try {
   const finishOnboarding = async () => {
     if (!calculatedResult) return;
     setBusy(true);
+    setError(null);
     try {
+      // Guarantee the Firmament snapshot (with the final subject slots) is
+      // persisted before entering the workspace.
+      await saveFirmamentProfile(calculatedResult, answers);
       await completeOnboarding({
         fullName: fullName || account?.fullName || 'Learner',
         email: email || account?.email || '',
@@ -262,8 +367,8 @@ try {
     }
   };
 
-  const currentQ = PSYCHOMETRIC_QUESTIONS[currentQuestionIndex];
-  const progressPercent = Math.round(((currentQuestionIndex + 1) / PSYCHOMETRIC_QUESTIONS.length) * 100);
+  const currentQ = questions[currentQuestionIndex];
+  const progressPercent = Math.round(((currentQuestionIndex + 1) / questions.length) * 100);
   const stepIndex = ['account', 'details', 'subjects', 'quiz', 'result'].indexOf(step);
 
   // Returning learner viewing their profile/firmament summary.
@@ -284,7 +389,7 @@ try {
             </div>
             <h2 className="text-2xl font-black text-white">Your Firmament Profile</h2>
             <p className="text-xs text-slate-400 mt-1">
-              {student?.fullName} · {student?.grade} · {student?.state} ({student?.country === 'US' ? 'United States' : 'South Africa'})
+              {student?.fullName} · {student?.grade} · {student?.state} ({student?.country === 'US' ? 'United States' : student?.country === 'UK' ? 'United Kingdom' : 'South Africa'})
             </p>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-left">
@@ -361,7 +466,7 @@ try {
                 {isLoginMode ? 'Welcome back' : 'Create your learner account'}
               </h2>
               <p className="text-xs text-slate-400 mt-1">
-                Personalized tutoring grounded in your state's standards, your grade and your Firmament profile.
+                Personalized tutoring grounded in your local curriculum, your grade and your Firmament profile.
               </p>
             </div>
 
@@ -525,7 +630,13 @@ try {
                   <GraduationCap className="w-4 h-4 text-slate-500 absolute left-3 top-3 pointer-events-none" />
                   <select
                     value={grade}
-                    onChange={(e) => setGrade(e.target.value)}
+                    onChange={(e) => {
+                      setGrade(e.target.value);
+                      setSelectedSubjects([]);
+                      // A different grade means a different 24-item set.
+                      setAnswers({});
+                      setCurrentQuestionIndex(0);
+                    }}
                     className={`${inputClass} pl-9 appearance-none cursor-pointer`}
                   >
                     {(country === 'US' ? US_GRADES : country === 'UK' ? UK_GRADES : GRADES).map((g) => (
@@ -547,6 +658,13 @@ try {
                     const next = e.target.value as CountryCode;
                     setCountry(next);
                     setRegion('');
+                    setSelectedSubjects([]);
+                    setAnswers({});
+                    setCurrentQuestionIndex(0);
+                    const nextGrades = next === 'UK' ? UK_GRADES : next === 'US' ? US_GRADES : GRADES;
+                    setGrade((prev) =>
+                      nextGrades.includes(prev) ? prev : next === 'UK' ? 'Year 9' : 'Grade 9'
+                    );
                     if (next === 'UK') setNation('England');
                   }}
                   className={`${inputClass} appearance-none cursor-pointer`}
@@ -610,9 +728,11 @@ try {
               </button>
               <button
                 type="submit"
-                className="flex-1 btn-accent py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2 cursor-pointer"
+                disabled={busy}
+                className="flex-1 btn-accent py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-60 cursor-pointer"
               >
-                Continue <ArrowRight className="w-4 h-4" />
+                {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" />}
+                Continue
               </button>
             </div>
           </form>
@@ -622,10 +742,22 @@ try {
         {step === 'subjects' && (
           <div className="space-y-4">
             <div>
-              <h2 className="text-xl font-black text-white">Which subjects do you take?</h2>
+              <h2 className="text-xl font-black text-white">Which subjects do you take in {grade}?</h2>
               <p className="text-xs text-slate-400 mt-1">
-                Pick every subject on your school timetable ({selectedSubjects.length} selected).
+                Showing {subjectCatalog.length} subjects offered in {grade}
+                {country === 'ZA' ? ' (CAPS/DBE)' : country === 'UK' ? ' (UK curriculum)' : ' (state standards)'} ·{' '}
+                {selectedSubjects.length} selected.
               </p>
+              {recommendedSubjects.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedSubjects(recommendedSubjects.map((s) => s.name))}
+                  className="mt-2 inline-flex items-center gap-1.5 text-[11px] font-bold text-cyan-300 hover:text-cyan-200 bg-cyan-950/40 border border-cyan-800 rounded-lg px-2.5 py-1.5 cursor-pointer"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  Use recommended {grade} subjects ({recommendedSubjects.length})
+                </button>
+              )}
             </div>
 
             <div className="max-h-72 overflow-y-auto pr-1 grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -643,7 +775,14 @@ try {
                     }`}
                   >
                     <BookOpen className={`w-4 h-4 shrink-0 mt-0.5 ${active ? 'text-sky-300' : 'text-slate-500'}`} />
-                    <span className="text-xs leading-snug flex-1">{s.name}</span>
+                    <span className="text-xs leading-snug flex-1">
+                      {s.name}
+                      {s.recommended && (
+                        <span className="ml-1.5 inline-block align-middle text-[9px] font-bold uppercase tracking-wide text-cyan-300 bg-cyan-950/60 border border-cyan-800 rounded px-1 py-0.5">
+                          Recommended
+                        </span>
+                      )}
+                    </span>
                     {active && <CheckCircle2 className="w-4 h-4 text-sky-400 shrink-0" />}
                   </button>
                 );
@@ -661,15 +800,17 @@ try {
               <button
                 type="button"
                 onClick={submitSubjects}
-                className="flex-1 btn-accent py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2 cursor-pointer"
+                disabled={busy}
+                className="flex-1 btn-accent py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-60 cursor-pointer"
               >
-                Continue to diagnostic <ArrowRight className="w-4 h-4" />
+                {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" />}
+                Continue to diagnostic
               </button>
             </div>
           </div>
         )}
 
-        {/* STEP 4: THE 16 PSYCHOMETRIC QUESTIONS */}
+        {/* STEP 4: THE 24 FORCED-CHOICE FIRMAMENT ITEMS */}
         {step === 'quiz' && currentQ && (
           <div className="space-y-5">
             <div>
@@ -681,36 +822,55 @@ try {
                   </span>
                 </div>
                 <span className="text-xs font-bold text-slate-400">
-                  {currentQuestionIndex + 1} / {PSYCHOMETRIC_QUESTIONS.length}
+                  {currentQuestionIndex + 1} / {questions.length}
                 </span>
               </div>
               <div className="w-full h-2 rounded-full bg-slate-800 overflow-hidden">
                 <div className="h-full accent-gradient-bg transition-all duration-300" style={{ width: `${progressPercent}%` }} />
               </div>
+              <p className="text-[10px] text-slate-500 mt-2 leading-snug">
+                {questions.length} questions for {normalizeGrade(grade)} → Life Path, Mercury element and
+                cognitive vector. There are no right answers; pick the statement that fits you better.
+              </p>
             </div>
 
             <div className="bg-slate-900/90 rounded-2xl p-5 border border-slate-800">
               <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded bg-sky-950 text-sky-300 border border-sky-800 tracking-wider">
-                {currentQ.category}
+                This vs. That
               </span>
-              <h3 className="text-base sm:text-lg font-bold text-white mt-2 leading-relaxed">{currentQ.question}</h3>
+              <h3 className="text-base sm:text-lg font-bold text-white mt-2 leading-relaxed">
+                Which one sounds more like you?
+              </h3>
+              <p className="text-[11px] text-slate-400 mt-1">
+                Choose the statement that fits you better — not the one that sounds “better”.
+              </p>
             </div>
 
             <div className="space-y-2.5">
-              {currentQ.options.map((opt) => {
-                const isSelected = answers[currentQ.id] === opt.label;
+              {(currentQ.id % 2 === 0
+                ? [
+                    { value: 'that' as const, text: currentQ.that },
+                    { value: 'this' as const, text: currentQ.this },
+                  ]
+                : [
+                    { value: 'this' as const, text: currentQ.this },
+                    { value: 'that' as const, text: currentQ.that },
+                  ]
+              ).map((opt, index) => {
+                const isSelected = answers[currentQ.id] === opt.value;
                 return (
                   <button
-                    key={opt.label}
-                    onClick={() => handleSelectAnswer(currentQ.id, opt.label)}
-                    className={`w-full p-4 rounded-xl border text-left flex items-start gap-3 transition-all cursor-pointer ${
+                    key={opt.value}
+                    onClick={() => handleSelectAnswer(currentQ.id, opt.value)}
+                    disabled={busy}
+                    className={`w-full p-4 rounded-xl border text-left flex items-start gap-3 transition-all cursor-pointer disabled:opacity-60 ${
                       isSelected
                         ? 'bg-sky-500/20 border-sky-500 text-white shadow-lg'
                         : 'bg-slate-900/80 border-slate-800 hover:border-slate-700 text-slate-200'
                     }`}
                   >
                     <span className={`w-6 h-6 rounded-lg flex items-center justify-center text-xs font-black shrink-0 ${isSelected ? 'btn-accent text-white' : 'bg-slate-800 text-slate-400'}`}>
-                      {opt.label}
+                      {index === 0 ? 'A' : 'B'}
                     </span>
                     <span className="text-xs sm:text-sm leading-snug">{opt.text}</span>
                   </button>
@@ -744,20 +904,44 @@ try {
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-left">
               <div className="bg-slate-900/90 p-4 rounded-2xl border border-slate-800">
-                <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1">Archetype</span>
-                <p className="text-sm font-extrabold text-white">
-                  {calculatedResult.lifePath?.profile} ({calculatedResult.cognitiveVector?.primaryModality})
-                </p>
+                <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1">Life Path</span>
+                <p className="text-sm font-extrabold text-white">{calculatedResult.lifePath?.profile}</p>
+                <p className="text-[10px] text-slate-400 mt-0.5">Path {calculatedResult.lifePath?.number}</p>
               </div>
               <div className="bg-slate-900/90 p-4 rounded-2xl border border-slate-800">
-                <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1">Engine</span>
+                <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1">Mercury Engine</span>
                 <p className="text-sm font-extrabold text-amber-300">{calculatedResult.mercury?.element} element</p>
+                <p className="text-[10px] text-slate-400 mt-0.5">{calculatedResult.mercury?.pacingStyle}</p>
               </div>
               <div className="bg-slate-900/90 p-4 rounded-2xl border border-slate-800">
-                <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1">Retention</span>
-                <p className="text-sm font-extrabold text-emerald-300">{calculatedResult.processingSpeed}</p>
+                <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1">Cognitive Vector</span>
+                <p className="text-sm font-extrabold text-cyan-300">
+                  {calculatedResult.cognitiveVector?.primaryModality}
+                </p>
+                <p className="text-[10px] text-slate-400 mt-0.5">{calculatedResult.processingSpeed}</p>
               </div>
             </div>
+
+            {calculatedResult.dimensions && (
+              <div className="bg-slate-900/60 p-3.5 rounded-2xl border border-slate-800 text-left">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-2">
+                  8-dimension cognitive profile
+                </span>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5">
+                  {Object.values<any>(calculatedResult.dimensions).map((dim) => (
+                    <div key={dim.key} className="flex items-center justify-between gap-2 text-[11px]">
+                      <span className="text-slate-500 truncate">{dim.label}</span>
+                      <span
+                        className={`font-bold shrink-0 ${dim.score >= 0 ? 'text-cyan-300' : 'text-amber-300'}`}
+                        title={dim.description}
+                      >
+                        {dim.poleLabel}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div className="bg-slate-900/60 p-3.5 rounded-2xl border border-cyan-500/30 text-left flex items-start gap-3">
               <Sparkles className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />

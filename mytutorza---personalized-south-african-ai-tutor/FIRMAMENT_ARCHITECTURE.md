@@ -6,41 +6,79 @@ This document details the production architecture, cognitive psychometrics, sele
 
 ## 1. The User Profile: The Foundation
 
-Every learner completes a 16-question psychometric onboarding quiz based on **The Firmament Framework**. Rather than storing vague user settings, this generates a strict, structured JSON data foundation that travels with every AI request:
+Every learner completes a **24-item forced-choice diagnostic** ("This vs. That") based on **The Firmament Framework**. The learner only ever sees the 24 items written for their own grade (Grades 3–12), so the scenarios match their developmental stage. Each of the **8 cognitive dimensions** contributes exactly 3 items, which makes every dimension decisive (3–0 or 2–1) and impossible to tie. Rather than storing vague user settings, this generates a strict, structured JSON data foundation that travels with every AI request:
 
 ```json
 {
   "studentName": "Lunga Manana",
-  "cognitiveScore": "The Architect-Logical-Rule (High Processing Speed, Axiomatic Retention)",
-  "processingSpeed": "High Processing Speed",
-  "retentionProfile": "Axiomatic Retention (High conceptual retention with formal rule adherence)",
-  "scaffoldNeeds": "Needs scaffolded Socratic guidance: explicit prerequisite checks, step-by-step discovery, and zero direct answer disclosure.",
+  "grade": "Grade 9",
+  "country": "US",
+  "cognitiveScore": "The Analyst-Visual (Air engine, Methodical / Precision-Paced)",
+  "processingSpeed": "Methodical / Precision-Paced",
+  "retentionProfile": "Visual Retention (high spatial retention; needs visual schematics and diagrams)",
+  "scaffoldNeeds": "Provide a step-by-step template and one worked example before asking the learner to continue. …",
   "firmamentRules": [
     "LAW 1: Blindness to Generic Tutoring — Never use generic chat openings or boilerplate textbook regurgitations.",
     "LAW 2: Socratic Zero-Direct-Answer Law — Never solve problems for the student or reveal the final answer.",
     "LAW 3: Cognitive Modality Alignment — Frame all analogies using the student's sensory modality.",
-    "LAW 4: Real-Time CAPS DBE Syllabus Grounding — Quote exact DBE Annual Teaching Plan milestones.",
-    "LAW 5: Cultural & Linguistic Resonance — Native South African analogies and 11 official languages."
+    "LAW 4: Curriculum Grounding — Quote the active state standard, UK specification point or CAPS ATP.",
+    "LAW 5: Affective Safety — Respect ego-threat and defensive-presentation poles; never shame an error."
   ],
+  "dimensions": {
+    "structure": { "score": 2, "poleLabel": "Internal Structural Synthesis" },
+    "tempo": { "score": -1, "poleLabel": "Deliberate Precision" },
+    "load": { "score": 3, "poleLabel": "High Working Memory Bandwidth" },
+    "pathway": { "score": 2, "poleLabel": "Visual-Spatial & Kinesthetic" },
+    "efficacy": { "score": 1, "poleLabel": "High Academic Self-Efficacy" },
+    "egoThreat": { "score": -2, "poleLabel": "High Ego Threat" },
+    "presentation": { "score": -1, "poleLabel": "Defensive Self-Presentation" },
+    "helplessness": { "score": 3, "poleLabel": "Persistent Mastery Orientation" }
+  },
   "lifePath": {
     "number": 7,
-    "archetype": "The Architect",
-    "description": "Driven by analytical inquiry and structural mastery.",
-    "strengths": ["Conceptual clarity", "Goal orientation", "Adaptive problem-solving"]
+    "archetype": "The Analyst",
+    "description": "Learns through deep inquiry, theory and solitary reflection.",
+    "strengths": ["Analysis", "Depth", "Pattern recognition"]
   },
-  "mercuryEngine": {
+  "mercury": {
     "element": "Air",
-    "pacingStyle": "Conceptual & Socratic Dialogue",
+    "pacingStyle": "Conceptual & Guided Discovery Dialogue",
     "learningRhythm": "Interactive conversational inquiry and conceptual synthesis"
   },
   "cognitiveVector": {
-    "primaryModality": "Logical-Rule",
-    "secondaryModality": "Visual",
-    "southAfricanAnalogySet": "Gautrain ticketing systems, Eskom circuits, Drakensberg gradients",
-    "reasoningScaffold": "Deductive Axiom → Intermediate Substitution → Final Statement with DBE Reason"
+    "primaryModality": "Visual",
+    "secondaryModality": "Kinesthetic",
+    "analogySet": "weather maps, sports formations, dollar-and-cents charts",
+    "reasoningScaffold": "Mental Picture → Spatial Diagram → Mathematical Expression"
+  },
+  "cognitiveProfileGuide": {
+    "title": "Air Mercury — Conceptual Synthesis Engine",
+    "learningAbility": "Rapid, associative processing …",
+    "digestion": "Conceptual and comparative …",
+    "logic": "Formed through dialectic reasoning …",
+    "recollection": "Triggered by conceptual keywords and comparative matrices …",
+    "retention": "Achieved when information is integrated into an interconnected web …",
+    "aiInstruction": "Utilise side-by-side comparative tables and dialectic Socratic questioning …"
   }
 }
 ```
+
+### The 8 Cognitive Dimensions
+
+| # | Dimension | Pole A (+) | Pole B (−) |
+|---|-----------|-----------|-----------|
+| 1 | Field Independence vs Dependence | Internal structural synthesis | External contextual anchor |
+| 2 | Conceptual Tempo | High velocity / trial-and-error | Deliberate precision |
+| 3 | Cognitive Load Capacity | High working-memory bandwidth | Micro-chunking / low overload |
+| 4 | Perceptual Processing Pathway | Visual-spatial & kinesthetic | Linear syntactic & verbal |
+| 5 | Academic Self-Efficacy | High self-efficacy | Guarded self-efficacy |
+| 6 | Ego Threat & Academic Vulnerability | Low ego threat | High ego threat |
+| 7 | Defensive Self-Presentation | Transparent presentation | Defensive presentation |
+| 8 | Learned Helplessness | Persistent mastery orientation | Learned helplessness risk |
+
+Dimension names are **internal only**. The learner never sees a category label — only two competing statements per item.
+
+The **Mercury element** is derived from the dimension vector (with the natal Mercury sign used only as a small tie-breaking prior), and the **Life Path** is derived from the date of birth. The **Cognitive Profile Guide** is looked up from the resulting Mercury element and injected verbatim into the LLM system prompt.
 
 ---
 
@@ -64,11 +102,14 @@ The core model is **completely blind to generic teaching styles** and **strictly
    - **Low Retention / Scaffolded Recall**: Embeds spaced retrieval prompts (e.g. asking the student to state what each symbol in the formula represents in their own words).
    - **Sensory Modality**: Visual learners receive coordinate/spatial descriptions; Logical learners receive deductive axioms; Kinesthetic learners receive tactile mechanics.
 
-4. **Law 4: Real-Time DBE CAPS Document Grounding**
-   - All responses must align with official Department of Basic Education Annual Teaching Plans (ATPs) and chief marker examination conventions.
+4. **Law 4: Real-Time Curriculum Grounding (Global)**
+   - The active framework is chosen by the learner's country: **US state academic standards** (default), the **UK national curriculum / exam-board specification** (with Scotland, Wales and Northern Ireland variants), or **South African CAPS/DBE** as the fallback.
+   - Every response must align with the active framework's standards, command words and mark conventions, and must not mix frameworks.
 
-5. **Law 5: Cultural & Linguistic Authenticity**
-   - Native support for all 11 official South African languages, paired with culturally authentic analogies (Eskom power grid, taxi math, Soweto Derby strategies).
+5. **Law 5: Affective Safety & Regional Authenticity**
+   - Ego-threat and defensive-presentation scores control how errors are surfaced: high-threat learners receive private, indirect correction; low-threat learners can handle direct correction.
+   - Analogies are region-native: US contexts for US learners, UK contexts for UK learners, and South African contexts (Eskom, taxi math, Soweto Derby) only for ZA learners.
+   - Tutoring language is whatever the learner selected.
 
 ---
 

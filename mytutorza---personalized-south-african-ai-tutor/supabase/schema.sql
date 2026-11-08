@@ -75,7 +75,7 @@ create table if not exists public.firmament_profiles (
 create index if not exists firmament_profiles_user_id_idx on public.firmament_profiles (user_id);
 
 -- ============================================================================
--- 3. THE 16 ONBOARDING ANSWERS (raw diagnostic inputs)
+-- 3. THE 24 ONBOARDING ANSWERS (raw diagnostic inputs)
 -- ============================================================================
 create table if not exists public.firmament_onboarding_answers (
   id           uuid primary key default gen_random_uuid(),

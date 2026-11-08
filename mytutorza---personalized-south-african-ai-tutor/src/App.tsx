@@ -46,8 +46,8 @@ const AppContent: React.FC = () => {
             </h1>
             <p className="text-sm text-slate-400 mt-3 leading-relaxed">
               Create your account, tell us your grade, subjects and state, then complete the
-              16-question Firmament diagnostic. Your Tutoring, Study and Exam agents are then
-              locked to your cognitive profile and your local curriculum standards.
+              24-item “This vs. That” Firmament diagnostic. Your Tutoring, Study and Exam agents
+              are then locked to your cognitive profile and your local curriculum standards.
             </p>
 
             <ul className="mt-6 grid sm:grid-cols-3 gap-3 text-left">

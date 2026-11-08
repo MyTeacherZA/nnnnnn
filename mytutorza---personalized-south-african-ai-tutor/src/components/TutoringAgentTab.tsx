@@ -22,12 +22,27 @@ import { getStoredSupabaseConfig, saveSparkNotesToSupabase, getLocalSparkNotes }
 
 export const TutoringAgentTab: React.FC = () => {
   const { student, activeSubject } = useApp();
+  const learnerCountry = student?.country || 'US';
+  const curriculumLabel =
+    learnerCountry === 'UK'
+      ? 'the UK national curriculum'
+      : learnerCountry === 'ZA'
+      ? 'the South African CAPS curriculum'
+      : `${student?.state || 'your state'} academic standards`;
+  const greeting = learnerCountry === 'ZA' ? 'Sawubona' : 'Hi';
+  const openingTopic =
+    learnerCountry === 'UK'
+      ? 'exam question'
+      : learnerCountry === 'ZA'
+      ? 'CAPS topic or past paper question'
+      : 'standards-aligned problem';
+
   const [messages, setMessages] = useState<ChatMessage[]>(() => [
     {
       id: 'init-1',
       sender: 'ai',
       agent: 'tutoring',
-      text: `Sawubona ${student?.fullName || 'Student'}! I am your Guided Discovery AI Tutor for **${activeSubject?.name || 'Mathematics'}** (${student?.grade || 'Grade 12'}).\n\nI am permanently calibrated to your **${student?.firmament.cognitiveScore || student?.firmament.lifePath.profile}** profile under the South African DBE CAPS curriculum.\n\n🛡️ **Firmament Guardrail Active:** Generic teaching is disabled. I will never simply give away the final answer or solve problems for you. I will guide you through targeted questions to discover the principle yourself.\n\nBaseline: **${activeSubject?.previousTermMark || 50}%** (${activeSubject?.previousTermMark && activeSubject.previousTermMark < 60 ? 'Remedial Scaffold: We will ensure fundamental concepts are rock-solid first' : 'Advancement Scaffold: Ready for higher-order exam challenges'}).\n\nWhat CAPS topic or past paper question shall we tackle today?`,
+      text: `${greeting} ${student?.fullName || 'Student'}! I am your Guided Discovery AI Tutor for **${activeSubject?.name || 'Mathematics'}** (${student?.grade || 'Grade 12'}).\n\nI am permanently calibrated to your **${student?.firmament.cognitiveScore || student?.firmament.lifePath.profile}** profile under ${curriculumLabel}.\n\n🛡️ **Firmament Guardrail Active:** Generic teaching is disabled. I will never simply give away the final answer or solve problems for you. I will guide you through targeted questions to discover the principle yourself.\n\nBaseline: **${activeSubject?.previousTermMark || 50}%** (${activeSubject?.previousTermMark && activeSubject.previousTermMark < 60 ? 'Remedial Scaffold: We will ensure fundamental concepts are rock-solid first' : 'Advancement Scaffold: Ready for higher-order exam challenges'}).\n\nWhich ${openingTopic} shall we tackle today?`,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     },
   ]);
