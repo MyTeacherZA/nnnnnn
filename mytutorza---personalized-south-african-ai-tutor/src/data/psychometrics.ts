@@ -1,3 +1,23 @@
+import * as Astronomy from 'astronomy-engine';
+
+export function mercuryElementFromDOB(dob: string): 'Fire' | 'Earth' | 'Air' | 'Water' {
+  try {
+    const date = new Date(dob);
+    if (isNaN(date.getTime())) return 'Air';
+    const t = new Astronomy.AstroTime(date);
+    const lon = Astronomy.EclipticLongitude(Astronomy.Body.Mercury, t);
+    const signs = ['Aries','Taurus','Gemini','Cancer','Leo','Virgo','Libra','Scorpio','Sagittarius','Capricorn','Aquarius','Pisces'];
+    const idx = Math.floor(((lon % 360) + 360) % 360 / 30);
+    const sign = signs[idx];
+    if (['Aries','Leo','Sagittarius'].includes(sign)) return 'Fire';
+    if (['Taurus','Virgo','Capricorn'].includes(sign)) return 'Earth';
+    if (['Gemini','Libra','Aquarius'].includes(sign)) return 'Air';
+    return 'Water';
+  } catch {
+    return 'Air';
+  }
+}
+
 export interface PsychometricQuestion {
   id: number;
   question: string;
@@ -239,8 +259,7 @@ export function calculateFirmamentFromAnswers(
   const primaryModality = (sortedModalities[0]?.[0] || 'Logical-Rule') as 'Visual' | 'Auditory' | 'Kinesthetic' | 'Logical-Rule';
   const secondaryModality = sortedModalities[1]?.[0] || 'Visual';
 
-  const sortedMercury = Object.entries(mercuryCounts).sort((a, b) => b[1] - a[1]);
-  const mercuryElement = (sortedMercury[0]?.[0] || 'Air') as 'Fire' | 'Earth' | 'Air' | 'Water';
+  const mercuryElement = mercuryElementFromDOB(dob);
 
   const sortedArchetypes = Object.entries(profileCounts).sort((a, b) => b[1] - a[1]);
   const dominantArchetype = sortedArchetypes[0]?.[0] || 'The Architect';

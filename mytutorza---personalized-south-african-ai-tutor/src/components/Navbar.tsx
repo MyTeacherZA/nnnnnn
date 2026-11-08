@@ -13,6 +13,7 @@ import {
   ChevronDown,
   Compass,
   HelpCircle,
+  LogOut,
 } from 'lucide-react';
 import { OfficialLanguage } from '../types';
 
@@ -29,7 +30,11 @@ export const Navbar: React.FC = () => {
     setIsOnboardingOpen,
     updateTutoringLanguageForActiveSubject,
     displayMode,
+    logout,
   } = useApp();
+
+  // The 11 official SA languages only apply to South African CAPS learners.
+  const offersSaLanguages = student?.country === 'ZA';
 
   const isLight = displayMode === 'light';
   const isSilver = displayMode === 'normal';
@@ -105,8 +110,8 @@ export const Navbar: React.FC = () => {
             </div>
           )}
 
-          {/* Language Selector for Active Subject */}
-          {activeSubject && (
+          {/* Language Selector for Active Subject (South African learners only) */}
+          {activeSubject && offersSaLanguages && (
             <div className={`hidden md:flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 ${selectContainerClass}`}>
               <Globe2 className="w-4 h-4 text-sky-500" />
               <span className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">
@@ -168,27 +173,6 @@ export const Navbar: React.FC = () => {
               <span className="hidden sm:inline">Formula Sheets</span>
             </button>
 
-            {/* Firmament Profile Badge */}
-            {student?.firmament && (
-              <button
-                onClick={() => setIsOnboardingOpen(true)}
-                className={`hidden md:flex items-center gap-2 px-3 py-1.5 rounded-xl transition-colors ${pillButtonClass}`}
-                title="The Firmament Cognitive Vector"
-              >
-                <div className="w-6 h-6 rounded-lg btn-accent flex items-center justify-center text-[11px] font-black">
-                  {student.firmament.lifePath.number}
-                </div>
-                <div className="text-left">
-                  <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider leading-none">
-                    {student.firmament.mercury.element} Engine
-                  </p>
-                  <p className="text-xs font-extrabold leading-tight">
-                    {student.firmament.lifePath.profile}
-                  </p>
-                </div>
-              </button>
-            )}
-
             {/* Contact Us button */}
             <button
               onClick={() => setIsContactModalOpen(true)}
@@ -217,6 +201,18 @@ export const Navbar: React.FC = () => {
               <Settings className="w-4 h-4 text-white" />
               <span className="text-xs font-bold hidden sm:inline">Settings</span>
             </button>
+
+            {/* Signed-in learner + sign out */}
+            {student && (
+              <button
+                onClick={logout}
+                className={`flex items-center gap-1.5 px-2 sm:px-3 py-2 rounded-xl transition-colors ${pillButtonClass}`}
+                title={`Signed in as ${student.email} — sign out`}
+              >
+                <LogOut className="w-4 h-4 text-rose-400" />
+                <span className="text-xs font-bold hidden md:inline">{student.fullName.split(' ')[0]}</span>
+              </button>
+            )}
           </div>
         </div>
 
@@ -238,7 +234,7 @@ export const Navbar: React.FC = () => {
             </div>
           )}
 
-          {activeSubject && (
+          {activeSubject && offersSaLanguages && (
             <div className="w-36 shrink-0">
               <select
                 value={activeSubject.tutoringLanguage}

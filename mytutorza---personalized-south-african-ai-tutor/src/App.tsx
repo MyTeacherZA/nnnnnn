@@ -4,6 +4,7 @@
  */
 
 import React from 'react';
+import { GraduationCap } from 'lucide-react';
 import { AppProvider, useApp } from './context/AppContext';
 import { Navbar } from './components/Navbar';
 import { SubjectHeader } from './components/SubjectHeader';
@@ -16,12 +17,65 @@ import { OnboardingModal } from './components/OnboardingModal';
 import { SettingsModal } from './components/SettingsModal';
 import { TextbookModal } from './components/TextbookModal';
 import { ContactModal } from './components/ContactModal';
+import { SubscriptionModal } from './components/SubscriptionModal';
+import { PasswordRecovery } from './components/PasswordRecovery';
 
 const AppContent: React.FC = () => {
-  const { activeTab, displayMode } = useApp();
+  const { activeTab, displayMode, hasCompletedOnboarding } = useApp();
+  const [showSub, setShowSub] = React.useState(false);
 
   const isLight = displayMode === 'light';
   const isSilver = displayMode === 'normal';
+
+  // A brand-new visitor never sees the workspace (or any demo learner).
+  // They get a proper landing + the account/onboarding gate.
+  if (!hasCompletedOnboarding) {
+    return (
+      <div className="min-h-screen flex flex-col bg-slate-950 text-slate-100 font-sans">
+        <header className="border-b border-slate-800/80">
+          <div className="max-w-5xl mx-auto px-4 py-4 flex items-center gap-2">
+            <GraduationCap className="w-6 h-6 text-sky-400" />
+            <span className="text-lg font-black tracking-tight">MyTutorZA</span>
+          </div>
+        </header>
+
+        <main className="flex-1 flex items-center justify-center px-4 py-12">
+          <div className="max-w-2xl text-center">
+            <h1 className="text-3xl sm:text-4xl font-black leading-tight">
+              A tutor that calibrates to <span className="text-sky-400">how you think</span>.
+            </h1>
+            <p className="text-sm text-slate-400 mt-3 leading-relaxed">
+              Create your account, tell us your grade, subjects and state, then complete the
+              16-question Firmament diagnostic. Your Tutoring, Study and Exam agents are then
+              locked to your cognitive profile and your local curriculum standards.
+            </p>
+
+            <ul className="mt-6 grid sm:grid-cols-3 gap-3 text-left">
+              <li className="bg-slate-900/70 border border-slate-800 rounded-2xl p-4">
+                <p className="text-xs font-extrabold text-sky-300">Socratic Tutoring</p>
+                <p className="text-[11px] text-slate-400 mt-1">Guided discovery — never just the answer.</p>
+              </li>
+              <li className="bg-slate-900/70 border border-slate-800 rounded-2xl p-4">
+                <p className="text-xs font-extrabold text-emerald-300">Study &amp; Exam Agents</p>
+                <p className="text-[11px] text-slate-400 mt-1">Notes, flashcards and papers for your grade.</p>
+              </li>
+              <li className="bg-slate-900/70 border border-slate-800 rounded-2xl p-4">
+                <p className="text-xs font-extrabold text-amber-300">The Firmament</p>
+                <p className="text-[11px] text-slate-400 mt-1">A per-learner cognitive learning profile.</p>
+              </li>
+            </ul>
+
+            <p className="text-[11px] text-slate-500 mt-6">
+              Sign up below to begin — it takes about 3 minutes.
+            </p>
+          </div>
+        </main>
+
+        <OnboardingModal />
+        <PasswordRecovery />
+      </div>
+    );
+  }
 
   return (
     <div
@@ -73,9 +127,11 @@ const AppContent: React.FC = () => {
 
       {/* Modals */}
       <OnboardingModal />
+      <PasswordRecovery />
       <SettingsModal />
       <TextbookModal />
       <ContactModal />
+      <SubscriptionModal open={showSub} onClose={() => setShowSub(false)} />
     </div>
   );
 };

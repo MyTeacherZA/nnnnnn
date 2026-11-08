@@ -69,6 +69,9 @@ export const ExamAgentTab: React.FC = () => {
           examType,
           durationMinutes: duration,
           topic: topicFocus,
+          state: student?.state,
+          country: student?.country,
+          nation: student?.nation,
           term: examType.includes('June') ? 'Term 2' : 'Term 4',
         }),
       });

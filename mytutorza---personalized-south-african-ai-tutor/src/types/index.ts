@@ -13,6 +13,26 @@ export type OfficialLanguage =
 
 export type DisplayMode = 'dark' | 'light' | 'normal';
 
+/** Country the learner is schooling in. Drives which curriculum framework applies. */
+export type CountryCode = 'US' | 'UK' | 'ZA';
+
+/** UK nation — each has its own curriculum and qualifications body. */
+export type UKNation = 'England' | 'Scotland' | 'Wales' | 'Northern Ireland';
+
+/** Curricula frameworks an agent can be grounded in. */
+export type CurriculumFramework = 'US_STATE_STANDARDS' | 'CAPS_DBE';
+
+/** A registered learner account (Supabase Auth, or a local fallback account). */
+export interface StudentAccount {
+  id: string;
+  email: string;
+  phone: string;
+  fullName: string;
+  provider: 'supabase' | 'local';
+  emailConfirmed: boolean;
+  createdAt: string;
+}
+
 export type ThemeAccent =
   | 'forest-green'
   | 'sky-blue'
@@ -87,9 +107,18 @@ export interface StudentProfile {
   phone: string;
   dateOfBirth: string;
   grade: string;
+  /** Country of schooling — determines the curriculum framework pushed to agents. */
+  country: CountryCode;
+  /** UK nation (England / Scotland / Wales / Northern Ireland). Undefined elsewhere. */
+  nation?: string;
+  /** US state name (e.g. 'California'), UK region, or South African province. */
+  state: string;
   avatar: string;
   firmament: FirmamentProfile;
   subjects: SubjectSlot[];
+  /** True only after the learner finishes the full onboarding wizard. */
+  onboardingComplete?: boolean;
+  createdAt?: string;
 }
 
 export type AgentTab = 'tutoring' | 'study' | 'roadmap' | 'exam' | 'formulas';

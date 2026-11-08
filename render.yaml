@@ -1,0 +1,42 @@
+services:
+  - type: web
+    name: mytutorza
+    runtime: node
+    # The Vite + Express app lives in this subfolder.
+    rootDir: mytutorza---personalized-south-african-ai-tutor
+    buildCommand: npm ci && npm run build
+    # `npm start` runs `tsx server.ts` (plain Node, no Bun required).
+    startCommand: npm start
+    healthCheckPath: /
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 22.12.0
+      - key: NODE_ENV
+        value: production
+      - key: APP_URL
+        sync: false
+      - key: LLAMA_API_KEY
+        sync: false
+      - key: LLAMA_BASE_URL
+        value: https://api.groq.com/openai/v1
+      - key: LLAMA_MODEL
+        value: llama-3.3-70b-versatile
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+      - key: VITE_SUPABASE_URL
+        sync: false
+      - key: VITE_SUPABASE_ANON_KEY
+        sync: false
+      - key: UPSTASH_REDIS_REST_URL
+        sync: false
+      - key: UPSTASH_REDIS_REST_TOKEN
+        sync: false
+      - key: CAPS_VAULT_PATH
+        value: ./caps_vault

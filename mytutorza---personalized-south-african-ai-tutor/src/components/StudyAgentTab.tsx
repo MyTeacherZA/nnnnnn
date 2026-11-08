@@ -76,6 +76,9 @@ export const StudyAgentTab: React.FC = () => {
           topic: targetTopic,
           term: selectedTerm,
           language: activeSubject.tutoringLanguage,
+          state: student?.state,
+          country: student?.country,
+          nation: student?.nation,
         }),
       });
 

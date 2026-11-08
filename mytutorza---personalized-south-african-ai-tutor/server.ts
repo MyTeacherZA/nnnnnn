@@ -5,7 +5,8 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { createClient } from '@supabase/supabase-js';
-import { buildFirmamentSystemPrompt } from './serverFirmamentRules';
+import { buildFirmamentSystemPrompt, describeCurriculum, getCurriculumDirective } from './serverFirmamentRules';
+import { isMailConfigured, sendMail } from './serverMailer';
 import { getSelectiveCapsCurriculumContext } from './serverCapsVault';
 import {
   buildCapsVaultIndex,
@@ -484,6 +485,9 @@ app.post('/api/tutoring/chat', async (req: Request, res: Response) => {
       history,
       homeworkMode,
       askMode,
+      state,
+      country,
+      nation,
     } = req.body;
 
     if (!message) {
@@ -500,6 +504,9 @@ app.post('/api/tutoring/chat', async (req: Request, res: Response) => {
       grade: grade || 'Grade 12',
       previousMark: mark,
       language: targetLang,
+      state,
+      country,
+      nation,
       textbook,
       userQuery: message,
       taskType: 'tutoring',
@@ -545,7 +552,14 @@ app.post('/api/tutoring/chat', async (req: Request, res: Response) => {
     }
 
     // Offline Socratic fallback
-    const reply = `Sawubona! Working in ${subject} (${targetLang}). Based on your ${
+    const fallbackCurriculum = describeCurriculum(country, state, nation);
+    const greeting = fallbackCurriculum.isUS ? 'Hi there!' : fallbackCurriculum.isUK ? 'Hello!' : 'Sawubona!';
+    const frameworkWord = fallbackCurriculum.isUS
+      ? `${state || 'state'} standards`
+      : fallbackCurriculum.isUK
+      ? `${fallbackCurriculum.ukFramework.qualifications} (${fallbackCurriculum.ukNation})`
+      : 'CAPS';
+    const reply = `${greeting} Working in ${subject} (${targetLang}) against ${frameworkWord}. Based on your ${
       firmamentProfile?.cognitiveVector?.primaryModality || 'Logical'
     } profile and ${mark}% baseline, let us break this down step-by-step. What is the very first rule or formula we need to write down before substituting?`;
     return res.json({ reply, source: 'firmament-engine-local' });
@@ -553,7 +567,7 @@ app.post('/api/tutoring/chat', async (req: Request, res: Response) => {
     console.error('Tutoring API error:', err);
     return res.json({
       reply:
-        'Sawubona! Let us examine this CAPS topic together. What is the fundamental formula or theorem we should apply first?',
+        'Let us work through this together step by step. What is the fundamental formula or theorem we should apply first?',
       source: 'safe-fallback',
     });
   }
@@ -1005,9 +1019,10 @@ app.delete('/api/spark-notes/:id', async (req: Request, res: Response) => {
 
 app.post('/api/study/generate', async (req: Request, res: Response) => {
   try {
-    const { subject, grade, topic, term, language } = req.body;
+    const { subject, grade, topic, term, language, state, country, nation } = req.body;
+    const curriculum = describeCurriculum(country, state, nation);
     const cacheKey =
-      `study:${grade}:${subject}:${topic}:${term}:${language || 'English'}`
+      `study:${country || 'ZA'}:${state || ''}:${grade}:${subject}:${topic}:${term}:${language || 'English'}`
         .toLowerCase()
         .replace(/\s+/g, '_');
 
@@ -1016,11 +1031,11 @@ app.post('/api/study/generate', async (req: Request, res: Response) => {
       return res.json({ ...cached, source: 'cache' });
     }
 
-    const rawCaps = getSelectiveCapsCurriculumContext(subject, grade, topic);
+    const rawCaps = getCurriculumDirective({ subject, grade, topic, state, country, nation });
 
     const systemInstruction = `
-You are MyTutorZA's Study AI Agent for South Africa's CAPS Curriculum.
-Your task is to generate high-yield, CAPS-aligned study notes and spark notes for:
+You are MyTutorZA's Study AI Agent for ${curriculum.curriculumName}.
+Your task is to generate high-yield, ${curriculum.isUS ? 'standards-aligned' : 'CAPS-aligned'} study notes and spark notes for:
 Subject: ${subject}
 Grade: ${grade}
 Topic: ${topic || 'Core Curriculum Overview'}
@@ -1565,16 +1580,17 @@ function getFirmamentRoadmapFallback(
 
 app.post('/api/roadmap/generate', async (req: Request, res: Response) => {
   try {
-    const { subject, grade, firmamentProfile, previousMark, targetExam, focusTopic, language } =
+    const { subject, grade, firmamentProfile, previousMark, targetExam, focusTopic, language, state, country, nation } =
       req.body;
     const targetSubject = subject || 'Mathematics (Pure)';
     const targetGrade = grade || 'Grade 12';
     const mark = previousMark !== undefined ? Number(previousMark) : 50;
     const isRemedial = mark < 60;
     const targetLang = language || 'English';
+    const curriculum = describeCurriculum(country, state, nation);
 
     const cacheKey =
-      `roadmap:${targetGrade}:${targetSubject}:${mark}:${targetExam || 'general'}:${
+      `roadmap:${country || 'ZA'}:${state || ''}:${targetGrade}:${targetSubject}:${mark}:${targetExam || 'general'}:${
         focusTopic || 'all'
       }:${targetLang}`
         .toLowerCase()
@@ -1585,7 +1601,7 @@ app.post('/api/roadmap/generate', async (req: Request, res: Response) => {
     }
 
     const systemInstruction = `
-You are MyTutorZA's Master Academic Director and Chief Strategist for South African CAPS curriculum (Grades 4-12).
+You are MyTutorZA's Master Academic Director and Chief Strategist for ${curriculum.curriculumName} (Grades 4-12).
 Your task is to build a bespoke, highly motivating, structured 4-WEEK STUDY ROADMAP tailored specifically to the student's psychological profile under THE FIRMAMENT ENGINE:
 
 STUDENT'S FIRMAMENT PSYCHOMETRIC PROFILE:
@@ -1608,12 +1624,12 @@ ${isRemedial
 CURRICULUM SPECIFICATIONS:
 - Subject: ${targetSubject}
 - Grade: ${targetGrade}
-- Target Milestones: ${targetExam || 'Upcoming DBE Assessment'}
-- Focus Area: ${focusTopic || 'Full CAPS Syllabus'}
+- Target Milestones: ${targetExam || (curriculum.isUS ? 'Upcoming state assessment' : 'Upcoming DBE Assessment')}
+- Focus Area: ${focusTopic || (curriculum.isUS ? 'Full state standards for this grade' : 'Full CAPS Syllabus')}
 - Language of instruction: ${targetLang}
 
-RAW DBE CAPS ANNUAL TEACHING PLAN (ATP) CONTEXT:
-${getSelectiveCapsCurriculumContext(targetSubject, targetGrade, focusTopic)}
+CURRICULUM GROUNDING (${curriculum.frameworkLabel}):
+${getCurriculumDirective({ subject: targetSubject, grade: targetGrade, topic: focusTopic, state, country, nation })}
 
 RETURN STRICT JSON matching this schema:
 {
@@ -1716,12 +1732,13 @@ RETURN STRICT JSON matching this schema:
 // ---------------------------------------------------------------------
 app.post('/api/exam/generate', async (req: Request, res: Response) => {
   try {
-    const { subject, grade, examType, durationMinutes, topic, term } = req.body;
+    const { subject, grade, examType, durationMinutes, topic, term, state, country, nation } = req.body;
     const dur = Number(durationMinutes) || 60;
     const paperType = examType || 'November Final Exam';
+    const curriculum = describeCurriculum(country, state, nation);
 
     const cacheKey =
-      `exam:${grade}:${subject}:${paperType}:${dur}:${topic || 'general'}`
+      `exam:${country || 'ZA'}:${state || ''}:${grade}:${subject}:${paperType}:${dur}:${topic || 'general'}`
         .toLowerCase()
         .replace(/\s+/g, '_');
     const cached = await getCache(cacheKey);
@@ -1730,20 +1747,20 @@ app.post('/api/exam/generate', async (req: Request, res: Response) => {
     }
 
     const systemInstruction = `
-You are the DBE Senior Chief Marking Examiner & Chief Invigilator for South African National Senior Certificate (NSC) Examinations.
-You must construct an authentic, rigorous South African DBE Exam Paper with 90% real-life accuracy to past NSC papers for:
+You are the Chief Examiner & Chief Invigilator for ${curriculum.isUS ? `${curriculum.regionLabel} state assessments` : curriculum.isUK ? `${curriculum.ukFramework.qualifications} examinations (${curriculum.ukNation})` : 'South African National Senior Certificate (NSC) Examinations'}.
+You must construct an authentic, rigorous ${curriculum.isUS ? `${curriculum.regionLabel} standards-aligned` : curriculum.isUK ? `${curriculum.ukNation} curriculum-aligned` : 'South African DBE'} exam paper with high real-life accuracy to past papers for:
 Subject: ${subject}
 Grade: ${grade}
 Examination: ${paperType} (${
       paperType.includes('June') ? 'Mid-Year Examination' : 'November Final Examination'
     })
 Allocated Time: ${dur} minutes
-Topic Focus: ${topic ? topic : 'Full CAPS Syllabus for this exam stage'}
+Topic Focus: ${topic ? topic : curriculum.isUS ? 'Full state standards for this course' : curriculum.isUK ? 'Full specification content for this qualification' : 'Full CAPS Syllabus for this exam stage'}
 
-RAW CAPS SYLLABUS & EXAM SPECIFICATION:
-${getSelectiveCapsCurriculumContext(subject, grade, topic)}
+CURRICULUM & EXAM SPECIFICATION (${curriculum.frameworkLabel}):
+${getCurriculumDirective({ subject, grade, topic, state, country, nation })}
 
-STRICT NSC DBE EXAM GEOMETRY MANDATE:
+STRICT EXAM STRUCTURE MANDATE:
 1. SECTION A: Objective Questions (MCQs, matching items, or short 1-word concepts) - approx 20-25% of marks.
 2. SECTION B: Routine & Complex Procedures (Structured multi-part questions, calculations, diagram analysis, step-by-step problem solving) - approx 55-60% of marks.
 3. SECTION C: Problem Solving / Synthesis / Essay / Application - approx 20% of marks.
@@ -1752,7 +1769,7 @@ CRITICAL REQUIREMENTS:
 - Provide authentic question numbers (e.g. 1.1, 1.2, 1.3, 2.1.1, 2.1.2).
 - Every question must have an EXACT MARK ALLOCATION with explicit sub-mark allocations (e.g., "[1.1.1 (2 marks: Formula 1, Substitution 1)]").
 - Provide an exhaustive, accurate OFFICIAL MEMORANDUM showing step-by-step solutions, mark breakdowns, and explicit "EXAMINER TRAPS" (common misconceptions students fall for).
-- Follow South African CAPS question conventions (e.g., BODMAS, DBE geometric reasons, SARS tax brackets, SI units).
+- Follow ${curriculum.isUS ? `${curriculum.regionLabel} state assessment question conventions (US spelling, dollars, customary units, US civic/historical references).` : curriculum.isUK ? `${curriculum.ukNation} exam-board conventions (British English, pounds sterling, SI/metric units, command words and mark-scheme phrasing).` : 'South African CAPS question conventions (e.g., BODMAS, DBE geometric reasons, SARS tax brackets, SI units).'}
 
 Return valid JSON conforming strictly to:
 {
@@ -1836,9 +1853,24 @@ Return valid JSON conforming strictly to:
 // ---------------------------------------------------------------------
 // 4. USER FEEDBACK / CONTACT US
 // ---------------------------------------------------------------------
-app.post('/api/feedback', (req: Request, res: Response) => {
+app.post('/api/feedback', async (req: Request, res: Response) => {
   const { name, email, subject, message, grade } = req.body;
   console.log(`Feedback received from ${name} (${email}): [${grade}] ${subject} - ${message}`);
+
+  const recipient = process.env.SMTP_USER || 'lexiparcio@gmail.com';
+  try {
+    if (isMailConfigured()) {
+      await sendMail({
+        to: recipient,
+        subject: `[MyTutorZA Contact] ${subject || 'General feedback'} — ${name}`,
+        text: `From: ${name} <${email}>\nGrade: ${grade || 'n/a'}\nSubject: ${subject}\n\n${message}`,
+        html: `<p><strong>From:</strong> ${name} &lt;${email}&gt;</p><p><strong>Grade:</strong> ${grade || 'n/a'}</p><p><strong>Subject:</strong> ${subject}</p><hr/><p>${String(message).replace(/</g, '&lt;').replace(/\n/g, '<br/>')}</p>`,
+      });
+    }
+  } catch (err: any) {
+    console.error('Feedback email failed:', err?.message || err);
+  }
+
   return res.json({
     success: true,
     message:
@@ -1847,7 +1879,57 @@ app.post('/api/feedback', (req: Request, res: Response) => {
 });
 
 // ---------------------------------------------------------------------
-// CAPS PDF INGESTION (450 in-app PDFs)
+// LLM TUTOR (firmament-guarded, cost-efficient)
+// ---------------------------------------------------------------------
+app.post('/api/tutoring/chat', async (req: Request, res: Response) => {
+  const { message, firmamentProfile, subject, grade, country, state, nation, language, taskType } = req.body || {};
+  const userQuery = message;
+  // Cap user input to ~1500 words to control cost.
+  const words = userQuery.split(/\s+/);
+  const cappedQuery = words.length > 1500 ? words.slice(0, 1500).join(' ') + '…' : userQuery;
+
+  const baseUrl = process.env.LLAMA_BASE_URL || 'https://api.groq.com/openai/v1';
+  const apiKey = process.env.LLAMA_API_KEY || '';
+  const model = process.env.LLAMA_MODEL || 'llama-3.3-70b-versatile';
+  if (!apiKey) return res.status(500).json({ error: 'LLAMA_API_KEY not configured' });
+
+  const systemPrompt = buildFirmamentSystemPrompt({
+    firmamentProfile: firmamentProfile || {},
+    subject: subject || 'Mathematics',
+    grade: grade || 'Grade 12',
+    language: language || 'English',
+    state: state || '',
+    country: country || 'ZA',
+    nation: nation || '',
+    userQuery: cappedQuery,
+    taskType: taskType || 'tutoring',
+  });
+
+  try {
+    const r = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: cappedQuery },
+        ],
+        temperature: 0.3,
+        max_tokens: 2000,
+        top_p: 0.9,
+      }),
+    });
+    const j: any = await r.json();
+    const content = j?.choices?.[0]?.message?.content || '';
+    if (!content) return res.status(500).json({ error: j?.error?.message || 'No response', raw: j });
+    return res.json({ reply: content, model, usage: j?.usage });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+
 // ---------------------------------------------------------------------
 app.post('/api/caps/ingest', async (req: Request, res: Response) => {
   const client = getServiceSupabaseClient() || getSupabaseServerClient(req);
@@ -1920,7 +2002,122 @@ app.post('/api/billing/checkout', (req: Request, res: Response) => {
 });
 
 // ---------------------------------------------------------------------
-// TERM TESTS / EXAMS PRE-GENERATION (batch job)
+// PAYPAL SUBSCRIPTIONS
+// ---------------------------------------------------------------------
+const PAYPAL_MODE = (process.env.PAYPAL_MODE || 'sandbox').toLowerCase();
+const PAYPAL_BASE = PAYPAL_MODE === 'live' ? 'https://api-m.paypal.com' : 'https://api-m.sandbox.paypal.com';
+
+async function paypalAccessToken(): Promise<string> {
+  const id = process.env.PAYPAL_CLIENT_ID || '';
+  const secret = process.env.PAYPAL_CLIENT_SECRET || '';
+  const basic = Buffer.from(`${id}:${secret}`).toString('base64');
+  const r = await fetch(`${PAYPAL_BASE}/v1/oauth2/token`, {
+    method: 'POST',
+    headers: { Authorization: `Basic ${basic}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'grant_type=client_credentials',
+  });
+  const j: any = await r.json();
+  if (!j.access_token) throw new Error(j.error_description || 'PayPal auth failed');
+  return j.access_token;
+}
+
+const PAYPAL_PLANS: Record<string, { planId: string; label: string; price: string; currency: string; cycle: string }> = {
+  weekly_usd: { planId: process.env.PAYPAL_PLAN_WEEKLY_USD || '', label: '7 days', price: '2.99', currency: 'USD', cycle: 'weekly' },
+  monthly_usd: { planId: process.env.PAYPAL_PLAN_MONTHLY_USD || '', label: '1 month', price: '10.99', currency: 'USD', cycle: 'monthly' },
+  weekly_gbp: { planId: process.env.PAYPAL_PLAN_WEEKLY_GBP || '', label: '7 days', price: '2.50', currency: 'GBP', cycle: 'weekly' },
+  monthly_gbp: { planId: process.env.PAYPAL_PLAN_MONTHLY_GBP || '', label: '1 month', price: '10.50', currency: 'GBP', cycle: 'monthly' },
+};
+
+app.get('/api/billing/paypal/plans', (_req: Request, res: Response) => {
+  return res.json({ configured: !!process.env.PAYPAL_CLIENT_ID, plans: PAYPAL_PLANS });
+});
+
+app.post('/api/billing/paypal/create-subscription', async (req: Request, res: Response) => {
+  const { planKey, userId, returnUrl, cancelUrl } = req.body || {};
+  const plan = PAYPAL_PLANS[planKey];
+  if (!plan || !plan.planId) return res.status(400).json({ error: 'Unknown or unconfigured plan' });
+  try {
+    const token = await paypalAccessToken();
+    const r = await fetch(`${PAYPAL_BASE}/v1/billing/subscriptions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        plan_id: plan.planId,
+        custom_id: userId || '',
+        application_context: {
+          brand_name: 'MyTutorZA',
+          user_action: 'SUBSCRIBE_NOW',
+          return_url: returnUrl || `${process.env.APP_URL || ''}/?paypal=success`,
+          cancel_url: cancelUrl || `${process.env.APP_URL || ''}/?paypal=cancel`,
+        },
+      }),
+    });
+    const j: any = await r.json();
+    const approval = (j.links || []).find((l: any) => l.rel === 'approve');
+    if (!approval) return res.status(500).json({ error: j.message || 'No approval link', raw: j });
+    return res.json({ subscriptionId: j.id, approvalUrl: approval.href, status: j.status });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+app.post('/api/billing/paypal/webhook', async (req: Request, res: Response) => {
+  const webhookId = process.env.PAYPAL_WEBHOOK_ID;
+  const headers = req.headers;
+  try {
+    const token = await paypalAccessToken();
+    const verifyBody = {
+      auth_algo: headers['paypal-auth-algo'],
+      cert_url: headers['paypal-cert-url'],
+      transmission_id: headers['paypal-transmission-id'],
+      transmission_sig: headers['paypal-transmission-sig'],
+      transmission_time: headers['paypal-transmission-time'],
+      webhook_id: webhookId,
+      webhook_event: req.body,
+    };
+    const vr = await fetch(`${PAYPAL_BASE}/v1/notifications/verify-webhook-signature`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(verifyBody),
+    });
+    const vj: any = await vr.json();
+    if (vj.verification_status !== 'SUCCESS') {
+      return res.status(400).json({ error: 'Invalid signature' });
+    }
+  } catch (err: any) {
+    return res.status(400).json({ error: 'Verification failed: ' + (err?.message || err) });
+  }
+
+  const event = req.body || {};
+  const eventType = event.event_type;
+  const resource = event.resource || {};
+  const subId = resource.id;
+  const status = (resource.status || '').toLowerCase();
+  const supa = getServiceSupabaseClient();
+  if (supa && subId) {
+    try {
+      await supa.from('subscriptions').upsert(
+        {
+          provider: 'paypal',
+          provider_subscription_id: subId,
+          plan_id: resource.plan_id || null,
+          status: status || eventType,
+          raw_event: event,
+        },
+        { onConflict: 'provider_subscription_id' }
+      );
+      const uid = resource.custom_id;
+      if (uid) {
+        const active = status === 'active' || status === 'approved';
+        await supa.from('student_profiles').update({ subscription_status: active ? 'active' : status || 'pending' }).eq('id', uid);
+      }
+    } catch (e: any) {
+      console.error('Webhook DB upsert failed:', e?.message || e);
+    }
+  }
+  return res.json({ received: true });
+});
+
 // ---------------------------------------------------------------------
 app.post('/api/termtests/generate', async (req: Request, res: Response) => {
   const { subject, grade, term, examType, durationMinutes } = req.body || {};
@@ -2281,28 +2478,71 @@ app.post('/api/profile/sync', async (req: Request, res: Response) => {
 
   try {
     const safeProfile = profile || {};
-    const { data: profileRow, error: profileErr } = await client
-      .from('student_profiles')
-      .insert([
-        {
-          full_name: safeProfile.fullName || safeProfile.full_name || null,
-          email: safeProfile.email || null,
-          phone: safeProfile.phone || null,
-          date_of_birth: safeProfile.dateOfBirth || safeProfile.date_of_birth || null,
-          grade: safeProfile.grade || null,
-          trial_started_at: new Date().toISOString(),
-          trial_expires_at: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
-          subscription_status: 'trial',
-        },
-      ])
-      .select('id')
-      .single();
+    const email = String(safeProfile.email || '').trim().toLowerCase();
 
-    if (profileErr) {
-      console.warn('Profile insert error:', profileErr.message);
+    // Only the profile fields we own are written; trial fields are preserved on
+    // update so re-saving a profile never restarts a learner's trial.
+    const profileFields: Record<string, any> = {
+      full_name: safeProfile.fullName || safeProfile.full_name || null,
+      email: email || null,
+      phone: safeProfile.phone || null,
+      date_of_birth: safeProfile.dateOfBirth || safeProfile.date_of_birth || null,
+      grade: safeProfile.grade || null,
+      country: safeProfile.country || null,
+      nation: safeProfile.nation || null,
+      state: safeProfile.state || null,
+      subjects: safeProfile.subjects || null,
+    };
+
+    // Upsert by email so repeated saves never create duplicate learner rows.
+    let profileId: string | null = null;
+    let profileErr: any = null;
+
+    if (email) {
+      const existing = await client
+        .from('student_profiles')
+        .select('id')
+        .eq('email', email)
+        .limit(1)
+        .maybeSingle();
+
+      if (existing.data?.id) {
+        profileId = existing.data.id;
+        const upd = await client
+          .from('student_profiles')
+          .update({ ...profileFields, updated_at: new Date().toISOString() })
+          .eq('id', profileId);
+        profileErr = upd.error;
+      }
     }
 
-    const profileId = profileRow?.id || null;
+    if (!profileId) {
+      const ins = await client
+        .from('student_profiles')
+        .insert([
+          {
+            ...profileFields,
+            trial_started_at: new Date().toISOString(),
+            trial_expires_at: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
+            subscription_status: 'trial',
+          },
+        ])
+        .select('id')
+        .single();
+      profileErr = ins.error;
+      profileId = ins.data?.id ?? null;
+    }
+
+    if (profileErr) {
+      console.warn('Profile upsert error:', profileErr.message);
+    }
+
+    // Replace the previous firmament snapshot instead of appending to it.
+    if (profileId) {
+      await client.from('firmament_onboarding_answers').delete().eq('user_id', profileId);
+      await client.from('firmament_profiles').delete().eq('user_id', profileId);
+    }
+
 
     let answersSynced = false;
     if (answers && profileId) {
@@ -2342,13 +2582,113 @@ app.post('/api/profile/sync', async (req: Request, res: Response) => {
     return res.json({
       success: true,
       synced: true,
-      syncedProfile: !!profileRow,
+      syncedProfile: !!profileId,
       syncedAnswers: answersSynced,
       syncedFirmament: firmamentSynced,
     });
   } catch (err: any) {
     console.warn('Profile sync failed:', err?.message || err);
     return res.json({ success: true, synced: false, error: err?.message || String(err) });
+  }
+});
+
+// ---------------------------------------------------------------------
+// PASSWORD RECOVERY (Supabase Auth + branded email)
+// The reset link is generated with the Supabase service role key and emailed
+// through the configured SMTP mailbox (e.g. lexiparcio@gmail.com).
+// ---------------------------------------------------------------------
+app.get('/api/auth/mail-status', (req: Request, res: Response) => {
+  const admin = getServiceSupabaseClient();
+  return res.json({
+    supabaseAuthAvailable: !!admin,
+    smtpConfigured: isMailConfigured(),
+    senderEmail: isMailConfigured() ? process.env.SMTP_FROM || process.env.SMTP_USER : null,
+  });
+});
+
+app.post('/api/auth/request-password-reset', async (req: Request, res: Response) => {
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+    return res.status(400).json({ ok: false, error: 'Please provide a valid email address.' });
+  }
+
+  const admin = getServiceSupabaseClient();
+  if (!admin) {
+    return res.json({
+      ok: true,
+      delivered: false,
+      reason: 'supabase_not_configured',
+      message:
+        'Password reset by email needs Supabase Auth to be configured (SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY).',
+    });
+  }
+
+  if (!isMailConfigured()) {
+    return res.json({
+      ok: true,
+      delivered: false,
+      reason: 'smtp_not_configured',
+      message:
+        'Email delivery is not configured yet (SMTP_HOST / SMTP_USER / SMTP_PASS / SMTP_FROM).',
+    });
+  }
+
+  const appUrl =
+    process.env.APP_URL || `${req.protocol}://${req.get('host') || 'localhost'}`;
+
+  try {
+    const { data, error } = await admin.auth.admin.generateLink({
+      type: 'recovery',
+      email,
+      options: { redirectTo: appUrl },
+    });
+
+    const link = (data as any)?.properties?.action_link || (data as any)?.action_link;
+
+    // Never reveal whether an account exists for this address.
+    if (error || !link) {
+      console.warn('Password reset link generation failed:', error?.message || 'no link');
+      return res.json({
+        ok: true,
+        delivered: false,
+        reason: 'link_failed',
+        message: 'If that email has an account, a reset link has been sent.',
+      });
+    }
+
+    await sendMail({
+      to: email,
+      subject: 'Reset your MyTutorZA password',
+      text: `Reset your MyTutorZA password using this link (expires shortly):
+${link}
+
+If you did not request this, you can ignore this email.`,
+      html: `
+        <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:520px;margin:0 auto;padding:24px;background:#0f172a;border-radius:16px;color:#e2e8f0">
+          <h2 style="margin:0 0 8px;color:#ffffff">Reset your password</h2>
+          <p style="margin:0 0 16px;font-size:14px;color:#94a3b8">
+            Tap the button below to choose a new password for your MyTutorZA learner account.
+          </p>
+          <p style="margin:0 0 20px">
+            <a href="${link}" style="display:inline-block;background:#0ea5e9;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:10px;font-weight:700;font-size:14px">
+              Choose a new password
+            </a>
+          </p>
+          <p style="margin:0;font-size:12px;color:#64748b">
+            If you did not request this, you can safely ignore this email.
+          </p>
+        </div>`,
+    });
+
+    return res.json({ ok: true, delivered: true, message: 'Reset link sent.' });
+  } catch (err: any) {
+    console.warn('Password reset email failed:', err?.message || err);
+    return res.json({
+      ok: true,
+      delivered: false,
+      reason: 'send_failed',
+      message: 'We could not send the email right now. Please try again shortly.',
+    });
   }
 });
 
@@ -2602,6 +2942,69 @@ app.get('*', (req: Request, res: Response) => {
     .status(500)
     .type('text/plain')
     .send('Client build not found. Run `bun run build` to generate dist/.');
+});
+
+// ---------------------------------------------------------------------
+// PROFILE SYNC (Supabase persistence)
+// ---------------------------------------------------------------------
+app.post('/api/profile/sync', async (req: Request, res: Response) => {
+  const { profile, firmamentProfile } = req.body || {};
+  if (!profile || !profile.email) return res.status(400).json({ error: 'profile.email required' });
+  const supa = getServiceSupabaseClient();
+  if (!supa) return res.json({ success: true, persisted: false, reason: 'no_supabase' });
+  try {
+    const row = {
+      user_id: profile.id || null,
+      full_name: profile.fullName,
+      email: profile.email,
+      phone: profile.phone,
+      date_of_birth: profile.dateOfBirth || null,
+      grade: profile.grade,
+      country: profile.country,
+      nation: profile.nation,
+      state: profile.state,
+      subjects: profile.subjects || [],
+    };
+    await supa.from('student_profiles').upsert(row, { onConflict: 'email' });
+    if (firmamentProfile) {
+      if (profile.id) await supa.from('firmament_profiles').delete().eq('user_id', profile.id);
+      await supa.from('firmament_profiles').insert({
+        user_id: profile.id || null,
+        cognitive_score: firmamentProfile.cognitiveScore || null,
+        processing_speed: firmamentProfile.processingSpeed || null,
+        retention_profile: firmamentProfile.retentionProfile || null,
+        scaffold_needs: firmamentProfile.supportNeeds || null,
+        firmament_rules: firmamentProfile.firmamentRules || [],
+        life_path: firmamentProfile.lifePath || {},
+        mercury: firmamentProfile.mercury || {},
+        cognitive_vector: firmamentProfile.cognitiveVector || {},
+        raw_answers: firmamentProfile.rawAnswers || {},
+        calculated_at: firmamentProfile.calculatedAt || new Date().toISOString(),
+      });
+    }
+    return res.json({ success: true, persisted: true });
+  } catch (err: any) {
+    console.error('Profile sync failed:', err?.message || err);
+    return res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+app.get('/api/profile/get', async (req: Request, res: Response) => {
+  const email = (req.query.email as string) || '';
+  if (!email) return res.status(400).json({ error: 'email required' });
+  const supa = getServiceSupabaseClient();
+  if (!supa) return res.json({ profile: null });
+  try {
+    const { data: profile } = await supa.from('student_profiles').select('*').ilike('email', email).maybeSingle();
+    let firmament = null;
+    if (profile?.id) {
+      const { data: f } = await supa.from('firmament_profiles').select('*').eq('user_id', profile.id).maybeSingle();
+      firmament = f;
+    }
+    return res.json({ profile: profile || null, firmament: firmament || null });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || String(err) });
+  }
 });
 
 // ---------------------------------------------------------------------

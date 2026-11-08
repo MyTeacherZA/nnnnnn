@@ -1,208 +1,270 @@
--- =====================================================================
--- MyTutorZA: Supabase Database Schema with Row Level Security (RLS)
--- Copy and paste this directly into your Supabase Dashboard SQL Editor:
--- https://supabase.com/dashboard/project/_/sql
--- =====================================================================
+-- ============================================================================
+-- MyTutorZA — Supabase schema
+-- ----------------------------------------------------------------------------
+-- Paste this whole file into:  Supabase Dashboard → SQL Editor → Run
+-- It is IDEMPOTENT: safe to run again on an existing project.
+-- ============================================================================
 
--- 1. Create table for Personalized Spark Notes generated from Bot-User Convo
-CREATE TABLE IF NOT EXISTS public.spark_notes (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID DEFAULT auth.uid(),
-  subject TEXT NOT NULL,
-  grade TEXT NOT NULL,
-  topic TEXT NOT NULL,
-  title TEXT NOT NULL,
-  summary TEXT NOT NULL,
-  key_breakdowns JSONB DEFAULT '[]'::jsonb,
-  weak_spots JSONB DEFAULT '[]'::jsonb,
-  spark_bullets JSONB DEFAULT '[]'::jsonb,
-  formulas_rules JSONB DEFAULT '[]'::jsonb,
-  examiner_traps JSONB DEFAULT '[]'::jsonb,
-  flashcards JSONB DEFAULT '[]'::jsonb,
-  cognitive_advice TEXT,
-  raw_convo_count INT DEFAULT 0,
-  created_at TIMESTAMPTZ DEFAULT now()
+create extension if not exists pgcrypto;
+
+-- ============================================================================
+-- 1. LEARNER PROFILES  (written by POST /api/profile/sync)
+-- ============================================================================
+create table if not exists public.student_profiles (
+  id                  uuid primary key default gen_random_uuid(),
+  user_id             uuid,
+  full_name           text,
+  email               text,
+  phone               text,
+  date_of_birth       date,
+  grade               text,
+  country             text,
+  nation              text,
+  state               text,
+  subjects            jsonb not null default '[]'::jsonb,
+  trial_started_at    timestamptz default now(),
+  trial_expires_at    timestamptz default (now() + interval '3 days'),
+  subscription_status text default 'trial',
+  created_at          timestamptz not null default now(),
+  updated_at          timestamptz not null default now()
 );
 
--- 2. Enable Row Level Security (RLS) on spark_notes
-ALTER TABLE public.spark_notes ENABLE ROW LEVEL SECURITY;
+-- Add missing columns on older installs (no-ops when they already exist)
+alter table public.student_profiles add column if not exists user_id uuid;
+alter table public.student_profiles add column if not exists full_name text;
+alter table public.student_profiles add column if not exists email text;
+alter table public.student_profiles add column if not exists phone text;
+alter table public.student_profiles add column if not exists date_of_birth date;
+alter table public.student_profiles add column if not exists grade text;
+alter table public.student_profiles add column if not exists country text;
+alter table public.student_profiles add column if not exists nation text;
+alter table public.student_profiles add column if not exists state text;
+alter table public.student_profiles add column if not exists subjects jsonb not null default '[]'::jsonb;
+alter table public.student_profiles add column if not exists trial_started_at timestamptz default now();
+alter table public.student_profiles add column if not exists trial_expires_at timestamptz default (now() + interval '3 days');
+alter table public.student_profiles add column if not exists subscription_status text default 'trial';
+alter table public.student_profiles add column if not exists created_at timestamptz not null default now();
+alter table public.student_profiles add column if not exists updated_at timestamptz not null default now();
 
--- 3. RLS Security Policies for spark_notes (Strict User Isolation)
--- Authenticated users can only read their own notes
-DROP POLICY IF EXISTS "Users can read own spark notes" ON public.spark_notes;
-CREATE POLICY "Users can read own spark notes"
-  ON public.spark_notes
-  FOR SELECT
-  TO authenticated
-  USING (auth.uid() = user_id OR user_id IS NULL);
+-- One row per learner email (case-insensitive) so profile saves never duplicate.
+create unique index if not exists student_profiles_email_unique
+  on public.student_profiles (lower(email))
+  where email is not null;
 
--- Authenticated users can only insert notes with their own auth.uid()
-DROP POLICY IF EXISTS "Users can insert own spark notes" ON public.spark_notes;
-CREATE POLICY "Users can insert own spark notes"
-  ON public.spark_notes
-  FOR INSERT
-  TO authenticated
-  WITH CHECK (auth.uid() = user_id OR user_id IS NULL);
+create index if not exists student_profiles_user_id_idx on public.student_profiles (user_id);
 
--- Users can update only their own notes
-DROP POLICY IF EXISTS "Users can update own spark notes" ON public.spark_notes;
-CREATE POLICY "Users can update own spark notes"
-  ON public.spark_notes
-  FOR UPDATE
-  TO authenticated
-  USING (auth.uid() = user_id);
-
--- Users can delete only their own notes
-DROP POLICY IF EXISTS "Users can delete own spark notes" ON public.spark_notes;
-CREATE POLICY "Users can delete own spark notes"
-  ON public.spark_notes
-  FOR DELETE
-  TO authenticated
-  USING (auth.uid() = user_id);
-
--- 4. Create table for Tutoring Chat Sessions & Transcripts
-CREATE TABLE IF NOT EXISTS public.tutoring_sessions (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID DEFAULT auth.uid(),
-  subject TEXT NOT NULL,
-  grade TEXT NOT NULL,
-  language TEXT DEFAULT 'English',
-  messages JSONB DEFAULT '[]'::jsonb,
-  created_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now()
+-- ============================================================================
+-- 2. FIRMAMENT PROFILE  (one snapshot per learner, replaced on each save)
+-- ============================================================================
+create table if not exists public.firmament_profiles (
+  id                uuid primary key default gen_random_uuid(),
+  user_id           uuid references public.student_profiles(id) on delete cascade,
+  cognitive_score   text,
+  processing_speed  text,
+  retention_profile text,
+  scaffold_needs    text,
+  firmament_rules   jsonb not null default '[]'::jsonb,
+  life_path         jsonb not null default '{}'::jsonb,
+  mercury           jsonb not null default '{}'::jsonb,
+  cognitive_vector  jsonb not null default '{}'::jsonb,
+  raw_answers       jsonb not null default '{}'::jsonb,
+  calculated_at     timestamptz default now(),
+  created_at        timestamptz not null default now()
 );
 
--- 5. Enable Row Level Security (RLS) on tutoring_sessions
-ALTER TABLE public.tutoring_sessions ENABLE ROW LEVEL SECURITY;
+create index if not exists firmament_profiles_user_id_idx on public.firmament_profiles (user_id);
 
-DROP POLICY IF EXISTS "Users can manage own tutoring sessions" ON public.tutoring_sessions;
-CREATE POLICY "Users can manage own tutoring sessions"
-  ON public.tutoring_sessions
-  FOR ALL
-  TO authenticated
-  USING (auth.uid() = user_id OR user_id IS NULL)
-  WITH CHECK (auth.uid() = user_id OR user_id IS NULL);
-
--- 6. Allow public/anon read and insert fallback
-DROP POLICY IF EXISTS "Anon test access fallback" ON public.spark_notes;
-CREATE POLICY "Anon test access fallback"
-  ON public.spark_notes
-  FOR ALL
-  TO anon
-  USING (true)
-  WITH CHECK (true);
-
--- 7. Student profile (user information shown in Supabase)
-CREATE TABLE IF NOT EXISTS public.student_profiles (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID,
-  full_name TEXT,
-  email TEXT,
-  phone TEXT,
-  date_of_birth DATE,
-  grade TEXT,
-  trial_started_at TIMESTAMPTZ DEFAULT now(),
-  trial_expires_at TIMESTAMPTZ DEFAULT (now() + interval '3 days'),
-  subscription_status TEXT DEFAULT 'trial',
-  created_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now()
+-- ============================================================================
+-- 3. THE 16 ONBOARDING ANSWERS (raw diagnostic inputs)
+-- ============================================================================
+create table if not exists public.firmament_onboarding_answers (
+  id           uuid primary key default gen_random_uuid(),
+  user_id      uuid references public.student_profiles(id) on delete cascade,
+  question_id  integer not null,
+  answer_label text not null,
+  answer_text  text,
+  created_at   timestamptz not null default now()
 );
 
-ALTER TABLE public.student_profiles ENABLE ROW LEVEL SECURITY;
+create index if not exists firmament_answers_user_id_idx on public.firmament_onboarding_answers (user_id);
 
-DROP POLICY IF EXISTS "Anon student profiles access" ON public.student_profiles;
-CREATE POLICY "Anon student profiles access"
-  ON public.student_profiles
-  FOR ALL
-  TO anon
-  USING (true)
-  WITH CHECK (true);
-
-DROP POLICY IF EXISTS "Users manage own student profiles" ON public.student_profiles;
-CREATE POLICY "Users manage own student profiles"
-  ON public.student_profiles
-  FOR ALL
-  TO authenticated
-  USING (auth.uid() = user_id OR user_id IS NULL)
-  WITH CHECK (auth.uid() = user_id OR user_id IS NULL);
-
--- 8. Firmament profile (cognitive DNA derived from the 16 answers)
-CREATE TABLE IF NOT EXISTS public.firmament_profiles (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID REFERENCES public.student_profiles(id) ON DELETE CASCADE,
-  cognitive_score TEXT,
-  processing_speed TEXT,
-  retention_profile TEXT,
-  scaffold_needs TEXT,
-  firmament_rules JSONB DEFAULT '[]'::jsonb,
-  life_path JSONB DEFAULT '{}'::jsonb,
-  mercury JSONB DEFAULT '{}'::jsonb,
-  cognitive_vector JSONB DEFAULT '{}'::jsonb,
-  raw_answers JSONB DEFAULT '{}'::jsonb,
-  calculated_at TIMESTAMPTZ DEFAULT now(),
-  created_at TIMESTAMPTZ DEFAULT now()
+-- ============================================================================
+-- 4. SPARK NOTES (generated from tutoring conversations)
+-- ============================================================================
+create table if not exists public.spark_notes (
+  id               uuid primary key default gen_random_uuid(),
+  user_id          uuid default auth.uid(),
+  subject          text not null,
+  grade            text not null,
+  topic            text not null,
+  title            text not null,
+  summary          text not null,
+  key_breakdowns   jsonb not null default '[]'::jsonb,
+  weak_spots       jsonb not null default '[]'::jsonb,
+  spark_bullets    jsonb not null default '[]'::jsonb,
+  formulas_rules   jsonb not null default '[]'::jsonb,
+  examiner_traps   jsonb not null default '[]'::jsonb,
+  flashcards       jsonb not null default '[]'::jsonb,
+  cognitive_advice text,
+  raw_convo_count  integer default 0,
+  created_at       timestamptz not null default now()
 );
 
-ALTER TABLE public.firmament_profiles ENABLE ROW LEVEL SECURITY;
+create index if not exists spark_notes_user_id_idx on public.spark_notes (user_id);
 
-DROP POLICY IF EXISTS "Anon firmament profiles access" ON public.firmament_profiles;
-CREATE POLICY "Anon firmament profiles access"
-  ON public.firmament_profiles
-  FOR ALL
-  TO anon
-  USING (true)
-  WITH CHECK (true);
-
-DROP POLICY IF EXISTS "Users manage own firmament profiles" ON public.firmament_profiles;
-CREATE POLICY "Users manage own firmament profiles"
-  ON public.firmament_profiles
-  FOR ALL
-  TO authenticated
-  USING (auth.uid() = user_id OR user_id IS NULL)
-  WITH CHECK (auth.uid() = user_id OR user_id IS NULL);
-
--- 9. The 16 onboarding diagnostic answers (raw inputs serving Firmament rules)
-CREATE TABLE IF NOT EXISTS public.firmament_onboarding_answers (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID REFERENCES public.student_profiles(id) ON DELETE CASCADE,
-  question_id INTEGER NOT NULL,
-  answer_label TEXT NOT NULL,
-  answer_text TEXT,
-  created_at TIMESTAMPTZ DEFAULT now()
+-- ============================================================================
+-- 5. TUTORING SESSIONS (chat transcripts)
+-- ============================================================================
+create table if not exists public.tutoring_sessions (
+  id         uuid primary key default gen_random_uuid(),
+  user_id    uuid default auth.uid(),
+  subject    text not null,
+  grade      text not null,
+  language   text default 'English',
+  messages   jsonb not null default '[]'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
 
-ALTER TABLE public.firmament_onboarding_answers ENABLE ROW LEVEL SECURITY;
+create index if not exists tutoring_sessions_user_id_idx on public.tutoring_sessions (user_id);
 
--- 10. Term tests & exams pre-generated from CAPS vault
-CREATE TABLE IF NOT EXISTS public.term_tests (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  subject TEXT NOT NULL,
-  grade TEXT NOT NULL,
-  term TEXT NOT NULL,
-  exam_type TEXT NOT NULL,
-  duration_minutes INTEGER NOT NULL,
-  paper JSONB NOT NULL,
-  answer_sheet JSONB,
-  available_from DATE,
-  generated_at TIMESTAMPTZ DEFAULT now()
+-- ============================================================================
+-- 6. TERM TESTS (pre-generated papers, public read)
+-- ============================================================================
+create table if not exists public.term_tests (
+  id               uuid primary key default gen_random_uuid(),
+  subject          text not null,
+  grade            text not null,
+  term             text not null,
+  exam_type        text not null,
+  duration_minutes integer not null,
+  paper            jsonb not null,
+  answer_sheet     jsonb,
+  available_from   date,
+  generated_at     timestamptz not null default now()
 );
 
-ALTER TABLE public.term_tests ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS "Anon term tests access" ON public.term_tests;
-CREATE POLICY "Anon term tests access" ON public.term_tests FOR ALL TO anon USING (true) WITH CHECK (true);
+-- ============================================================================
+-- 7. SUBSCRIPTIONS (pre-wired for PayPal Subscriptions / any provider)
+-- ============================================================================
+create table if not exists public.subscriptions (
+  id                        uuid primary key default gen_random_uuid(),
+  user_id                   uuid references public.student_profiles(id) on delete cascade,
+  provider                  text not null default 'paypal',
+  provider_subscription_id  text unique,
+  plan_id                   text,
+  status                    text not null default 'pending',
+  current_period_end        timestamptz,
+  raw_event                 jsonb,
+  created_at                timestamptz not null default now(),
+  updated_at                timestamptz not null default now()
+);
 
-DROP POLICY IF EXISTS "Anon firmament answers access" ON public.firmament_onboarding_answers;
-CREATE POLICY "Anon firmament answers access"
-  ON public.firmament_onboarding_answers
-  FOR ALL
-  TO anon
-  USING (true)
-  WITH CHECK (true);
+create index if not exists subscriptions_user_id_idx on public.subscriptions (user_id);
+create index if not exists subscriptions_status_idx on public.subscriptions (status);
 
-DROP POLICY IF EXISTS "Users manage own firmament answers" ON public.firmament_onboarding_answers;
-CREATE POLICY "Users manage own firmament answers"
-  ON public.firmament_onboarding_answers
-  FOR ALL
-  TO authenticated
-  USING (auth.uid() = user_id OR user_id IS NULL)
-  WITH CHECK (auth.uid() = user_id OR user_id IS NULL);
+-- ============================================================================
+-- ROW LEVEL SECURITY
+-- The app can run before Supabase Auth is switched on, so `anon` keeps access.
+-- Once Supabase Auth is enabled, signed-in users are additionally scoped to
+-- their own rows.
+-- ============================================================================
+alter table public.student_profiles             enable row level security;
+alter table public.firmament_profiles            enable row level security;
+alter table public.firmament_onboarding_answers  enable row level security;
+alter table public.spark_notes                   enable row level security;
+alter table public.tutoring_sessions             enable row level security;
+alter table public.term_tests                    enable row level security;
+alter table public.subscriptions                 enable row level security;
+
+-- ---- student_profiles ------------------------------------------------------
+drop policy if exists "student_profiles anon access" on public.student_profiles;
+create policy "student_profiles anon access" on public.student_profiles
+  for all to anon using (true) with check (true);
+
+drop policy if exists "student_profiles own rows" on public.student_profiles;
+create policy "student_profiles own rows" on public.student_profiles
+  for all to authenticated
+  using (auth.uid() = user_id or user_id is null)
+  with check (auth.uid() = user_id or user_id is null);
+
+-- ---- firmament_profiles ----------------------------------------------------
+drop policy if exists "firmament_profiles anon access" on public.firmament_profiles;
+create policy "firmament_profiles anon access" on public.firmament_profiles
+  for all to anon using (true) with check (true);
+
+drop policy if exists "firmament_profiles own rows" on public.firmament_profiles;
+create policy "firmament_profiles own rows" on public.firmament_profiles
+  for all to authenticated
+  using (true) with check (true);
+
+-- ---- firmament_onboarding_answers ------------------------------------------
+drop policy if exists "firmament_answers anon access" on public.firmament_onboarding_answers;
+create policy "firmament_answers anon access" on public.firmament_onboarding_answers
+  for all to anon using (true) with check (true);
+
+drop policy if exists "firmament_answers own rows" on public.firmament_onboarding_answers;
+create policy "firmament_answers own rows" on public.firmament_onboarding_answers
+  for all to authenticated using (true) with check (true);
+
+-- ---- spark_notes -----------------------------------------------------------
+drop policy if exists "spark_notes anon access" on public.spark_notes;
+create policy "spark_notes anon access" on public.spark_notes
+  for all to anon using (true) with check (true);
+
+drop policy if exists "spark_notes own rows" on public.spark_notes;
+create policy "spark_notes own rows" on public.spark_notes
+  for all to authenticated
+  using (auth.uid() = user_id or user_id is null)
+  with check (auth.uid() = user_id or user_id is null);
+
+-- ---- tutoring_sessions -----------------------------------------------------
+drop policy if exists "tutoring_sessions anon access" on public.tutoring_sessions;
+create policy "tutoring_sessions anon access" on public.tutoring_sessions
+  for all to anon using (true) with check (true);
+
+drop policy if exists "tutoring_sessions own rows" on public.tutoring_sessions;
+create policy "tutoring_sessions own rows" on public.tutoring_sessions
+  for all to authenticated
+  using (auth.uid() = user_id or user_id is null)
+  with check (auth.uid() = user_id or user_id is null);
+
+-- ---- term_tests ------------------------------------------------------------
+drop policy if exists "term_tests anon access" on public.term_tests;
+create policy "term_tests anon access" on public.term_tests
+  for all to anon using (true) with check (true);
+
+drop policy if exists "term_tests authenticated read" on public.term_tests;
+create policy "term_tests authenticated read" on public.term_tests
+  for select to authenticated using (true);
+
+-- ---- subscriptions ---------------------------------------------------------
+drop policy if exists "subscriptions anon access" on public.subscriptions;
+create policy "subscriptions anon access" on public.subscriptions
+  for all to anon using (true) with check (true);
+
+drop policy if exists "subscriptions own rows" on public.subscriptions;
+create policy "subscriptions own rows" on public.subscriptions
+  for all to authenticated
+  using (auth.uid() = user_id or user_id is null)
+  with check (auth.uid() = user_id or user_id is null);
+
+-- ============================================================================
+-- PRIVILEGES (Supabase grants these by default; explicit for safety)
+-- ============================================================================
+grant usage on schema public to anon, authenticated;
+grant select, insert, update, delete on
+  public.student_profiles,
+  public.firmament_profiles,
+  public.firmament_onboarding_answers,
+  public.spark_notes,
+  public.tutoring_sessions,
+  public.term_tests,
+  public.subscriptions
+  to anon, authenticated;
+
+-- ============================================================================
+-- DONE. Verify with:
+--   select table_name from information_schema.tables
+--   where table_schema = 'public' order by table_name;
+-- ============================================================================
