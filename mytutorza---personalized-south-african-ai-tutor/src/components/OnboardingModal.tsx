@@ -215,6 +215,21 @@ export const OnboardingModal: React.FC = () => {
     }
 
     const profile = calculateFirmamentFromAnswers(fullName || account?.fullName || 'Learner', dob, updated);
+    // Send profile to API
+try {
+  const response = await fetch('/api/profile/get', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'save', profile, email })
+  };
+  const result = await response.json();
+  if (result.success) {
+    console.log('Profile saved to Supabase');
+  }
+} catch (error) {
+  console.error('Failed to save profile:', error);
+}
+
     const profileWithAnswers = { ...profile, rawAnswers: updated, onboardingAnswers: updated };
     setCalculatedResult(profileWithAnswers);
     setStep('result');
