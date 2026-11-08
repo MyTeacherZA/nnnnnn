@@ -1557,6 +1557,61 @@ app.post('/api/billing/checkout', (req: Request, res: Response) => {
   });
 });
 
+// Firmament Profile API
+app.post('/api/profile/get', async (req: Request, res: Response) => {
+  try {
+    const { action, profile, email } = req.body;
+
+    // Initialize Supabase client
+    const supabase = createClient(process.env.VITE_SUPABASE_URL, process.env.VITE_SUPABASE_ANON_KEY);
+
+    if (action === 'save') {
+      // Save profile to Supabase
+      const { data, error } = await supabase
+        .from('firmament_profiles')
+        .upsert({
+          user_id: auth.uid(),
+          life_path_number: profile.life_path?.number,
+          life_path_profile: profile.life_path?.profile,
+          mercury_element: profile.mercury?.element,
+          pacing_style: profile.mercury?.pacing_style,
+          temperament: profile.mercury?.temperament,
+          learning_rhythm: profile.mercury?.learning_rhythm,
+          primary_modality: profile.cognitive_vector?.primary_modality,
+          secondary_modality: profile.cognitive_vector?.secondary_modality,
+          cognitive_score: profile.life_path?.profile,
+          retention_profile: profile.retention_profile,
+          category_interpretations: JSON.stringify(profile.category_interpretations),
+          raw_answers: JSON.stringify(profile.raw_answers),
+          onboarding_answers: JSON.stringify(profile.onboarding_answers),
+          calculated_at: profile.life_path?.calculatedAt,
+          updated_at: new Date().toISOString(),
+        }
+        .select()
+      ;
+      if (error) throw error;
+      res.json({ success: true, profile_saved: true });
+    }
+
+    if (action === 'get') {
+      // Get profile from Supabase
+      const { data, error } = await supabase
+        .from('firmament_profiles')
+        .select('*')
+        .eq('user_id', auth.uid())
+        .single()
+      ;
+      if (error) throw error;
+      res.json({ success: true, profile: data });
+    }
+
+    res.json({ success: false, error: 'Invalid action' });
+  } catch (error) {
+    console.error('Profile API error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ---------------------------------------------------------------------
 // TERM TESTS / EXAMS PRE-GENERATION (batch job)
 // ---------------------------------------------------------------------
