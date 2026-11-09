@@ -14,8 +14,11 @@ import {
   Compass,
   HelpCircle,
   LogOut,
+  CreditCard,
+  ShieldCheck,
 } from 'lucide-react';
 import { OfficialLanguage } from '../types';
+import { subscriptionBadgeLabel } from '../services/subscription';
 
 export const Navbar: React.FC = () => {
   const {
@@ -28,6 +31,8 @@ export const Navbar: React.FC = () => {
     setIsTextbookModalOpen,
     setIsContactModalOpen,
     setIsOnboardingOpen,
+    setIsSubscriptionOpen,
+    subscription,
     updateTutoringLanguageForActiveSubject,
     displayMode,
     logout,
@@ -35,6 +40,15 @@ export const Navbar: React.FC = () => {
 
   // The 11 official SA languages only apply to South African CAPS learners.
   const offersSaLanguages = student?.country === 'ZA';
+
+  const isActiveSub = subscription?.status === 'active';
+  const isTrialSub = subscription?.status === 'trial';
+  const subscriptionButtonClass = isActiveSub
+    ? 'bg-emerald-500/15 border border-emerald-500/40 hover:border-emerald-400 text-emerald-300'
+    : isTrialSub
+    ? 'bg-amber-500/15 border border-amber-500/40 hover:border-amber-400 text-amber-300'
+    : 'btn-accent text-white';
+  const subscriptionLabel = subscriptionBadgeLabel(subscription);
 
   const isLight = displayMode === 'light';
   const isSilver = displayMode === 'normal';
@@ -78,11 +92,11 @@ export const Navbar: React.FC = () => {
                   MyTutor<span className="accent-gradient-text">ZA</span>
                 </span>
                 <span className="text-[10px] font-extrabold uppercase px-1.5 py-0.5 rounded border border-slate-400/30 bg-slate-500/10 text-slate-500 dark:text-slate-200 tracking-wider">
-                  CAPS
+                  {student?.country === 'ZA' ? 'CAPS' : student?.country === 'UK' ? 'UK' : 'US'}
                 </span>
               </div>
               <p className={`text-[11px] font-medium hidden sm:block ${isLight || isSilver ? 'text-slate-500' : 'text-slate-400'}`}>
-                Personalized South African AI Engine
+                Finally! Your Own Personal Private Tutor. Anywhere, Anytime!
               </p>
             </div>
           </div>
@@ -133,6 +147,22 @@ export const Navbar: React.FC = () => {
 
           {/* Right Navigation & Action Items */}
           <div className="flex items-center gap-1.5 sm:gap-2">
+            {/* Subscription status / upgrade — always visible so access is discoverable */}
+            <button
+              onClick={() => setIsSubscriptionOpen(true)}
+              className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl text-xs font-bold transition-all shadow-sm ${subscriptionButtonClass}`}
+              title={
+                subscription?.status === 'active'
+                  ? 'Subscription active — manage billing'
+                  : subscription?.status === 'trial'
+                  ? `${subscriptionLabel} — subscribe to keep access`
+                  : 'Subscribe to unlock Tutoring, Study and Exam'
+              }
+            >
+              {isActiveSub ? <ShieldCheck className="w-4 h-4" /> : <CreditCard className="w-4 h-4" />}
+              <span className="hidden sm:inline">{subscriptionLabel}</span>
+            </button>
+
             {/* Textbook button */}
             <button
               onClick={() => setIsTextbookModalOpen(true)}

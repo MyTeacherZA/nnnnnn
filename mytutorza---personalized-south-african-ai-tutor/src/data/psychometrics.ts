@@ -376,6 +376,8 @@ export const QUESTIONS_PER_LEARNER = 24;
 
 interface DimensionPole {
   label: string;
+  /** Operational sub-behaviours observed when the learner is on this pole. */
+  components: string[];
   description: string;
   aiInstruction: string;
 }
@@ -388,123 +390,155 @@ export interface DimensionGuideEntry {
 
 export const DIMENSION_GUIDE: Record<DimensionKey, DimensionGuideEntry> = {
   structure: {
-    label: 'Field Independence vs Field Dependence',
+    label: 'Field Independence vs Field Dependence (Structural Autonomy)',
     positive: {
       label: 'Internal Structural Synthesis',
-      description: 'Builds understanding from first principles and justifies answers independently.',
+      components: ['Self-guided path', 'Raw component deconstruction', 'Internal proof'],
+      description:
+        'Deconstructs raw components and builds the structure from first principles, then proves the result internally.',
       aiInstruction:
         'Offer raw components and let the learner assemble the structure. Ask them to justify each step. Do not pre-package the method.',
     },
     negative: {
       label: 'External Contextual Anchor',
-      description: 'Needs a scaffolded template, worked example or external check before proceeding.',
+      components: ['Step-by-step template', 'Big-picture overview', 'External solution verification'],
+      description:
+        'Needs a scaffolded template, a whole-task overview or an external check before committing to a path.',
       aiInstruction:
-        'Provide a clear step-by-step template and one worked example before asking the learner to continue.',
+        'Provide a clear step-by-step template, a one-paragraph big-picture overview, and one worked example before asking the learner to continue. Let them verify against the model.',
     },
   },
   tempo: {
-    label: 'Conceptual Tempo',
+    label: 'Conceptual Tempo (Speed-Accuracy Calibration)',
     positive: {
       label: 'High Velocity & Trial-and-Error',
-      description: 'Processes quickly, guesses early and iterates on mistakes.',
+      components: ['Fast guess', 'Speed focus', 'Rapid error iteration', 'Surgical step-debugging'],
+      description:
+        'Moves fast, commits early, then iterates by debugging the exact step that failed.',
       aiInstruction:
-        'Use short, high-tempo prompts. Encourage rapid attempts and fast feedback loops. Do not over-explain before they try.',
+        'Use short, high-tempo prompts. Encourage rapid attempts, immediate feedback and surgical debugging of the failed step. Do not over-explain before they try.',
     },
     negative: {
       label: 'Deliberate Precision',
-      description: 'Processes slowly, prioritises accuracy and verifies before answering.',
+      components: ['Deep reflective thinking', '100% accuracy focus', 'Stop-and-wait hint reliance', 'Macro ground-zero restart'],
+      description:
+        'Thinks deeply, prioritises complete accuracy, and may stop for a hint or restart from first principles when uncertain.',
       aiInstruction:
-        'Allow thinking time. Ask for a full step layout and a verification check before moving on.',
+        'Allow thinking time. Ask for a full step layout and a verification check before moving on. If they stall, give a minimal hint rather than the next step, and be ready to restart from the last secure foundation.',
     },
   },
   load: {
-    label: 'Cognitive Load Capacity',
+    label: 'Cognitive Load Capacity (Working-Memory Bandwidth)',
     positive: {
       label: 'High Working Memory Bandwidth',
-      description: 'Can hold multi-step problems and long instructions mentally.',
+      components: ['All information upfront', 'Long study blocks', 'Multi-step stack in head', 'Internal mental scratchpad'],
+      description:
+        'Can take the whole task upfront, hold a multi-step stack mentally, and sustain long study blocks.',
       aiInstruction:
-        'You may present multi-step reasoning and several variables at once. Keep the intellectual demand high.',
+        'Present the full task and several variables at once. Keep blocks long and intellectually demanding. Do not fragment the reasoning unless asked.',
     },
     negative: {
       label: 'Micro-Chunking & Low Overload Threshold',
-      description: 'Needs bite-sized instructions and external offloading.',
+      components: ['Bite-sized instructions', 'Short bursts', 'Single-action constraints', 'Mandatory external offloading'],
+      description:
+        'Overloads quickly; needs one action at a time, short bursts and written external offloading.',
       aiInstruction:
-        'Deliver exactly one instruction per turn. Require the learner to write each step down before continuing.',
+        'Deliver exactly one action per turn. Keep bursts short. Require the learner to write each step into an external scratchpad before continuing.',
     },
   },
   pathway: {
-    label: 'Perceptual Processing Pathway',
+    label: 'Perceptual Processing Pathway (Sensory Encoding)',
     positive: {
-      label: 'Visual-Spatial & Kinesthetic',
-      description: 'Encodes through diagrams, spatial models, movement and concrete experimentation.',
+      label: 'Visual-Spatial & Kinesthetic Execution',
+      components: ['Diagrams and mind maps', 'Practice-first', 'Concrete real-world analogies', 'Mental picture mapping'],
+      description:
+        'Encodes through diagrams, mind maps, movement, hands-on practice and concrete real-world analogues.',
       aiInstruction:
-        'Frame every concept as a diagram, mental image or physical mechanism before introducing symbols.',
+        'Frame every concept as a diagram, mind map, mental picture or physical mechanism before introducing symbols. Prefer practice-first examples.',
     },
     negative: {
-      label: 'Linear Syntactic & Verbal',
-      description: 'Encodes through language, definitions, sequences and verbal reasoning.',
+      label: 'Linear Syntactic & Verbal Encoding',
+      components: ['Structured text', 'Theory-first', 'Direct mathematical formulas', 'Out-loud verbal re-articulation'],
+      description:
+        'Encodes through structured text, formal theory, direct formulas and verbal re-articulation.',
       aiInstruction:
-        'Use precise verbal definitions, ordered steps and verbal re-articulation checks.',
+        'Use precise verbal definitions, ordered written steps, direct formula notation, and ask the learner to re-articulate the rule out loud or in writing.',
     },
   },
   efficacy: {
-    label: 'Academic Self-Efficacy',
+    label: 'Academic Self-Efficacy (Bandura)',
     positive: {
       label: 'High Academic Self-Efficacy',
-      description: 'Believes effort and strategy can solve difficult work.',
+      components: ['Resilient exploration', 'Asks why when stuck', 'Admits confusion immediately', 'Views mistakes as data'],
+      description:
+        'Believes the brain is capable; a missing answer is a minor step to fix, not a verdict on ability.',
       aiInstruction:
-        'Set ambitious challenges and expect independent attempts. Treat errors as data, not failure.',
+        'Set ambitious challenges and expect independent attempts. Reward the question why, treat errors as data, and keep the learner in resilient exploration.',
     },
     negative: {
-      label: 'Guarded Self-Efficacy',
-      description: 'Doubts capacity when work becomes difficult.',
+      label: 'Low Academic Self-Efficacy',
+      components: ['Expects failure', 'Avoids attempts', 'Needs certainty before trying', 'Reads difficulty as incapability'],
+      description:
+        'Expects failure when a task is hard and interprets difficulty as proof of incapability.',
       aiInstruction:
-        'Open with a solvable foothold, then escalate difficulty gradually. Explicitly attribute progress to strategy and effort.',
+        'Open with a solvable foothold, escalate difficulty in visible increments, and explicitly attribute each success to strategy and effort rather than talent.',
     },
   },
   egoThreat: {
     label: 'Ego Threat & Academic Vulnerability',
     positive: {
       label: 'Low Ego Threat',
-      description: 'Comfortable being seen as a learner and being corrected.',
+      components: ['Comfortable being corrected', 'Asks basic questions', 'Separates error from identity', 'Tolerates public uncertainty'],
+      description:
+        'Perceives questions and correction as learning moments, not threats to dignity or peer standing.',
       aiInstruction:
-        'Provide direct, honest corrective feedback. The learner can tolerate being shown an error.',
+        'Provide direct, honest corrective feedback. The learner can tolerate being shown an error in the normal flow of the lesson.',
     },
     negative: {
       label: 'High Ego Threat',
-      description: 'Experiences correction and public uncertainty as a threat to dignity.',
+      components: ['Perceives questions as public threat', 'Defends dignity', 'Avoids exposure', 'Confuses error with stupidity'],
+      description:
+        'Experiences being questioned or corrected as a public threat to dignity, intelligence and peer standing.',
       aiInstruction:
-        'Correct privately and indirectly. Never frame an error as a personal flaw; frame it as a normal step in the method.',
+        'Correct privately and indirectly. Never frame an error as a personal flaw. Normalise the error as a property of the method, and avoid putting the learner on the spot.',
     },
   },
   presentation: {
-    label: 'Defensive Self-Presentation',
+    label: 'Defensive Self-Presentation & Impression Management',
     positive: {
       label: 'Transparent Self-Presentation',
-      description: 'Admits confusion and shows real work.',
+      components: ['Admits confusion immediately', 'Shows rough work', 'Asks for help early', 'Accurate self-report'],
+      description:
+        'Protects learning over image: admits confusion, shows rough work and asks for help early.',
       aiInstruction:
-        'Ask directly what they do not understand and expect an honest answer.',
+        'Ask directly what they do not understand, expect an honest answer, and ask to see rough work rather than only final answers.',
     },
     negative: {
       label: 'Defensive Self-Presentation',
-      description: 'Hides confusion or pretends to understand to protect image.',
+      components: ['Hides confusion', 'Pretends to understand', 'Guesses to stop scrutiny', 'Dismissive brush-off'],
+      description:
+        'Uses impression management (pretending, guessing, silence or a dismissive brush-off) to protect the ego.',
       aiInstruction:
-        'Do not ask "do you understand?". Use quick low-stakes diagnostic questions to locate the real gap without exposing them.',
+        'Do not ask whether they understand. Use quick low-stakes diagnostic questions to locate the real gap without exposing them. Treat "I do not care" as a protective signal, not a motivational fact.',
     },
   },
   helplessness: {
-    label: 'Learned Helplessness vs Mastery Orientation',
+    label: 'Learned Helplessness & Academic Shame (Seligman)',
     positive: {
       label: 'Persistent Mastery Orientation',
-      description: 'Keeps trying after failure and believes practice changes ability.',
+      components: ['Keeps trying after failure', 'Believes practice changes ability', 'Plans a new strategy', 'Pushes through difficulty'],
+      description:
+        'Keeps trying after failure and believes effort and strategy can change ability.',
       aiInstruction:
-        'Use stretch goals and long-horizon practice. Reinforce that difficulty is the point of practice.',
+        'Use stretch goals and long-horizon practice. Reinforce that difficulty is the point of practice and that the learner action produced the progress.',
     },
     negative: {
-      label: 'Learned Helplessness Risk',
-      description: 'Gives up after repeated failure and doubts that effort helps.',
+      label: 'Learned Helplessness & Academic Shame',
+      components: ['Freezes before trying', 'Effort feels futile', 'Shame after failure', 'Avoids the subject'],
+      description:
+        'After repeated failure or embarrassment, freezes or shuts down before trying, believing effort cannot change the outcome.',
       aiInstruction:
-        'Engineer early wins. Break the task into guaranteed-success steps and explicitly credit each success to the learner\'s action.',
+        'Engineer early wins. Break the task into guaranteed-success steps, remove time pressure, and explicitly credit each success to the learner action. Do not moralise about effort.',
     },
   },
 };
@@ -729,6 +763,7 @@ function scoreDimensions(questions: ForcedChoiceQuestion[], answers: AnswerMap):
       percentage: Math.round(((score + items.length) / (2 * items.length)) * 100),
       label: guide.label,
       poleLabel: pole.label,
+      components: pole.components,
       description: pole.description,
       aiInstruction: pole.aiInstruction,
     };

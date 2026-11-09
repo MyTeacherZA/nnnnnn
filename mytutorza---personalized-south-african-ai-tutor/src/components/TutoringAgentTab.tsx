@@ -19,6 +19,7 @@ import {
 import { ChatMessage, PersonalizedSparkNotes } from '../types';
 import { SparkNotesModal } from './SparkNotesModal';
 import { getStoredSupabaseConfig, saveSparkNotesToSupabase, getLocalSparkNotes } from '../services/supabase';
+import { notifySubscriptionRequired } from '../services/subscription';
 
 export const TutoringAgentTab: React.FC = () => {
   const { student, activeSubject } = useApp();
@@ -77,6 +78,7 @@ export const TutoringAgentTab: React.FC = () => {
           ...(supabaseConfig.jwtToken ? { Authorization: `Bearer ${supabaseConfig.jwtToken}` } : {}),
         },
         body: JSON.stringify({
+          email: student?.email,
           conversation: messages,
           subject: activeSubject.name,
           grade: student?.grade,
@@ -88,6 +90,8 @@ export const TutoringAgentTab: React.FC = () => {
           supabaseAnonKey: supabaseConfig.anonKey,
         }),
       });
+
+      if (notifySubscriptionRequired(response)) return;
 
       const data = await response.json();
       if (data.sparkNotes) {
@@ -136,6 +140,7 @@ export const TutoringAgentTab: React.FC = () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          email: student?.email,
           message: query,
           firmamentProfile: student?.firmament,
           subject: activeSubject.name,
@@ -151,6 +156,8 @@ export const TutoringAgentTab: React.FC = () => {
           history: messages.slice(-5).map((m) => ({ sender: m.sender, text: m.text })),
         }),
       });
+
+      if (notifySubscriptionRequired(response)) return;
 
       const data = await response.json();
       const aiReplyText = data.reply || data.error || 'I am ready to help you work through this step-by-step.';

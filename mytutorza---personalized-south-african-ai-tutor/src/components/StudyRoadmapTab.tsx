@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import { StudyRoadmap, RoadmapWeek } from '../types';
 import confetti from 'canvas-confetti';
+import { notifySubscriptionRequired } from '../services/subscription';
 
 export const StudyRoadmapTab: React.FC = () => {
   const { student, activeSubject, setActiveTab, displayMode } = useApp();
@@ -62,6 +63,7 @@ export const StudyRoadmapTab: React.FC = () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          email: student?.email,
           subject: activeSubject.name,
           grade: student?.grade || 'Grade 12',
           firmamentProfile: student?.firmament,
@@ -74,6 +76,11 @@ export const StudyRoadmapTab: React.FC = () => {
           nation: student?.nation,
         }),
       });
+
+      if (notifySubscriptionRequired(response)) {
+        setLoading(false);
+        return;
+      }
 
       if (!response.ok) {
         throw new Error(`HTTP error ${response.status}`);

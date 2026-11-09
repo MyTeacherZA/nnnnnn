@@ -32,7 +32,8 @@ and never a demo learner. The flow is:
 2. **About you** — date of birth, grade, country (**United States / United
    Kingdom / South Africa**), then state, UK nation + region, or SA province.
 3. **Subjects** — multi-select of the subjects taken at school.
-4. **Firmament diagnostic** — the 16 psychometric questions.
+4. **Firmament diagnostic** — 24 grade-specific “This vs. That” questions
+   (8 cognitive dimensions × 3 forced-choice items).
 5. **Result** — the computed cognitive profile, then "Enter my workspace".
 
 Everything is persisted to `localStorage` (key `mytutorza_profile`) and pushed to
@@ -52,6 +53,30 @@ the framework:
 | South Africa | CAPS (DBE) vault grounding |
 
 The 11 official South African language selectors only appear for `ZA` learners.
+
+## Subscriptions & access
+
+The navbar always shows the learner's entitlement (`Trial · 2d`, `Active`,
+`Subscribe`) and opens the plans dialog. The same dialog is reachable from the
+landing page via **Plans & pricing**.
+
+- New learners start on a 3-day trial (`student_profiles.trial_expires_at`).
+- Tutoring, Study, Roadmap and Exam are gated once billing is live; Formula
+  Sheets stay free.
+- Enforcement switches on automatically when `PAYPAL_CLIENT_ID`,
+  `PAYPAL_CLIENT_SECRET` and at least one `PAYPAL_PLAN_*` id are configured.
+  Until then `GET /api/billing/status` returns `enforced: false` and access stays
+  open, so the app is never bricked before payments are connected.
+- Checkout returns to `/?paypal=success&subscription_id=...`; the client calls
+  `POST /api/billing/paypal/confirm`, which verifies the subscription with PayPal
+  and updates `subscriptions` + `student_profiles.subscription_status` without
+  waiting for a webhook.
+- `POST /api/billing/paypal/webhook` remains the source of truth for renewals,
+  cancellations and expirations.
+
+To enable billing, run `npm run paypal:plans` (or create the plans in the PayPal
+dashboard) and set the plan ids in `.env` / Render. Use `PAYPAL_MODE=live` in
+production and `sandbox` for testing.
 
 ## Password recovery
 

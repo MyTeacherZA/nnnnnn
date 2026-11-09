@@ -18,11 +18,64 @@ import { SettingsModal } from './components/SettingsModal';
 import { TextbookModal } from './components/TextbookModal';
 import { ContactModal } from './components/ContactModal';
 import { SubscriptionModal } from './components/SubscriptionModal';
+import { SubscriptionGate } from './components/SubscriptionGate';
 import { PasswordRecovery } from './components/PasswordRecovery';
 
 const AppContent: React.FC = () => {
-  const { activeTab, displayMode, hasCompletedOnboarding } = useApp();
-  const [showSub, setShowSub] = React.useState(false);
+  const {
+    activeTab,
+    displayMode,
+    hasCompletedOnboarding,
+    student,
+    isSubscriptionOpen,
+    setIsSubscriptionOpen,
+    refreshSubscription,
+  } = useApp();
+
+  // PayPal appends ?paypal=success&subscription_id=... on return. Confirm the
+  // subscription server-side so access is granted even if a webhook is delayed.
+  React.useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const paypal = params.get('paypal');
+    if (!paypal) return;
+
+    const subscriptionId =
+      params.get('subscription_id') || params.get('subscriptionId') || params.get('ba_token');
+    const email = student?.email;
+
+    const cleanUrl = () => {
+      params.delete('paypal');
+      params.delete('subscription_id');
+      params.delete('subscriptionId');
+      params.delete('ba_token');
+      const qs = params.toString();
+      window.history.replaceState({}, '', `${window.location.pathname}${qs ? `?${qs}` : ''}`);
+    };
+
+    if (paypal === 'success' && subscriptionId && email) {
+      void fetch('/api/billing/paypal/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subscriptionId, email }),
+      })
+        .then((r) => r.json())
+        .catch(() => null)
+        .finally(() => {
+          void refreshSubscription();
+          cleanUrl();
+        });
+    } else {
+      cleanUrl();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [student?.email]);
+
+  // Any agent that receives a 402 can ask the shell to open the paywall.
+  React.useEffect(() => {
+    const openSubscription = () => setIsSubscriptionOpen(true);
+    window.addEventListener('mytutorza:open-subscription', openSubscription);
+    return () => window.removeEventListener('mytutorza:open-subscription', openSubscription);
+  }, [setIsSubscriptionOpen]);
 
   const isLight = displayMode === 'light';
   const isSilver = displayMode === 'normal';
@@ -33,9 +86,17 @@ const AppContent: React.FC = () => {
     return (
       <div className="min-h-screen flex flex-col bg-slate-950 text-slate-100 font-sans">
         <header className="border-b border-slate-800/80">
-          <div className="max-w-5xl mx-auto px-4 py-4 flex items-center gap-2">
-            <GraduationCap className="w-6 h-6 text-sky-400" />
-            <span className="text-lg font-black tracking-tight">MyTutorZA</span>
+          <div className="max-w-5xl mx-auto px-4 py-4 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <GraduationCap className="w-6 h-6 text-sky-400" />
+              <span className="text-lg font-black tracking-tight">MyTutorZA</span>
+            </div>
+            <button
+              onClick={() => setIsSubscriptionOpen(true)}
+              className="px-3 py-1.5 rounded-xl text-xs font-bold bg-slate-900 border border-slate-700 hover:border-slate-500 text-slate-200"
+            >
+              Plans &amp; pricing
+            </button>
           </div>
         </header>
 
@@ -73,6 +134,7 @@ const AppContent: React.FC = () => {
 
         <OnboardingModal />
         <PasswordRecovery />
+        <SubscriptionModal open={isSubscriptionOpen} onClose={() => setIsSubscriptionOpen(false)} />
       </div>
     );
   }
@@ -97,10 +159,26 @@ const AppContent: React.FC = () => {
 
         {/* Tab Views */}
         <div className="mt-6">
-          {activeTab === 'tutoring' && <TutoringAgentTab />}
-          {activeTab === 'study' && <StudyAgentTab />}
-          {activeTab === 'roadmap' && <StudyRoadmapTab />}
-          {activeTab === 'exam' && <ExamAgentTab />}
+          {activeTab === 'tutoring' && (
+            <SubscriptionGate>
+              <TutoringAgentTab />
+            </SubscriptionGate>
+          )}
+          {activeTab === 'study' && (
+            <SubscriptionGate>
+              <StudyAgentTab />
+            </SubscriptionGate>
+          )}
+          {activeTab === 'roadmap' && (
+            <SubscriptionGate>
+              <StudyRoadmapTab />
+            </SubscriptionGate>
+          )}
+          {activeTab === 'exam' && (
+            <SubscriptionGate>
+              <ExamAgentTab />
+            </SubscriptionGate>
+          )}
           {activeTab === 'formulas' && <FormulaSheetsTab />}
         </div>
       </main>
@@ -131,7 +209,7 @@ const AppContent: React.FC = () => {
       <SettingsModal />
       <TextbookModal />
       <ContactModal />
-      <SubscriptionModal open={showSub} onClose={() => setShowSub(false)} />
+      <SubscriptionModal open={isSubscriptionOpen} onClose={() => setIsSubscriptionOpen(false)} />
     </div>
   );
 };

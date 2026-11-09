@@ -20,6 +20,7 @@ import {
   Minimize2,
 } from 'lucide-react';
 import { ExamPaper } from '../types';
+import { notifySubscriptionRequired } from '../services/subscription';
 
 export const ExamAgentTab: React.FC = () => {
   const { student, activeSubject } = useApp();
@@ -64,6 +65,7 @@ export const ExamAgentTab: React.FC = () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          email: student?.email,
           subject: activeSubject.name,
           grade: student?.grade || 'Grade 12',
           examType,
@@ -75,6 +77,11 @@ export const ExamAgentTab: React.FC = () => {
           term: examType.includes('June') ? 'Term 2' : 'Term 4',
         }),
       });
+
+      if (notifySubscriptionRequired(response)) {
+        setLoading(false);
+        return;
+      }
 
       if (!response.ok) {
         throw new Error(`HTTP error status ${response.status}`);

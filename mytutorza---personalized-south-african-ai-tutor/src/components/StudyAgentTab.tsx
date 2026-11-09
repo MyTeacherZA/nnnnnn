@@ -24,6 +24,7 @@ import {
 import { StudyNote, PersonalizedSparkNotes } from '../types';
 import { SparkNotesModal } from './SparkNotesModal';
 import { fetchUserSparkNotes, deleteSparkNoteLocally } from '../services/supabase';
+import { notifySubscriptionRequired } from '../services/subscription';
 
 export const StudyAgentTab: React.FC = () => {
   const { student, activeSubject, setActiveTab, displayMode } = useApp();
@@ -71,6 +72,7 @@ export const StudyAgentTab: React.FC = () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          email: student?.email,
           subject: activeSubject.name,
           grade: student?.grade,
           topic: targetTopic,
@@ -81,6 +83,11 @@ export const StudyAgentTab: React.FC = () => {
           nation: student?.nation,
         }),
       });
+
+      if (notifySubscriptionRequired(response)) {
+        setLoading(false);
+        return;
+      }
 
       if (!response.ok) {
         throw new Error(`HTTP error ${response.status}`);

@@ -111,8 +111,14 @@ export function buildFirmamentSystemPrompt(params: FirmamentPromptParams): strin
     .map((key) => {
       const dimGuide = DIMENSION_GUIDE[key];
       const measured = measuredDimensions[key];
+      const fallbackPole =
+        measured?.poleLabel === dimGuide.negative.label ? dimGuide.negative : dimGuide.positive;
+      const fallbackComponents = fallbackPole.components.join(' / ');
+      const measuredComponents = Array.isArray(measured?.components)
+        ? measured.components.join(' / ')
+        : fallbackComponents;
       const pole = measured
-        ? `${measured.poleLabel} (${measured.description})`
+        ? `${measured.poleLabel} [${measuredComponents}] (${measured.description})`
         : `${dimGuide.positive.label} — not yet measured`;
       const instruction = measured?.aiInstruction || dimGuide.positive.aiInstruction;
       return `- ${dimGuide.label}: ${pole}\n  REQUIRED AI BEHAVIOUR: ${instruction}`;

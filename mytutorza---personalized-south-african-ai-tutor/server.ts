@@ -474,6 +474,7 @@ function getAuthenticDBEPaper(
 
 app.post('/api/tutoring/chat', async (req: Request, res: Response) => {
   try {
+    if (await rejectWithoutAgentAccess(req, res)) return;
     const {
       message,
       firmamentProfile,
@@ -731,6 +732,7 @@ function generatePersonalizedSparkNotesFallback(params: {
 
 app.post('/api/tutoring/analyze-spark-notes', async (req: Request, res: Response) => {
   try {
+    if (await rejectWithoutAgentAccess(req, res)) return;
     const {
       conversation,
       subject,
@@ -1019,6 +1021,7 @@ app.delete('/api/spark-notes/:id', async (req: Request, res: Response) => {
 
 app.post('/api/study/generate', async (req: Request, res: Response) => {
   try {
+    if (await rejectWithoutAgentAccess(req, res)) return;
     const { subject, grade, topic, term, language, state, country, nation } = req.body;
     const curriculum = describeCurriculum(country, state, nation);
     const cacheKey =
@@ -1580,6 +1583,7 @@ function getFirmamentRoadmapFallback(
 
 app.post('/api/roadmap/generate', async (req: Request, res: Response) => {
   try {
+    if (await rejectWithoutAgentAccess(req, res)) return;
     const { subject, grade, firmamentProfile, previousMark, targetExam, focusTopic, language, state, country, nation } =
       req.body;
     const targetSubject = subject || 'Mathematics (Pure)';
@@ -1732,6 +1736,7 @@ RETURN STRICT JSON matching this schema:
 // ---------------------------------------------------------------------
 app.post('/api/exam/generate', async (req: Request, res: Response) => {
   try {
+    if (await rejectWithoutAgentAccess(req, res)) return;
     const { subject, grade, examType, durationMinutes, topic, term, state, country, nation } = req.body;
     const dur = Number(durationMinutes) || 60;
     const paperType = examType || 'November Final Exam';
@@ -1882,6 +1887,7 @@ app.post('/api/feedback', async (req: Request, res: Response) => {
 // LLM TUTOR (firmament-guarded, cost-efficient)
 // ---------------------------------------------------------------------
 app.post('/api/tutoring/chat', async (req: Request, res: Response) => {
+  if (await rejectWithoutAgentAccess(req, res)) return;
   const { message, firmamentProfile, subject, grade, country, state, nation, language, taskType } = req.body || {};
   const userQuery = message;
   // Cap user input to ~1500 words to control cost.
@@ -2028,22 +2034,181 @@ const PAYPAL_PLANS: Record<string, { planId: string; label: string; price: strin
   monthly_gbp: { planId: process.env.PAYPAL_PLAN_MONTHLY_GBP || '', label: '1 month', price: '10.50', currency: 'GBP', cycle: 'monthly' },
 };
 
+/** Billing is enforced only once PayPal credentials + at least one plan exist. */
+function subscriptionsConfigured(): boolean {
+  return Boolean(
+    process.env.PAYPAL_CLIENT_ID &&
+      process.env.PAYPAL_CLIENT_SECRET &&
+      Object.values(PAYPAL_PLANS).some((plan) => !!plan.planId)
+  );
+}
+
+interface BillingAccess {
+  status: string;
+  active: boolean;
+  enforced: boolean;
+  trialEndsAt?: string;
+  plan?: string;
+  provider?: string;
+  currentPeriodEnd?: string;
+  daysLeft?: number;
+}
+
+function computeBillingAccess(row: any, enforced: boolean): BillingAccess {
+  const status = String(row?.subscription_status || 'trial').toLowerCase();
+  const trialMs = row?.trial_expires_at ? new Date(row.trial_expires_at).getTime() : 0;
+  const trialActive = status === 'trial' && (!trialMs || trialMs > Date.now());
+  const paidActive = status === 'active' || status === 'past_due';
+  const active = !enforced || paidActive || trialActive;
+  const daysLeft = trialMs ? Math.max(0, Math.ceil((trialMs - Date.now()) / 86400000)) : undefined;
+
+  return {
+    status,
+    active,
+    enforced,
+    trialEndsAt: row?.trial_expires_at || undefined,
+    plan: row?.plan_id || undefined,
+    provider: row?.provider || undefined,
+    currentPeriodEnd: row?.current_period_end || undefined,
+    daysLeft,
+  };
+}
+
+async function findProfileByEmail(client: any, email: string) {
+  if (!client || !email) return null;
+  const { data } = await client
+    .from('student_profiles')
+    .select('*')
+    .ilike('email', email)
+    .limit(1)
+    .maybeSingle();
+  return data || null;
+}
+
+async function latestSubscriptionFor(client: any, profileId: string) {
+  if (!client || !profileId) return null;
+  const { data } = await client
+    .from('subscriptions')
+    .select('*')
+    .eq('user_id', profileId)
+    .order('updated_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  return data || null;
+}
+
+/** Returns true when the request has already been rejected with a 402. */
+async function rejectWithoutAgentAccess(req: Request, res: Response): Promise<boolean> {
+  const email = String(req.body?.email || req.body?.userEmail || '').trim().toLowerCase();
+  const enforced = subscriptionsConfigured();
+  const client = getServiceSupabaseClient();
+
+  // Never brick the app before billing is live or when persistence is missing.
+  if (!enforced || !client || !email) return false;
+
+  const profile = await findProfileByEmail(client, email);
+  if (!profile) return false;
+
+  const access = computeBillingAccess(profile, true);
+  if (access.active) return false;
+
+  res.status(402).json({
+    error: 'Your subscription has ended. Subscribe to continue using the Tutoring, Study and Exam agents.',
+    code: 'SUBSCRIPTION_REQUIRED',
+    access,
+  });
+  return true;
+}
+
+app.get('/api/billing/status', async (req: Request, res: Response) => {
+  const email = String((req.query.email as string) || '').trim().toLowerCase();
+  const id = String((req.query.id as string) || '').trim();
+  const configured = subscriptionsConfigured();
+  const client = getServiceSupabaseClient();
+
+  if (!client) {
+    return res.json({
+      success: true,
+      configured,
+      enforced: false,
+      access: computeBillingAccess({}, false),
+    });
+  }
+
+  try {
+    let profile: any = null;
+    if (id) {
+      const { data } = await client.from('student_profiles').select('*').eq('id', id).maybeSingle();
+      profile = data || null;
+    } else if (email) {
+      profile = await findProfileByEmail(client, email);
+    }
+
+    if (!profile) {
+      return res.json({
+        success: true,
+        configured,
+        enforced: configured,
+        access: computeBillingAccess({}, configured),
+      });
+    }
+
+    const sub = await latestSubscriptionFor(client, profile.id);
+    const access = computeBillingAccess(profile, configured);
+    if (sub) {
+      access.plan = sub.plan_id || access.plan;
+      access.provider = sub.provider || access.provider;
+      access.currentPeriodEnd = sub.current_period_end || access.currentPeriodEnd;
+    }
+
+    return res.json({
+      success: true,
+      configured,
+      enforced: configured,
+      access,
+      profile: {
+        id: profile.id,
+        email: profile.email,
+        subscriptionStatus: profile.subscription_status,
+        trialEndsAt: profile.trial_expires_at,
+      },
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || String(err) });
+  }
+});
+
 app.get('/api/billing/paypal/plans', (_req: Request, res: Response) => {
-  return res.json({ configured: !!process.env.PAYPAL_CLIENT_ID, plans: PAYPAL_PLANS });
+  return res.json({ configured: subscriptionsConfigured(), plans: PAYPAL_PLANS });
 });
 
 app.post('/api/billing/paypal/create-subscription', async (req: Request, res: Response) => {
-  const { planKey, userId, returnUrl, cancelUrl } = req.body || {};
+  const { planKey, userId, email: rawEmail, returnUrl, cancelUrl } = req.body || {};
+  const email = String(rawEmail || '').trim().toLowerCase();
   const plan = PAYPAL_PLANS[planKey];
   if (!plan || !plan.planId) return res.status(400).json({ error: 'Unknown or unconfigured plan' });
+  if (!email) return res.status(400).json({ error: 'email required' });
+
   try {
+    // Resolve the database profile id so the PayPal webhook can map the
+    // subscription back to the learner.
+    let profileId = '';
+    const client = getServiceSupabaseClient();
+    if (client) {
+      const profile = await findProfileByEmail(client, email);
+      profileId = profile?.id || '';
+    }
+    if (!profileId && typeof userId === 'string' && /^[0-9a-f-]{36}$/i.test(userId)) {
+      profileId = userId;
+    }
+
     const token = await paypalAccessToken();
     const r = await fetch(`${PAYPAL_BASE}/v1/billing/subscriptions`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         plan_id: plan.planId,
-        custom_id: userId || '',
+        custom_id: profileId,
         application_context: {
           brand_name: 'MyTutorZA',
           user_action: 'SUBSCRIBE_NOW',
@@ -2058,6 +2223,78 @@ app.post('/api/billing/paypal/create-subscription', async (req: Request, res: Re
     return res.json({ subscriptionId: j.id, approvalUrl: approval.href, status: j.status });
   } catch (err: any) {
     return res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+/**
+ * Confirms a PayPal subscription on return from checkout. This makes access
+ * work even when the webhook is delayed or not configured.
+ */
+app.post('/api/billing/paypal/confirm', async (req: Request, res: Response) => {
+  const { subscriptionId, email: rawEmail } = req.body || {};
+  const email = String(rawEmail || '').trim().toLowerCase();
+  if (!subscriptionId) return res.status(400).json({ error: 'subscriptionId required' });
+  if (!subscriptionsConfigured()) {
+    return res.json({ success: false, configured: false, error: 'Payments are not configured.' });
+  }
+
+  try {
+    const token = await paypalAccessToken();
+    const r = await fetch(`${PAYPAL_BASE}/v1/billing/subscriptions/${encodeURIComponent(subscriptionId)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const j: any = await r.json();
+    if (!r.ok) {
+      return res.status(400).json({ success: false, error: j.message || 'PayPal verification failed' });
+    }
+
+    const status = String(j.status || '').toLowerCase();
+    const nextBilling = j.billing_info?.next_billing_time || null;
+    const client = getServiceSupabaseClient();
+    let profile: any = null;
+
+    if (client) {
+      if (email) profile = await findProfileByEmail(client, email);
+      if (!profile && j.custom_id) {
+        const { data } = await client.from('student_profiles').select('*').eq('id', j.custom_id).maybeSingle();
+        profile = data || null;
+      }
+
+      await client.from('subscriptions').upsert(
+        {
+          user_id: profile?.id || j.custom_id || null,
+          provider: 'paypal',
+          provider_subscription_id: subscriptionId,
+          plan_id: j.plan_id || null,
+          status,
+          current_period_end: nextBilling,
+          raw_event: j,
+        },
+        { onConflict: 'provider_subscription_id' }
+      );
+
+      if (profile?.id) {
+        await client
+          .from('student_profiles')
+          .update({ subscription_status: status })
+          .eq('id', profile.id);
+      }
+    }
+
+    const access = computeBillingAccess(
+      {
+        subscription_status: status,
+        trial_expires_at: profile?.trial_expires_at,
+        plan_id: j.plan_id,
+        provider: 'paypal',
+        current_period_end: nextBilling,
+      },
+      true
+    );
+
+    return res.json({ success: true, configured: true, status, access });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || String(err) });
   }
 });
 
@@ -2091,25 +2328,30 @@ app.post('/api/billing/paypal/webhook', async (req: Request, res: Response) => {
   const event = req.body || {};
   const eventType = event.event_type;
   const resource = event.resource || {};
-  const subId = resource.id;
-  const status = (resource.status || '').toLowerCase();
+  const subId = resource.id || resource.billing_agreement_id;
+  const status = String(resource.status || '').toLowerCase();
+  const uid = resource.custom_id;
+  const nextBilling = resource.billing_info?.next_billing_time || null;
   const supa = getServiceSupabaseClient();
   if (supa && subId) {
     try {
       await supa.from('subscriptions').upsert(
         {
+          user_id: uid || null,
           provider: 'paypal',
           provider_subscription_id: subId,
           plan_id: resource.plan_id || null,
           status: status || eventType,
+          current_period_end: nextBilling,
           raw_event: event,
         },
         { onConflict: 'provider_subscription_id' }
       );
-      const uid = resource.custom_id;
-      if (uid) {
-        const active = status === 'active' || status === 'approved';
-        await supa.from('student_profiles').update({ subscription_status: active ? 'active' : status || 'pending' }).eq('id', uid);
+      if (uid && status) {
+        await supa
+          .from('student_profiles')
+          .update({ subscription_status: status })
+          .eq('id', uid);
       }
     } catch (e: any) {
       console.error('Webhook DB upsert failed:', e?.message || e);

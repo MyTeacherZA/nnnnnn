@@ -59,6 +59,8 @@ export interface DimensionResult {
   percentage: number;
   label: string;
   poleLabel: string;
+  /** Operational sub-behaviours that define the measured pole. */
+  components?: string[];
   description: string;
   aiInstruction: string;
 }
@@ -143,6 +145,30 @@ export interface SubjectSlot {
   textbook?: TextbookReference;
 }
 
+export type SubscriptionStatus =
+  | 'trial'
+  | 'active'
+  | 'past_due'
+  | 'cancelled'
+  | 'expired'
+  | 'pending'
+  | 'none';
+
+/** Entitlement snapshot used by the UI to show status and gate the agents. */
+export interface SubscriptionAccess {
+  status: SubscriptionStatus;
+  /** True when the learner may use Tutoring, Study, Roadmap and Exam. */
+  active: boolean;
+  /** False while PayPal is unconfigured — access stays open so nobody is bricked. */
+  enforced: boolean;
+  trialEndsAt?: string;
+  plan?: string;
+  provider?: string;
+  currentPeriodEnd?: string;
+  /** Convenience for the UI badge; rounded up. */
+  daysLeft?: number;
+}
+
 export interface StudentProfile {
   id: string;
   fullName: string;
@@ -159,6 +185,8 @@ export interface StudentProfile {
   avatar: string;
   firmament: FirmamentProfile;
   subjects: SubjectSlot[];
+  /** Subscription/trial entitlement. Missing on legacy profiles until refreshed. */
+  subscription?: SubscriptionAccess;
   /** True only after the learner finishes the full onboarding wizard. */
   onboardingComplete?: boolean;
   createdAt?: string;

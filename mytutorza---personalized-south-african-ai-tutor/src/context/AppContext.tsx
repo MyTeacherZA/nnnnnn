@@ -6,11 +6,16 @@ import {
   StudentAccount,
   StudentProfile,
   SubjectSlot,
+  SubscriptionAccess,
   ThemeAccent,
   TextbookReference,
   AgentTab,
 } from '../types';
 import { THEME_ACCENTS } from '../data/curriculumData';
+import {
+  deriveSubscriptionAccess,
+  fetchSubscriptionAccess,
+} from '../services/subscription';
 import {
   AuthResult,
   SignInInput,
@@ -62,6 +67,11 @@ interface AppContextType {
   setIsTextbookModalOpen: (open: boolean) => void;
   isContactModalOpen: boolean;
   setIsContactModalOpen: (open: boolean) => void;
+  isSubscriptionOpen: boolean;
+  setIsSubscriptionOpen: (open: boolean) => void;
+  subscription: SubscriptionAccess | null;
+  hasAgentAccess: boolean;
+  refreshSubscription: () => Promise<void>;
   updateStudentProfile: (profile: Partial<StudentProfile>) => void;
   updateSubjectSlot: (subjectId: string, updates: Partial<SubjectSlot>) => void;
   addSubjectSlot: (subject: Omit<SubjectSlot, 'id'>) => void;
@@ -135,6 +145,34 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isTextbookModalOpen, setIsTextbookModalOpen] = useState(false);
   const [isContactModalOpen, setIsContactModalOpen] = useState(false);
+  const [isSubscriptionOpen, setIsSubscriptionOpen] = useState(false);
+  const [subscription, setSubscription] = useState<SubscriptionAccess | null>(() => {
+    const stored = readStoredProfile();
+    return stored?.subscription || null;
+  });
+
+  // The server is the source of truth for trial/payment status. Refresh when a
+  // learner signs in or their email changes, and keep the local profile in sync.
+  const refreshSubscription = async () => {
+    const email = student?.email || account?.email;
+    if (!email) return;
+    const access = await fetchSubscriptionAccess(email);
+    if (!access) return;
+    setSubscription(access);
+    setStudent((prev) => (prev ? { ...prev, subscription: access } : prev));
+  };
+
+  useEffect(() => {
+    if (!student?.email) return;
+    if (student.subscription) setSubscription(student.subscription);
+    void refreshSubscription();
+    // Refresh only when the signed-in learner changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [student?.email]);
+
+  // A learner may use the agents while the entitlement is active. If we have
+  // not read the entitlement yet, do not block the UI.
+  const hasAgentAccess = !subscription || !subscription.enforced || subscription.active;
 
   // Keep the first subject selected whenever the subject list changes.
   useEffect(() => {
@@ -242,6 +280,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 rawAnswers: j.firmament.raw_answers || {},
               } as any : (stored?.firmament || {} as any),
               subjects,
+              subscription: deriveSubscriptionAccess({
+                status: p.subscription_status,
+                trialExpiresAt: p.trial_expires_at,
+                plan: p.subscription_plan,
+                provider: p.subscription_provider,
+              }),
               // Only treat the server profile as complete when a Firmament
               // snapshot exists — otherwise the LLM would have no rules to bind.
               onboardingComplete: Boolean(j.firmament && (j.firmament as any).life_path),
@@ -274,6 +318,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       avatar: student?.avatar || DEFAULT_AVATAR,
       firmament: payload.firmament,
       subjects: payload.subjects,
+      subscription:
+        subscription ||
+        deriveSubscriptionAccess({
+          status: 'trial',
+          trialExpiresAt: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
+          enforced: false,
+        }),
       onboardingComplete: true,
       createdAt: student?.createdAt || new Date().toISOString(),
     };
@@ -342,6 +393,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setActiveSubjectId('');
     setActiveTab('tutoring');
     setIsSettingsOpen(false);
+    setIsSubscriptionOpen(false);
+    setSubscription(null);
     setIsOnboardingOpen(true);
   };
 
@@ -371,6 +424,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setIsTextbookModalOpen,
         isContactModalOpen,
         setIsContactModalOpen,
+        isSubscriptionOpen,
+        setIsSubscriptionOpen,
+        subscription,
+        hasAgentAccess,
+        refreshSubscription,
         updateStudentProfile,
         updateSubjectSlot,
         addSubjectSlot,
