@@ -305,6 +305,32 @@ export interface StudyQuizQuestion {
   skill?: string;
 }
 
+/** Memory-test variants used inside a study session. */
+export interface MemoryTestPair {
+  prompt: string;
+  answer: string;
+}
+
+export interface MemoryTest {
+  id: string;
+  /** 'match' = recall the correct answer for a prompt (match question to answer).
+   *  'spot' = pick the correct answer from options. */
+  type: 'match' | 'spot';
+  prompt: string;
+  pairs?: MemoryTestPair[];
+  correctAnswer?: string;
+  options?: string[];
+  explanation?: string;
+}
+
+export interface ActivityTest {
+  id: string;
+  kind: 'activity' | 'practice';
+  prompt: string;
+  instructions?: string;
+  minutes?: number;
+}
+
 export interface StudyGapDiagnosis {
   likelyPrerequisites: string[];
   commonMisconceptions: { misconception: string; correction: string }[];
@@ -336,6 +362,8 @@ export interface StudyNote {
   retrievalPlan?: StudyRetrievalPlan;
   confidenceBuilders?: string[];
   quiz?: StudyQuizQuestion[];
+  memoryTests?: MemoryTest[];
+  activityTests?: ActivityTest[];
   nextSession?: string;
   sessionId?: string | null;
   source?: string;

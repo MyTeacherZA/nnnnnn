@@ -15,8 +15,10 @@ import {
   Flame,
   Layers,
   Lightbulb,
+  ListChecks,
   Maximize2,
   Minimize2,
+  PlayCircle,
   PlusCircle,
   RotateCw,
   Sparkles,
@@ -31,8 +33,13 @@ import {
   StudyNote,
   StudyQuizProgress,
   StudySessionRecord,
+  MemoryTest,
+  ActivityTest,
 } from '../types';
 import { SparkNotesModal } from './SparkNotesModal';
+import { StudySelectionModal } from './StudySelectionModal';
+import { MemoryTestComponent } from './MemoryTest';
+import { ActivitiesTestComponent } from './ActivitiesTest';
 import { deleteSparkNoteLocally, fetchUserSparkNotes } from '../services/supabase';
 import { notifySubscriptionRequired } from '../services/subscription';
 import {
@@ -71,6 +78,21 @@ export const StudyAgentTab: React.FC = () => {
   // Flashcards
   const [activeFlashcard, setActiveFlashcard] = useState(0);
   const [isFlipped, setIsFlipped] = useState(false);
+
+  // Study session selection (topic / chapter / semester)
+  const [isStudySelectionOpen, setIsStudySelectionOpen] = useState(false);
+
+  // Memory tests (match question -> answer, spot the correct answer)
+  const [memoryTests, setMemoryTests] = useState<MemoryTest[]>([]);
+  const [memoryTestScores, setMemoryTestScores] = useState<Record<number, { score: number; total: number }>>({});
+  const [currentMemoryTestIndex, setCurrentMemoryTestIndex] = useState(0);
+  const [isMemoryTestComplete, setIsMemoryTestComplete] = useState(false);
+
+  // Activities + practice tests
+  const [activityTests, setActivityTests] = useState<ActivityTest[]>([]);
+  const [activityTestScores, setActivityTestScores] = useState<Record<number, { score: number; total: number }>>({});
+  const [currentActivityTestIndex, setCurrentActivityTestIndex] = useState(0);
+  const [isActivityTestComplete, setIsActivityTestComplete] = useState(false);
 
   // Conversation Spark Notes state
   const [userSparkNotes, setUserSparkNotes] = useState<PersonalizedSparkNotes[]>([]);
@@ -112,12 +134,53 @@ export const StudyAgentTab: React.FC = () => {
   useEffect(() => {
     setStudyNote(null);
     setSessionPromptTopic('');
+    setSessionTitle('');
     setQuizAnswers({});
     setQuizSubmitted(false);
     setQuizScore(null);
     setError(null);
+    setMemoryTests([]);
+    setMemoryTestScores({});
+    setCurrentMemoryTestIndex(0);
+    setIsMemoryTestComplete(false);
+    setActivityTests([]);
+    setActivityTestScores({});
+    setCurrentActivityTestIndex(0);
+    setIsActivityTestComplete(false);
     loadSessions();
   }, [activeSubject?.id]);
+
+  const handleMemoryTestComplete = (score: number, total: number, testIndex: number) => {
+    setMemoryTestScores((prev) => ({
+      ...prev,
+      [testIndex]: { score, total },
+    }));
+
+    if (testIndex < (memoryTests.length || 0) - 1) {
+      setCurrentMemoryTestIndex((prev) => prev + 1);
+    } else {
+      setIsMemoryTestComplete(true);
+    }
+  };
+
+  const handleActivityTestComplete = (score: number, total: number, testIndex: number) => {
+    setActivityTestScores((prev) => ({
+      ...prev,
+      [testIndex]: { score, total },
+    }));
+
+    if (testIndex < (activityTests.length || 0) - 1) {
+      setCurrentActivityTestIndex((prev) => prev + 1);
+    } else {
+      setIsActivityTestComplete(true);
+    }
+  };
+
+  const handleStudySelection = (type: 'topic' | 'chapter' | 'semester', value: string, title?: string) => {
+    setSessionPromptTopic(value);
+    if (title) setSessionTitle(title);
+    startStudySession();
+  };
 
   const roadmap = readSubjectRoadmap(activeSubject?.id) as any;
   const roadmapTopics: string[] = [];
@@ -245,11 +308,19 @@ export const StudyAgentTab: React.FC = () => {
           correctIndex: Number(question.correctIndex) || 0,
           explanation: question.explanation || '',
         })),
+        memoryTests: data.memoryTests || [],
+        activityTests: data.activityTests || [],
         nextSession: data.nextSession,
         source: data.source,
       };
 
       setStudyNote(note);
+      setMemoryTests(Array.isArray(note.memoryTests) ? note.memoryTests : []);
+      setActivityTests(Array.isArray(note.activityTests) ? note.activityTests : []);
+      setCurrentMemoryTestIndex(0);
+      setIsMemoryTestComplete(false);
+      setCurrentActivityTestIndex(0);
+      setIsActivityTestComplete(false);
       persistLocalStudySession(student?.email, {
         id: note.id,
         subject: note.subject,
@@ -283,6 +354,14 @@ export const StudyAgentTab: React.FC = () => {
     setError(null);
     setIsFlipped(false);
     setActiveFlashcard(0);
+    setMemoryTests([]);
+    setMemoryTestScores({});
+    setCurrentMemoryTestIndex(0);
+    setIsMemoryTestComplete(false);
+    setActivityTests([]);
+    setActivityTestScores({});
+    setCurrentActivityTestIndex(0);
+    setIsActivityTestComplete(false);
   };
 
   const resumeSession = (session: StudySessionRecord) => {
@@ -300,6 +379,12 @@ export const StudyAgentTab: React.FC = () => {
     setError(null);
     setIsFlipped(false);
     setActiveFlashcard(0);
+    setMemoryTests(Array.isArray((pack as any)?.memoryTests) ? (pack as any).memoryTests : []);
+    setActivityTests(Array.isArray((pack as any)?.activityTests) ? (pack as any).activityTests : []);
+    setCurrentMemoryTestIndex(0);
+    setIsMemoryTestComplete(false);
+    setCurrentActivityTestIndex(0);
+    setIsActivityTestComplete(false);
 
     const progress = session.quiz_progress || {};
     const answers = (progress.answers as Record<string, number>) || {};
@@ -490,7 +575,29 @@ export const StudyAgentTab: React.FC = () => {
                   </div>
                 </div>
 
-                <div className="flex flex-col md:flex-row gap-3">
+                <div className="space-y-4">
+                  <button
+                    onClick={() => setIsStudySelectionOpen(true)}
+                    className="w-full p-4 rounded-xl bg-slate-800/80 border-2 border-dashed border-slate-600 hover:border-sky-500 hover:bg-slate-700/50 text-left transition-all group flex items-center justify-between"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-sky-500/10 border border-sky-500/30 flex items-center justify-center">
+                        <PlusCircle className="w-4 h-4 text-sky-400" />
+                      </div>
+                      <span className="text-sm font-medium text-white group-hover:text-sky-300">
+                        Choose from topics, chapters, or semesters
+                      </span>
+                    </div>
+                    <ArrowRight className="w-4 h-4 text-slate-500 group-hover:text-sky-400" />
+                  </button>
+
+                  <div className="flex items-center gap-4 text-xs text-slate-500">
+                    <div className="flex-1 h-px bg-slate-700" />
+                    <span>OR</span>
+                    <div className="flex-1 h-px bg-slate-700" />
+                  </div>
+
+                  <div className="flex flex-col md:flex-row gap-3">
                   <input
                     autoFocus
                     type="text"
@@ -502,14 +609,14 @@ export const StudyAgentTab: React.FC = () => {
                     onKeyDown={(e) => {
                       if (e.key === 'Enter') startStudySession();
                     }}
-                    placeholder={`e.g. Quadratic equations, Organic reactions, Financial maths — ${activeSubject?.name || 'your subject'}`}
-                    className="flex-1 w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                    placeholder="Type the topic you want to study..."
+                    className="flex-1 px-4 py-3 rounded-xl bg-slate-800 border border-slate-700 text-white text-sm focus:outline-none focus:border-sky-500"
                   />
 
                   <select
                     value={selectedTerm}
                     onChange={(e) => setSelectedTerm(e.target.value)}
-                    className="bg-slate-900 border border-slate-700 rounded-xl px-3 py-3 text-sm font-bold text-slate-200 focus:outline-none shrink-0"
+                    className="px-4 py-3 rounded-xl bg-slate-800 border border-slate-700 text-white text-sm focus:outline-none focus:border-sky-500 md:w-48"
                   >
                     {TERMS.map((term) => (
                       <option key={term} value={term}>
@@ -519,17 +626,18 @@ export const StudyAgentTab: React.FC = () => {
                   </select>
 
                   <button
-                    onClick={startStudySession}
-                    disabled={loading}
-                    className="btn-accent px-6 py-3 rounded-xl text-sm font-bold flex items-center justify-center gap-2 shrink-0 cursor-pointer disabled:opacity-60"
+                    onClick={() => startStudySession()}
+                    disabled={loading || !sessionPromptTopic.trim()}
+                    className="px-6 py-3 rounded-xl btn-accent text-sm font-bold text-white disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
                   >
                     {loading ? (
-                      <RotateCw className="w-4 h-4 animate-spin text-white" />
+                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" />
                     ) : (
-                      <Sparkles className="w-4 h-4 text-white" />
+                      <PlayCircle className="w-4 h-4" />
                     )}
                     <span>{loading ? 'Building your pack…' : 'Start Study Session'}</span>
                   </button>
+                  </div>
                 </div>
 
                 <input
@@ -913,6 +1021,47 @@ export const StudyAgentTab: React.FC = () => {
                     </div>
                   )}
 
+                  {/* Memory tests: match question -> answer + spot the correct answer */}
+                  {studyNote.memoryTests && studyNote.memoryTests.length > 0 && (
+                    <div className="metallic-card rounded-2xl p-6 border border-slate-700/60 shadow-xl">
+                      <div className="flex flex-wrap items-center justify-between gap-3 mb-4 pb-3 border-b border-slate-800">
+                        <div className="flex items-center gap-2">
+                          <ListChecks className="w-5 h-5 text-indigo-400" />
+                          <h3 className="text-lg font-black text-white tracking-tight">Memory Tests</h3>
+                        </div>
+                        <span className="text-[10px] font-extrabold uppercase tracking-widest text-indigo-300">
+                          Recall &amp; retention
+                        </span>
+                      </div>
+
+                      {isMemoryTestComplete ? (
+                        <div className="rounded-xl border border-indigo-500/30 bg-indigo-500/10 p-4 text-center">
+                          <CheckCircle className="w-6 h-6 text-indigo-400 mx-auto mb-2" />
+                          <div className="text-sm font-black text-white">Memory test suite complete</div>
+                          <div className="text-xs text-slate-300 mt-1">
+                            {Object.keys(memoryTestScores).length} of {memoryTests.length} memory tests completed.
+                          </div>
+                          <button
+                            onClick={() => {
+                              setCurrentMemoryTestIndex(0);
+                              setIsMemoryTestComplete(false);
+                            }}
+                            className="mt-3 px-4 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs font-bold text-slate-200 hover:text-white"
+                          >
+                            Retake Memory Tests
+                          </button>
+                        </div>
+                      ) : (
+                        <MemoryTestComponent
+                          tests={memoryTests}
+                          currentIndex={currentMemoryTestIndex}
+                          onComplete={handleMemoryTestComplete}
+                          onExit={() => setIsMemoryTestComplete(true)}
+                        />
+                      )}
+                    </div>
+                  )}
+
                   {/* Core axioms */}
                   <div className="metallic-card rounded-2xl p-6 border border-slate-700/60 shadow-xl">
                     <div className="flex items-center gap-2 mb-4 pb-3 border-b border-slate-800">
@@ -998,6 +1147,44 @@ export const StudyAgentTab: React.FC = () => {
                           Next Card
                         </button>
                       </div>
+                    </div>
+                  )}
+
+                  {/* Activities + practice tests */}
+                  {studyNote.activityTests && studyNote.activityTests.length > 0 && (
+                    <div className="metallic-card rounded-2xl p-5 border border-slate-700/60 shadow-xl">
+                      <div className="flex items-center gap-2 mb-3">
+                        <ClipboardCheck className="w-5 h-5 text-emerald-400" />
+                        <h3 className="font-black text-sm text-white uppercase tracking-wider">
+                          Activities &amp; Practice Tests
+                        </h3>
+                      </div>
+
+                      {isActivityTestComplete ? (
+                        <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-center">
+                          <CheckCircle className="w-6 h-6 text-emerald-400 mx-auto mb-2" />
+                          <div className="text-sm font-black text-white">Activities &amp; practice complete</div>
+                          <div className="text-xs text-slate-300 mt-1">
+                            {Object.keys(activityTestScores).length} of {activityTests.length} activities / practice tests completed.
+                          </div>
+                          <button
+                            onClick={() => {
+                              setCurrentActivityTestIndex(0);
+                              setIsActivityTestComplete(false);
+                            }}
+                            className="mt-3 px-4 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs font-bold text-slate-200 hover:text-white"
+                          >
+                            Retake Activities &amp; Practice
+                          </button>
+                        </div>
+                      ) : (
+                        <ActivitiesTestComponent
+                          tests={activityTests}
+                          currentIndex={currentActivityTestIndex}
+                          onComplete={handleActivityTestComplete}
+                          onExit={() => setIsActivityTestComplete(true)}
+                        />
+                      )}
                     </div>
                   )}
 
@@ -1108,6 +1295,14 @@ export const StudyAgentTab: React.FC = () => {
               </div>
             </>
           )}
+
+          <StudySelectionModal
+            isOpen={isStudySelectionOpen}
+            onClose={() => setIsStudySelectionOpen(false)}
+            onSelect={handleStudySelection}
+            subject={activeSubject}
+            topics={roadmapTopics}
+          />
         </div>
       )}
 

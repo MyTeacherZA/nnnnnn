@@ -604,6 +604,8 @@ STUDY DESIGN RULES:
 - Never shame the learner for a gap. Normalise the gap and show the exact repair.
 - Quiz items must test recall and application, not trivia. Include 5–8 items with 4 options each.
 - Correct answers and explanations are for the learner after they attempt the quiz; include them in the JSON.
+- MEMORY TESTS: include up to 10–15 memory tests. For type "match", provide prompt/answer pairs the learner must recall and match. For type "spot", provide the correct answer plus distractor options the learner must identify. Always include an explanation.
+- ACTIVITY / PRACTICE TESTS: include hands-on items mixing "activity" (guided practice) and "practice" (exam-style retrieval) kinds; keep each concise and actionable.
 - CONTENT LENGTH (NON-NEGOTIABLE — DO NOT BOTTLE): You are NEVER forced to fit all curriculum content into a single response of roughly 1,500–2,000 words. You are ALLOWED to deliver the response in up to 3 installments. Each installment must not exceed 2,000 words (≈2,600 tokens). The maximum number of installments delivered at one time is 3. Split the response into installments as needed to remain thorough; never truncate content just to satisfy a single-installment limit.
 
 RETURN VALID JSON ONLY, matching exactly this schema:
@@ -639,6 +641,20 @@ RETURN VALID JSON ONLY, matching exactly this schema:
       "explanation": string,
       "skill": string
     }
+  ],
+  "memoryTests": [
+    {
+      "id": string,
+      "type": "match" | "spot",
+      "prompt": string,
+      "pairs": [{ "prompt": string, "answer": string }],
+      "correctAnswer": string,
+      "options": [string, string, string, string],
+      "explanation": string
+    }
+  ],
+  "activityTests": [
+    { "id": string, "kind": "activity" | "practice", "prompt": string, "instructions": string, "minutes": number }
   ],
   "nextSession": string
 }
