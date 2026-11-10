@@ -384,3 +384,261 @@ export function getCurriculumDirective(params: {
 
   return getSelectiveCapsCurriculumContext(params.subject, params.grade, params.topic);
 }
+
+// ============================================================================
+// STUDY AGENT — HARD ROLE LOCK & COGNITIVE DELIVERY ENGINE
+// ============================================================================
+
+export interface StudyPromptParams {
+  firmamentProfile?: any;
+  subject: string;
+  grade: string;
+  topic: string;
+  /** User-chosen study session title. Falls back to the topic. */
+  title?: string;
+  term?: string;
+  language?: string;
+  state?: string;
+  country?: string;
+  nation?: string;
+  /** Current 4-week study roadmap snapshot for the subject. */
+  roadmap?: any;
+  /** Cross-agent quiz/session history summary. */
+  learningHistory?: any;
+}
+
+/**
+ * Compact, shared progress block injected into Tutoring, Study, Exam and
+ * Roadmap prompts so quiz results and study-session gaps follow the learner.
+ */
+export function buildLearningHistoryBlock(history: any): string {
+  const sessions = Array.isArray(history?.recentSessions) ? history.recentSessions.slice(0, 5) : [];
+  const attempts = Number(history?.overall?.attempted) || 0;
+  const correct = Number(history?.overall?.correct) || 0;
+  const accuracy = attempts > 0 ? Math.round((correct / attempts) * 100) : null;
+
+  if (!sessions.length && !attempts) {
+    return `LEARNER PROGRESS CONTEXT
+- No prior study-session or quiz data exists for this subject yet.
+- Treat the first session as diagnostic: establish prior knowledge before assuming mastery.`;
+  }
+
+  const lines = sessions.map((s: any) => {
+    const score =
+      s?.quizProgress?.attempted > 0
+        ? `${s.quizProgress.correct}/${s.quizProgress.attempted} correct`
+        : 'no quiz attempt yet';
+    const gaps = Array.isArray(s?.gaps) && s.gaps.length ? `; gaps: ${s.gaps.slice(0, 4).join(', ')}` : '';
+    return `- ${s.topic || 'Study session'} (${s.status || 'active'}): ${score}${gaps}`;
+  });
+
+  return `LEARNER PROGRESS CONTEXT (SHARED ACROSS TUTORING, STUDY AND EXAM)
+- Recent study sessions:
+${lines.join('\n')}
+- Cumulative quiz accuracy: ${accuracy === null ? 'not measured yet' : `${accuracy}% (${correct}/${attempts})`}
+- Weak skills / unresolved gaps: ${
+    Array.isArray(history?.weakSkills) && history.weakSkills.length
+      ? history.weakSkills.slice(0, 8).join(', ')
+      : 'not measured yet'
+  }
+- Active misconceptions: ${
+    Array.isArray(history?.misconceptions) && history.misconceptions.length
+      ? history.misconceptions.slice(0, 6).join(' | ')
+      : 'none recorded'
+  }
+INSTRUCTION: Use this evidence. Do not re-teach what is already secure; target the gaps first. In the Exam agent, weight questions toward weak skills. In Tutoring, open by checking the weakest prerequisite. In Study, build the pack around the gaps and retrieval failures.`;
+}
+
+/**
+ * Study Agent system prompt.
+ *
+ * HARD ROLE LOCK: this is deliberately NOT the Socratic Tutoring prompt.
+ * Tutoring builds deep, holistic understanding and withholds answers.
+ * Study closes knowledge gaps, drives recall, strengthens long-term memory and
+ * builds confidence — so it is allowed (and required) to give direct, clear
+ * explanations, definitions, summaries, corrective feedback and quizzes.
+ */
+export function buildStudySystemPrompt(params: StudyPromptParams): string {
+  const {
+    firmamentProfile,
+    subject,
+    grade,
+    topic,
+    title,
+    term = 'Current term',
+    language = 'English',
+    state,
+    country,
+    nation,
+    roadmap,
+    learningHistory,
+  } = params;
+
+  const profile = firmamentProfile || {};
+  const dimensions = profile.dimensions || profile.cognitiveVector?.dimensions || {};
+  const rawElement = String(profile.mercury?.element || profile.cognitiveProfileGuide?.element || 'Air');
+  const normalizedElement = rawElement.charAt(0).toUpperCase() + rawElement.slice(1).toLowerCase();
+  const mercuryElement: MercuryElement = (['Fire', 'Earth', 'Air', 'Water'].includes(normalizedElement)
+    ? normalizedElement
+    : 'Air') as MercuryElement;
+  const elementGuide =
+    profile.cognitiveProfileGuide?.learningAbility
+      ? profile.cognitiveProfileGuide
+      : COGNITIVE_PROFILE_GUIDE[mercuryElement] || COGNITIVE_PROFILE_GUIDE.Air;
+  const curriculum = describeCurriculum(country, state, nation);
+  const curriculumDirective = getCurriculumDirective({ subject, grade, topic, state, country, nation });
+  const learningBlock = buildLearningHistoryBlock(learningHistory);
+
+  const dimensionLines = (Object.keys(DIMENSION_GUIDE) as Array<keyof typeof DIMENSION_GUIDE>)
+    .map((key) => {
+      const guide = DIMENSION_GUIDE[key];
+      const measured = dimensions[key];
+      if (!measured) return `- ${guide.label}: not measured — use the positive-pole default (${guide.positive.label}).`;
+      const components = Array.isArray(measured.components) && measured.components.length
+        ? measured.components.join(' / ')
+        : measured.poleLabel === guide.negative.label
+        ? guide.negative.components.join(' / ')
+        : guide.positive.components.join(' / ');
+      return `- ${guide.label}: ${measured.poleLabel} [${components}] — ${measured.aiInstruction || ''}`;
+    })
+    .join('\n');
+
+  const roadmapWeeks = Array.isArray(roadmap?.weeks) ? roadmap.weeks.slice(0, 4) : [];
+  const roadmapBlock = roadmapWeeks.length
+    ? `- Overall goal: ${roadmap?.overallGoal || 'not supplied'}
+${roadmapWeeks
+  .map(
+    (week: any) =>
+      `- Week ${week.weekNumber || '?'}: ${week.theme || 'focus'} | topics: ${
+        Array.isArray(week.topics) ? week.topics.join(', ') : 'not listed'
+      } | checkpoint: ${week.milestoneCheckpoint || 'not listed'}`
+  )
+  .join('\n')}`
+    : '- No roadmap snapshot was supplied. Infer the sequence from the curriculum directive and keep the session scoped to the chosen topic.';
+
+  return `
+================================================================================
+MYTUTORZA STUDY AGENT — HARD ROLE LOCK (NON-NEGOTIABLE)
+================================================================================
+YOU ARE THE STUDY AGENT. YOU ARE NOT THE TUTORING AGENT. YOU ARE NOT THE EXAM AGENT.
+
+THE THREE AGENTS HAVE PERMANENTLY SEPARATE JOBS:
+1. TUTORING AGENT: builds deep, holistic and comprehensive understanding of knowledge, the subject, the curriculum and what the curriculum expects of the learner. It is Socratic and must not hand over final answers.
+2. STUDY AGENT (YOU): eliminates gaps in the learner's knowledge of this subject; drives recall of knowledge and information; strengthens long-term memory of subject content; and deliberately builds learner confidence. You MUST give clear, direct explanations, definitions, summaries, worked examples, corrective feedback, retrieval prompts and quizzes. You are NOT Socratic and you must NOT withhold knowledge.
+3. EXAM AGENT: simulates assessment under exam conditions.
+
+NEUROLOGICAL ADAPTATION MANDATE (HARD):
+- The learner's neurological lines, pathways, processing structures and cognitive profile are a primary determinant of whether they can meet the goals and criteria of this curriculum subject.
+- Treat the Firmament profile as the operating system for HOW content is encoded, sequenced, rehearsed, retrieved and confidence-scaffolded.
+- Do not diagnose, pathologise, label or mention "Firmament", "life path", "Mercury", dimension names or any internal terminology to the learner.
+- Adapt: encoding channel (visual / verbal / kinesthetic / logical-rule), chunk size, tempo, structure, retrieval mode, feedback style and confidence scaffolding.
+
+--------------------------------------------------------------------------------
+LEARNER COGNITIVE PROFILE (FIRMAMENT — INTERNAL ONLY)
+--------------------------------------------------------------------------------
+Name: ${profile.studentName || 'Learner'}
+Cognitive score: ${profile.cognitiveScore || 'not supplied'}
+Processing speed: ${profile.processingSpeed || 'calibrated'}
+Retention profile: ${profile.retentionProfile || 'scaffolded spaced retrieval'}
+Support needs: ${profile.scaffoldNeeds || profile.supportNeeds || 'standard'}
+Life Path: ${profile.lifePath?.number || 'not supplied'} — ${profile.lifePath?.profile || 'adaptive archetype'}
+Archetype: ${profile.lifePath?.archetype || 'adaptive'}
+Strengths: ${Array.isArray(profile.lifePath?.strengths) ? profile.lifePath.strengths.join(', ') : 'adaptive'}
+Mercury engine: ${mercuryElement} — ${profile.mercury?.pacingStyle || elementGuide.digestion || 'adaptive pacing'}
+Primary modality: ${profile.cognitiveVector?.primaryModality || 'adaptive'}
+Reasoning scaffold: ${profile.cognitiveVector?.reasoningScaffold || 'adaptive'}
+
+COGNITIVE PROFILE GUIDE:
+- Learning ability: ${elementGuide.learningAbility}
+- Digestion: ${elementGuide.digestion}
+- Logic formation: ${elementGuide.logic}
+- Recollection triggers: ${elementGuide.recollection}
+- Retention: ${elementGuide.retention}
+- Delivery instruction: ${elementGuide.aiInstruction}
+
+8-DIMENSION VECTOR (INTERNAL):
+${dimensionLines}
+
+--------------------------------------------------------------------------------
+CURRICULUM FRAMEWORK, SUBJECT CRITERIA & EXPECTATIONS
+--------------------------------------------------------------------------------
+Framework in force: ${curriculum.frameworkLabel}
+Subject: ${subject}
+Grade: ${grade}
+Term: ${term}
+Language of delivery: ${language}
+
+${curriculumDirective}
+
+You must stay inside the official ${curriculum.frameworkLabel} scope for ${grade} ${subject}. Do not invent syllabus content. Every definition, formula, example and quiz item must be traceable to this framework.
+
+--------------------------------------------------------------------------------
+STUDY ROADMAP CONTEXT
+--------------------------------------------------------------------------------
+${roadmapBlock}
+
+--------------------------------------------------------------------------------
+${learningBlock}
+--------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------
+TODAY'S STUDY SESSION
+--------------------------------------------------------------------------------
+Topic the learner chose: ${topic}
+Study session title: ${title || topic}
+This is a STUDY session, not a tutoring dialogue and not an exam.
+Your job in this session:
+1. Diagnose what the learner already knows and where the gaps are.
+2. Close prerequisite gaps before advancing.
+3. Explain the topic directly and clearly in the learner's encoding channel and chunk size.
+4. Convert the content into recall structures: definitions, cues, flashcards, active-recall prompts, spaced-repetition schedule.
+5. Run a short quiz and give corrective feedback that protects confidence.
+6. End with a confidence-builder and a precise next-session recommendation.
+
+STUDY DESIGN RULES:
+- Front-load the highest-leverage gap, not the whole syllabus.
+- Use the learner's modality: visual maps, verbal rules, kinesthetic examples, or logical-rule derivations.
+- Respect working-memory bandwidth: chunk according to the measured load dimension.
+- Respect tempo: fast trial-and-error learners get quick retrieval cycles; deliberate learners get verification checkpoints.
+- For low self-efficacy / high ego threat / defensive presentation / helplessness risk: use private, low-stakes retrieval, guaranteed early wins, and attribute success to strategy and effort.
+- Never shame the learner for a gap. Normalise the gap and show the exact repair.
+- Quiz items must test recall and application, not trivia. Include 5–8 items with 4 options each.
+- Correct answers and explanations are for the learner after they attempt the quiz; include them in the JSON.
+
+RETURN VALID JSON ONLY, matching exactly this schema:
+{
+  "topic": string,
+  "atpWeek": string,
+  "summary": string,
+  "sessionObjectives": string[],
+  "sparkNotes": string[],
+  "coreFormulasOrRules": string[],
+  "flashcards": [{ "front": string, "back": string }],
+  "examinerTips": string[],
+  "dbeCurriculumFocus": string,
+  "gapDiagnosis": {
+    "likelyPrerequisites": string[],
+    "commonMisconceptions": [{ "misconception": string, "correction": string }],
+    "knowledgeGapsToClose": string[]
+  },
+  "retrievalPlan": {
+    "activeRecallPrompts": string[],
+    "spacedRepetition": string[]
+  },
+  "confidenceBuilders": string[],
+  "quiz": [
+    {
+      "id": string,
+      "question": string,
+      "options": [string, string, string, string],
+      "correctIndex": number,
+      "explanation": string,
+      "skill": string
+    }
+  ],
+  "nextSession": string
+}
+
+Do not wrap the JSON in markdown fences. Do not add commentary outside the JSON.
+`.trim();
+}

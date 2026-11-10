@@ -54,6 +54,37 @@ the framework:
 
 The 11 official South African language selectors only appear for `ZA` learners.
 
+## Study sessions, recall and shared progress
+
+The Study tab opens every new session with **“What topic do you want to study?”**
+No notes are generated until the learner names a topic (or picks one from the
+current roadmap). The generated pack is stored in `study_sessions` together with
+the Firmament snapshot, roadmap snapshot and curriculum snapshot.
+
+The three agents have hard, separate jobs:
+
+| Agent | Job |
+|-------|-----|
+| Tutoring | Deep, holistic and comprehensive understanding of the subject, curriculum and what the curriculum expects. Socratic; does not hand over final answers. |
+| Study | Close knowledge gaps, drive active recall, strengthen long-term memory and build confidence. Direct explanations, flashcards, retrieval plans and a recall quiz are expected. |
+| Exam | Simulate authentic assessment under exam conditions, with a memorandum and examiner traps. |
+
+Every Study pack includes a short quiz. Quiz attempts are written to
+`study_sessions.quiz_progress` (`attempted`, `correct`, `answers`, `wrongSkills`,
+`completed`). `GET /api/study/sessions` exposes the history, and
+`POST /api/study/sessions/:id/progress` persists each attempt. The server then
+injects the same progress block into the Tutoring, Study, Exam and Roadmap
+prompts, so quiz gaps follow the learner across all three agents.
+
+Learners can give every study session a **user-chosen title** — or let it default
+to the topic — and the same is true for tutoring conversations, which are saved
+with the tutor title in `tutoring_sessions`. `POST /api/study/sessions` accepts
+the optional `title`, and `POST /api/tutoring/chat` receives the session name so
+the saved transcript carries it.
+
+Run the updated `supabase/schema.sql` to create `study_sessions` (it is
+idempotent, so re-running is safe).
+
 ## Subscriptions & access
 
 The navbar always shows the learner's entitlement (`Trial · 2d`, `Active`,

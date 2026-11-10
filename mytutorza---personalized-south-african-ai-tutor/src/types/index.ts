@@ -296,19 +296,78 @@ export interface ExamPaper {
   }[];
 }
 
+export interface StudyQuizQuestion {
+  id: string;
+  question: string;
+  options: string[];
+  correctIndex: number;
+  explanation: string;
+  skill?: string;
+}
+
+export interface StudyGapDiagnosis {
+  likelyPrerequisites: string[];
+  commonMisconceptions: { misconception: string; correction: string }[];
+  knowledgeGapsToClose: string[];
+}
+
+export interface StudyRetrievalPlan {
+  activeRecallPrompts: string[];
+  spacedRepetition: string[];
+}
+
 export interface StudyNote {
   id: string;
   subject: string;
   grade: string;
   topic: string;
+  /** User-chosen study session title. Falls back to the topic when omitted. */
+  title?: string;
   term: string;
   atpWeek: string;
   summary: string;
+  sessionObjectives?: string[];
   sparkNotes: string[];
   coreFormulasOrRules: string[];
   flashcards: { front: string; back: string }[];
   examinerTips: string[];
   dbeCurriculumFocus: string;
+  gapDiagnosis?: StudyGapDiagnosis;
+  retrievalPlan?: StudyRetrievalPlan;
+  confidenceBuilders?: string[];
+  quiz?: StudyQuizQuestion[];
+  nextSession?: string;
+  sessionId?: string | null;
+  source?: string;
+}
+
+export interface StudyQuizProgress {
+  attempted: number;
+  correct: number;
+  answers: Record<string, number>;
+  wrongSkills: string[];
+  completed: boolean;
+  completedAt?: string;
+}
+
+export interface StudySessionRecord {
+  id: string;
+  user_id?: string;
+  subject: string;
+  grade: string;
+  /** User-chosen display name for this study session. */
+  title?: string;
+  term?: string | null;
+  topic: string;
+  status: 'active' | 'completed' | string;
+  study_pack?: StudyNote | Record<string, unknown>;
+  quiz?: StudyQuizQuestion[];
+  quiz_progress?: Partial<StudyQuizProgress>;
+  firmament_snapshot?: Record<string, unknown>;
+  roadmap_snapshot?: Record<string, unknown>;
+  curriculum_snapshot?: Record<string, unknown>;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface PersonalizedSparkNotes {

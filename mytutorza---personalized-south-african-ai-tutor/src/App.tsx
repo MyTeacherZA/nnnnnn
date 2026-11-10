@@ -118,7 +118,9 @@ const AppContent: React.FC = () => {
               </li>
               <li className="bg-slate-900/70 border border-slate-800 rounded-2xl p-4">
                 <p className="text-xs font-extrabold text-emerald-300">Study &amp; Exam Agents</p>
-                <p className="text-[11px] text-slate-400 mt-1">Notes, flashcards and papers for your grade.</p>
+                <p className="text-[11px] text-slate-400 mt-1">
+                  Study closes gaps and builds recall; Exam simulates the paper.
+                </p>
               </li>
               <li className="bg-slate-900/70 border border-slate-800 rounded-2xl p-4">
                 <p className="text-xs font-extrabold text-amber-300">The Firmament</p>

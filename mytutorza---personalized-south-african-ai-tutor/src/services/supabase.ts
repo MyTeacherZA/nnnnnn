@@ -452,10 +452,49 @@ CREATE TABLE IF NOT EXISTS public.tutoring_sessions (
   subject TEXT NOT NULL,
   grade TEXT NOT NULL,
   language TEXT DEFAULT 'English',
+  title TEXT,
   messages JSONB DEFAULT '[]'::jsonb,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
+
+-- 4b. Study sessions + quiz progress shared by all three agents
+CREATE TABLE IF NOT EXISTS public.study_sessions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID,
+  subject TEXT NOT NULL,
+  grade TEXT NOT NULL,
+  term TEXT,
+  topic TEXT NOT NULL,
+  title TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  firmament_snapshot JSONB DEFAULT '{}'::jsonb,
+  roadmap_snapshot JSONB DEFAULT '{}'::jsonb,
+  curriculum_snapshot JSONB DEFAULT '{}'::jsonb,
+  study_pack JSONB DEFAULT '{}'::jsonb,
+  quiz JSONB DEFAULT '[]'::jsonb,
+  quiz_progress JSONB DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+ALTER TABLE public.study_sessions ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can manage own study sessions" ON public.study_sessions;
+CREATE POLICY "Users can manage own study sessions"
+  ON public.study_sessions
+  FOR ALL
+  TO authenticated
+  USING (auth.uid() = user_id OR user_id IS NULL)
+  WITH CHECK (auth.uid() = user_id OR user_id IS NULL);
+
+DROP POLICY IF EXISTS "Study sessions anon fallback" ON public.study_sessions;
+CREATE POLICY "Study sessions anon fallback"
+  ON public.study_sessions
+  FOR ALL
+  TO anon
+  USING (true)
+  WITH CHECK (true);
 
 -- 5. Enable Row Level Security (RLS) on tutoring_sessions
 ALTER TABLE public.tutoring_sessions ENABLE ROW LEVEL SECURITY;

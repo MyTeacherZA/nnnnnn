@@ -25,6 +25,7 @@ import {
 import { StudyRoadmap, RoadmapWeek } from '../types';
 import confetti from 'canvas-confetti';
 import { notifySubscriptionRequired } from '../services/subscription';
+import { persistSubjectRoadmap, readSubjectRoadmap } from '../services/studySessions';
 
 export const StudyRoadmapTab: React.FC = () => {
   const { student, activeSubject, setActiveTab, displayMode } = useApp();
@@ -88,6 +89,7 @@ export const StudyRoadmapTab: React.FC = () => {
 
       const data = await response.json();
       setRoadmap(data);
+      persistSubjectRoadmap(activeSubject.id, data);
     } catch (err) {
       console.error('Error fetching roadmap:', err);
     } finally {
@@ -97,6 +99,8 @@ export const StudyRoadmapTab: React.FC = () => {
 
   useEffect(() => {
     if (activeSubject) {
+      const saved = readSubjectRoadmap(activeSubject.id) as StudyRoadmap | null;
+      if (saved?.weeks?.length) setRoadmap(saved);
       fetchRoadmap();
     }
   }, [activeSubject?.id, targetExam]);

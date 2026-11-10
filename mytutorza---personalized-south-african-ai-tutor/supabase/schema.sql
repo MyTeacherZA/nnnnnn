@@ -113,6 +113,33 @@ create table if not exists public.spark_notes (
 create index if not exists spark_notes_user_id_idx on public.spark_notes (user_id);
 
 -- ============================================================================
+-- 4b. STUDY SESSIONS (topic, study pack and quiz progress)
+-- Shared by the Tutoring, Study and Exam agents through /api/study/sessions.
+-- ============================================================================
+create table if not exists public.study_sessions (
+  id                  uuid primary key default gen_random_uuid(),
+  user_id             uuid references public.student_profiles(id) on delete cascade,
+  subject             text not null,
+  grade               text not null,
+  term                text,
+  topic               text not null,
+  title               text,
+  status              text not null default 'active',
+  firmament_snapshot  jsonb not null default '{}'::jsonb,
+  roadmap_snapshot    jsonb not null default '{}'::jsonb,
+  curriculum_snapshot jsonb not null default '{}'::jsonb,
+  study_pack          jsonb not null default '{}'::jsonb,
+  quiz                jsonb not null default '[]'::jsonb,
+  quiz_progress       jsonb not null default '{}'::jsonb,
+  created_at          timestamptz not null default now(),
+  updated_at          timestamptz not null default now()
+);
+
+create index if not exists study_sessions_user_id_idx on public.study_sessions (user_id);
+create index if not exists study_sessions_subject_idx on public.study_sessions (subject);
+create index if not exists study_sessions_updated_at_idx on public.study_sessions (updated_at desc);
+
+-- ============================================================================
 -- 5. TUTORING SESSIONS (chat transcripts)
 -- ============================================================================
 create table if not exists public.tutoring_sessions (
@@ -121,6 +148,7 @@ create table if not exists public.tutoring_sessions (
   subject    text not null,
   grade      text not null,
   language   text default 'English',
+  title      text,
   messages   jsonb not null default '[]'::jsonb,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
@@ -173,6 +201,7 @@ alter table public.student_profiles             enable row level security;
 alter table public.firmament_profiles            enable row level security;
 alter table public.firmament_onboarding_answers  enable row level security;
 alter table public.spark_notes                   enable row level security;
+alter table public.study_sessions                enable row level security;
 alter table public.tutoring_sessions             enable row level security;
 alter table public.term_tests                    enable row level security;
 alter table public.subscriptions                 enable row level security;
@@ -218,6 +247,17 @@ create policy "spark_notes own rows" on public.spark_notes
   using (auth.uid() = user_id or user_id is null)
   with check (auth.uid() = user_id or user_id is null);
 
+-- ---- study_sessions --------------------------------------------------------
+drop policy if exists "study_sessions anon access" on public.study_sessions;
+create policy "study_sessions anon access" on public.study_sessions
+  for all to anon using (true) with check (true);
+
+drop policy if exists "study_sessions own rows" on public.study_sessions;
+create policy "study_sessions own rows" on public.study_sessions
+  for all to authenticated
+  using (auth.uid() = user_id or user_id is null)
+  with check (auth.uid() = user_id or user_id is null);
+
 -- ---- tutoring_sessions -----------------------------------------------------
 drop policy if exists "tutoring_sessions anon access" on public.tutoring_sessions;
 create policy "tutoring_sessions anon access" on public.tutoring_sessions
@@ -258,6 +298,7 @@ grant select, insert, update, delete on
   public.firmament_profiles,
   public.firmament_onboarding_answers,
   public.spark_notes,
+  public.study_sessions,
   public.tutoring_sessions,
   public.term_tests,
   public.subscriptions

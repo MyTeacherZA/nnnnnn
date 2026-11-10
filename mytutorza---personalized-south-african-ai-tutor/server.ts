@@ -5,7 +5,13 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { createClient } from '@supabase/supabase-js';
-import { buildFirmamentSystemPrompt, describeCurriculum, getCurriculumDirective } from './serverFirmamentRules';
+import {
+  buildFirmamentSystemPrompt,
+  buildLearningHistoryBlock,
+  buildStudySystemPrompt,
+  describeCurriculum,
+  getCurriculumDirective,
+} from './serverFirmamentRules';
 import { isMailConfigured, sendMail } from './serverMailer';
 import { getSelectiveCapsCurriculumContext } from './serverCapsVault';
 import {
@@ -489,7 +495,11 @@ app.post('/api/tutoring/chat', async (req: Request, res: Response) => {
       state,
       country,
       nation,
+      email: bodyEmail,
     } = req.body;
+
+    const email = String(bodyEmail || '').trim().toLowerCase();
+    const bodyTitle = String(req.body?.title || '').trim();
 
     if (!message) {
       return res.status(400).json({ error: 'Message is required' });
@@ -498,6 +508,7 @@ app.post('/api/tutoring/chat', async (req: Request, res: Response) => {
     const targetLang = language || 'English';
     const mark = previousMark !== undefined ? Number(previousMark) : 50;
     const gapSeverity = mark < 60 ? 'REMEDIAL_SCAFFOLD' : 'ADVANCEMENT_SCAFFOLD';
+    const learningHistory = await getLearningHistory(email, subject);
 
     let systemInstruction = buildFirmamentSystemPrompt({
       firmamentProfile,
@@ -512,6 +523,19 @@ app.post('/api/tutoring/chat', async (req: Request, res: Response) => {
       userQuery: message,
       taskType: 'tutoring',
     });
+
+    // Tutoring still hunts for deep understanding, but it must know which
+    // gaps and quiz failures the Study agent already surfaced.
+    systemInstruction += `\n\n${buildLearningHistoryBlock(learningHistory)}`;
+    systemInstruction += `
+
+TUTORING AGENT ROLE LOCK (NON-NEGOTIABLE):
+- This is the TUTORING AGENT, not the Study Agent and not the Exam Agent.
+- Purpose: build deep, holistic and comprehensive understanding of knowledge, the subject, the curriculum, and what the curriculum expects of the learner.
+- Use Socratic questioning and guided discovery. Do not hand over final answers.
+- Do not convert this into a study note pack, flashcard drill, quiz drill or exam paper. The Study Agent owns gap-closing and recall; the Exam Agent owns assessment simulation.
+`;
+
 
     let extraModeInstruction = '';
     if (homeworkMode)
@@ -542,7 +566,15 @@ app.post('/api/tutoring/chat', async (req: Request, res: Response) => {
         });
 
         if (reply) {
-          return res.json({ reply, source: LLAMA_MODEL_ID });
+          const savedTutoringSessionId = await saveTutoringSession({
+            email,
+            subject: subject || 'Mathematics',
+            grade: grade || 'Grade 12',
+            language: targetLang,
+            title: bodyTitle,
+            messages: [...historyMessages, { role: 'user', content: message }, { role: 'assistant', content: reply }],
+          });
+          return res.json({ reply, source: LLAMA_MODEL_ID, sessionId: savedTutoringSessionId });
         }
       } catch (llamaErr: any) {
         console.warn(
@@ -563,7 +595,15 @@ app.post('/api/tutoring/chat', async (req: Request, res: Response) => {
     const reply = `${greeting} Working in ${subject} (${targetLang}) against ${frameworkWord}. Based on your ${
       firmamentProfile?.cognitiveVector?.primaryModality || 'Logical'
     } profile and ${mark}% baseline, let us break this down step-by-step. What is the very first rule or formula we need to write down before substituting?`;
-    return res.json({ reply, source: 'firmament-engine-local' });
+    const savedTutoringSessionId = await saveTutoringSession({
+      email,
+      subject: subject || 'Mathematics',
+      grade: grade || 'Grade 12',
+      language: targetLang,
+      title: bodyTitle,
+      messages: [...historyMessages, { role: 'user', content: message }, { role: 'assistant', content: reply }],
+    });
+    return res.json({ reply, source: 'firmament-engine-local', sessionId: savedTutoringSessionId });
   } catch (err: any) {
     console.error('Tutoring API error:', err);
     return res.json({
@@ -1019,61 +1059,276 @@ app.delete('/api/spark-notes/:id', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * Shared learning history for the Tutoring, Study, Exam and Roadmap agents.
+ * Quiz results and study-session gaps follow the learner instead of dying in
+ * one tab.
+ */
+async function getLearningHistory(email: string, subject?: string) {
+  if (!email) return null;
+  const client = getServiceSupabaseClient();
+  if (!client) return null;
+
+  try {
+    const profile = await findProfileByEmail(client, email);
+    if (!profile?.id) return null;
+
+    let query = client
+      .from('study_sessions')
+      .select('*')
+      .eq('user_id', profile.id)
+      .order('updated_at', { ascending: false })
+      .limit(8);
+    if (subject) query = query.eq('subject', subject);
+
+    const { data, error } = await query;
+    if (error || !Array.isArray(data) || data.length === 0) return null;
+
+    let attempted = 0;
+    let correct = 0;
+    const weakSkills = new Set<string>();
+    const misconceptions = new Set<string>();
+
+    const recentSessions = data.map((row: any) => {
+      const progress = row.quiz_progress || {};
+      const sessionAttempts = Number(progress.attempted) || 0;
+      const sessionCorrect = Number(progress.correct) || 0;
+      attempted += sessionAttempts;
+      correct += sessionCorrect;
+
+      (Array.isArray(progress.wrongSkills) ? progress.wrongSkills : []).forEach((skill: string) =>
+        weakSkills.add(skill)
+      );
+      const gaps = row.study_pack?.gapDiagnosis?.knowledgeGapsToClose || [];
+      (Array.isArray(gaps) ? gaps : []).forEach((gap: string) => weakSkills.add(gap));
+      const misses = row.study_pack?.gapDiagnosis?.commonMisconceptions || [];
+      (Array.isArray(misses) ? misses : []).forEach((miss: any) => {
+        if (miss?.misconception) misconceptions.add(miss.misconception);
+      });
+
+      return {
+        title: row.title || row.topic,
+        topic: row.topic,
+        status: row.status,
+        updatedAt: row.updated_at,
+        quizProgress: progress,
+        gaps,
+      };
+    });
+
+    return {
+      recentSessions,
+      overall: { attempted, correct },
+      weakSkills: Array.from(weakSkills).slice(0, 10),
+      misconceptions: Array.from(misconceptions).slice(0, 8),
+    };
+  } catch {
+    return null;
+  }
+}
+
+interface StudySessionInput {
+  email: string;
+  sessionId?: string;
+  subject: string;
+  grade: string;
+  term?: string;
+  topic: string;
+  /** User-chosen study session title. */
+  title?: string;
+  firmamentProfile?: any;
+  roadmap?: any;
+  curriculum?: any;
+  studyPack?: any;
+  quizProgress?: any;
+  status?: string;
+}
+
+async function saveStudySession(input: StudySessionInput): Promise<string | null> {
+  const client = getServiceSupabaseClient();
+  if (!client || !input.email) return null;
+
+  try {
+    const profile = await findProfileByEmail(client, input.email);
+    if (!profile?.id) return null;
+
+    const row: Record<string, any> = {
+      user_id: profile.id,
+      subject: input.subject,
+      grade: input.grade,
+      term: input.term || null,
+      topic: input.topic,
+      title: input.title || null,
+      status: input.status || 'active',
+      firmament_snapshot: input.firmamentProfile || {},
+      roadmap_snapshot: input.roadmap || {},
+      curriculum_snapshot: input.curriculum || {},
+      study_pack: input.studyPack || {},
+      quiz: input.studyPack?.quiz || [],
+      updated_at: new Date().toISOString(),
+    };
+    if (input.quizProgress) row.quiz_progress = input.quizProgress;
+
+    if (input.sessionId) {
+      const { data: existing } = await client
+        .from('study_sessions')
+        .select('id, user_id')
+        .eq('id', input.sessionId)
+        .maybeSingle();
+      if (existing?.user_id && existing.user_id !== profile.id) return null;
+
+      const { data } = await client
+        .from('study_sessions')
+        .update(row)
+        .eq('id', input.sessionId)
+        .select('id')
+        .maybeSingle();
+      return data?.id || input.sessionId;
+    }
+
+    const { data } = await client.from('study_sessions').insert([row]).select('id').single();
+    return data?.id || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Persists a tutoring conversation (with its user-chosen title) for later reuse. */
+async function saveTutoringSession(input: {
+  email: string;
+  subject: string;
+  grade: string;
+  language?: string;
+  title?: string;
+  messages: { role: string; content: string }[];
+}): Promise<string | null> {
+  const client = getServiceSupabaseClient();
+  if (!client || !input.email) return null;
+
+  try {
+    const profile = await findProfileByEmail(client, input.email);
+    if (!profile?.id) return null;
+
+    const { data } = await client
+      .from('tutoring_sessions')
+      .insert([
+        {
+          user_id: profile.id,
+          subject: input.subject,
+          grade: input.grade,
+          language: input.language || 'English',
+          title: input.title || '',
+          messages: input.messages,
+          updated_at: new Date().toISOString(),
+        },
+      ])
+      .select('id')
+      .single();
+    return data?.id || null;
+  } catch {
+    return null;
+  }
+}
+
 app.post('/api/study/generate', async (req: Request, res: Response) => {
   try {
     if (await rejectWithoutAgentAccess(req, res)) return;
-    const { subject, grade, topic, term, language, state, country, nation } = req.body;
+
+    const {
+      subject,
+      grade,
+      topic,
+      term,
+      language,
+      state,
+      country,
+      nation,
+      firmamentProfile,
+      roadmap,
+      sessionId,
+      learningHistory: suppliedHistory,
+      title,
+    } = req.body || {};
+
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const cleanTopic = String(topic || '').trim();
+    const cleanTitle = String(title || '').trim() || cleanTopic;
+    if (!cleanTopic) {
+      return res.status(400).json({ error: 'Please choose a topic to study first.' });
+    }
+
     const curriculum = describeCurriculum(country, state, nation);
+    const learningHistory = suppliedHistory || (await getLearningHistory(email, subject));
+
+    // The pack is personalised, so the cache key must include the cognitive
+    // vector and the learner's current quiz accuracy.
+    const profileSignature = [
+      firmamentProfile?.mercury?.element || '',
+      firmamentProfile?.cognitiveScore || '',
+      ...Object.values(firmamentProfile?.dimensions || {}).map((d: any) => d?.score ?? ''),
+      learningHistory?.overall?.attempted || 0,
+      learningHistory?.overall?.correct || 0,
+    ].join('|');
+
     const cacheKey =
-      `study:${country || 'ZA'}:${state || ''}:${grade}:${subject}:${topic}:${term}:${language || 'English'}`
+      `study:${country || 'ZA'}:${state || ''}:${grade}:${subject}:${cleanTopic}:${term}:${
+        language || 'English'
+      }:${profileSignature}`
         .toLowerCase()
         .replace(/\s+/g, '_');
 
     const cached = await getCache(cacheKey);
     if (cached) {
-      return res.json({ ...cached, source: 'cache' });
+      const savedSessionId = await saveStudySession({
+        email,
+        sessionId,
+        subject,
+        grade,
+        term,
+        topic: cached.topic || cleanTopic,
+        title: cached.title || cleanTitle,
+        firmamentProfile,
+        roadmap,
+        curriculum: {
+          framework: curriculum.frameworkLabel,
+          curriculumName: curriculum.curriculumName,
+          country,
+          state,
+          nation,
+        },
+        studyPack: cached,
+      });
+      return res.json({
+        ...cached,
+        title: cached.title || cleanTitle,
+        sessionId: savedSessionId || sessionId || null,
+        source: 'cache',
+      });
     }
 
-    const rawCaps = getCurriculumDirective({ subject, grade, topic, state, country, nation });
-
-    const systemInstruction = `
-You are MyTutorZA's Study AI Agent for ${curriculum.curriculumName}.
-Your task is to generate high-yield, ${curriculum.isUS ? 'standards-aligned' : 'CAPS-aligned'} study notes and spark notes for:
-Subject: ${subject}
-Grade: ${grade}
-Topic: ${topic || 'Core Curriculum Overview'}
-Term: ${term || 'Term 2 / Term 3'}
-Language: ${language || 'English'}
-
-RAW CAPS SYLLABUS DIRECTIVE:
-${rawCaps}
-
-You must return valid JSON strictly matching this schema:
-{
-  "topic": string,
-  "atpWeek": string,
-  "summary": string,
-  "sparkNotes": string[], // 5-7 punchy bullet points capturing the essence
-  "coreFormulasOrRules": string[], // essential formulas, definitions or theorems
-  "flashcards": [
-    { "front": string, "back": string }
-  ],
-  "examinerTips": string[], // DBE examiner advice & common traps to avoid
-  "dbeCurriculumFocus": string
-}
-Do not enclose in markdown code fences if responseMimeType is json.
-`;
+    const systemInstruction = buildStudySystemPrompt({
+      firmamentProfile,
+      subject,
+      grade,
+      topic: cleanTopic,
+      title: cleanTitle,
+      term,
+      language,
+      state,
+      country,
+      nation,
+      roadmap,
+      learningHistory,
+    });
 
     if (LLAMA_API_KEY) {
       try {
         const textRaw = await callLlamaChat({
           system: systemInstruction,
-          user: `Generate complete study notes for ${grade} ${subject} on topic "${
-            topic || 'Key Curriculum Section'
-          }".`,
+          user: `Create today's STUDY SESSION pack for ${grade} ${subject} on the topic "${cleanTopic}". Diagnose gaps first, teach directly in the learner's cognitive delivery style, then build recall and a short quiz. JSON only.`,
           jsonMode: true,
-          temperature: 0.4,
-          timeoutMs: 9000,
+          temperature: 0.35,
+          timeoutMs: 20000,
         });
         let text = (textRaw || '').trim();
         if (text.startsWith('```json')) {
@@ -1084,75 +1339,251 @@ Do not enclose in markdown code fences if responseMimeType is json.
 
         const parsed = JSON.parse(text);
         if (parsed && Array.isArray(parsed.sparkNotes) && parsed.sparkNotes.length > 0) {
-          await setCache(cacheKey, parsed, 7200);
-          return res.json({ ...parsed, source: LLAMA_MODEL_ID });
+          await setCache(cacheKey, parsed, 3600);
+          const savedSessionId = await saveStudySession({
+            email,
+            sessionId,
+            subject,
+            grade,
+            term,
+            topic: parsed.topic || cleanTopic,
+            title: parsed.title || cleanTitle,
+            firmamentProfile,
+            roadmap,
+            curriculum: {
+              framework: curriculum.frameworkLabel,
+              curriculumName: curriculum.curriculumName,
+              country,
+              state,
+              nation,
+            },
+            studyPack: parsed,
+          });
+          return res.json({ ...parsed, title: parsed.title || cleanTitle, sessionId: savedSessionId || sessionId || null, source: LLAMA_MODEL_ID });
         }
       } catch (llamaErr: any) {
         console.warn(
           'Llama study timeout/error, serving fallback study notes:',
-          (llamaErr as any)?.message || llamaErr,
+          (llamaErr as any)?.message || llamaErr
         );
       }
     }
 
     const fallbackData = {
-      topic: topic || 'Core CAPS Review',
-      atpWeek: 'Weeks 4-6 CAPS Schedule',
-      summary: `High-yield CAPS revision notes for ${grade} ${subject}. Focuses on fundamental mastery, examination guidelines, and common high-weight question patterns.`,
+      topic: cleanTopic,
+      atpWeek: 'Weeks 4-6 Curriculum Schedule',
+      summary: `High-yield study pack for ${grade} ${subject}, focused on closing gaps and strengthening recall.`,
+      sessionObjectives: [
+        `Identify the learner's current knowledge gaps in ${cleanTopic}.`,
+        `Build durable recall of the core ${subject} content.`,
+        'Complete a short retrieval quiz and correct misconceptions.',
+      ],
       sparkNotes: [
-        'Always state the appropriate DBE formula before substituting values.',
-        'Verify SI units before starting calculation questions.',
-        'Double-check negative signs when multiplying or taking square roots.',
-        'In geometry or proofs, every statement MUST be accompanied by an accepted DBE reason.',
-        'Budget 1 minute per mark during formal NSC exams.',
+        'State the core definition or rule before applying it.',
+        'Verify units, signs and preconditions before calculating.',
+        'Explain the concept aloud in your own words to expose gaps.',
+        'Re-attempt missed quiz items after 24 hours, then after 3 days.',
       ],
       coreFormulasOrRules: [
-        'Quadratic formula: x = (-b ± √(b² - 4ac)) / (2a)',
-        'Nature of roots: Δ = b² - 4ac determines real/non-real roots',
-        'DBE accepted reason: "rad ⊥ tan" for radius perpendicular to tangent',
+        'Write the governing rule or formula first.',
+        'Show the substitution step explicitly.',
+        'Check the reasonableness of the final answer.',
       ],
       flashcards: [
         {
-          front: 'What is the condition for real, unequal roots?',
-          back: 'Δ > 0 (discriminant is positive)',
+          front: `What is the core idea of ${cleanTopic}?`,
+          back: 'State the definition, then give one worked example in your own words.',
         },
         {
-          front: 'What does consistent accuracy (CA) mean in marking?',
-          back: 'Marks awarded for correct subsequent steps even if an earlier calculation had an error.',
+          front: 'What is the most common mistake in this topic?',
+          back: 'Skipping the prerequisite check or the verification step.',
         },
-        { front: 'What is the VAT rate in South Africa?', back: '15% standard rate' },
       ],
       examinerTips: [
-        'Examiners penalize premature rounding in multi-step finance and trigonometry problems.',
-        'Never leave negative exponents in final answers unless explicitly requested.',
+        'Show method steps even when the final answer is uncertain.',
+        'Re-read the command word before answering.',
       ],
-      dbeCurriculumFocus:
-        'Cognitive levels: 25% Knowledge, 45% Routine, 20% Complex, 10% Problem Solving.',
-    };
-    await setCache(cacheKey, fallbackData, 7200);
-    return res.json({ ...fallbackData, source: 'firmament-study-fallback' });
-  } catch (err: any) {
-    console.error('Study API error:', err);
-    return res.json({
-      topic: 'Core CAPS Review',
-      atpWeek: 'Current CAPS Term',
-      summary: 'High-yield revision summary.',
-      sparkNotes: [
-        'State formulas clearly before substitution.',
-        'Double check negative signs.',
-        'Verify units.',
+      dbeCurriculumFocus: `Core ${subject} criteria for ${grade}.`,
+      gapDiagnosis: {
+        likelyPrerequisites: [`Prior knowledge required for ${cleanTopic}`],
+        commonMisconceptions: [
+          {
+            misconception: 'Memorising the final answer without the reasoning.',
+            correction: 'Reconstruct the reasoning from the definition or rule each time.',
+          },
+        ],
+        knowledgeGapsToClose: [`Core definitions and prerequisites for ${cleanTopic}`],
+      },
+      retrievalPlan: {
+        activeRecallPrompts: [
+          `Without notes, explain ${cleanTopic} in three sentences.`,
+          'Write the key rule from memory, then check it.',
+        ],
+        spacedRepetition: ['Review after 24 hours.', 'Review after 3 days.', 'Review after 7 days.'],
+      },
+      confidenceBuilders: [
+        'You have already started the repair by naming the topic.',
+        'Each corrected retrieval attempt is evidence that the memory is strengthening.',
       ],
-      coreFormulasOrRules: ['Standard form ax² + bx + c = 0'],
-      flashcards: [
+      quiz: [
         {
-          front: 'What is a prime number?',
-          back: 'A number with exactly two factors: 1 and itself.',
+          id: 'q1',
+          question: `Which statement best describes the core idea of ${cleanTopic}?`,
+          options: [
+            'The definition or rule that governs the topic',
+            'An unrelated formula',
+            'A memorised final answer only',
+            'A skipped prerequisite',
+          ],
+          correctIndex: 0,
+          explanation: 'The core idea is the governing definition or rule, not a memorised answer.',
+          skill: `${cleanTopic} core concept`,
         },
       ],
-      examinerTips: ['Show all working for method marks.'],
-      dbeCurriculumFocus: 'NSC Curriculum Assessment Policy Statement.',
-      source: 'emergency-study-fallback',
+      nextSession: 'Re-test the missed items, then advance to the next roadmap checkpoint.',
+    };
+
+    const savedSessionId = await saveStudySession({
+      email,
+      sessionId,
+      subject,
+      grade,
+      term,
+      topic: cleanTopic,
+      title: cleanTitle,
+      firmamentProfile,
+      roadmap,
+      curriculum: {
+        framework: curriculum.frameworkLabel,
+        curriculumName: curriculum.curriculumName,
+        country,
+        state,
+        nation,
+      },
+      studyPack: fallbackData,
     });
+    await setCache(cacheKey, fallbackData, 3600);
+    return res.json({
+      ...fallbackData,
+      title: cleanTitle,
+      sessionId: savedSessionId || sessionId || null,
+      source: 'firmament-study-fallback',
+    });
+  } catch (err: any) {
+    console.error('Study API error:', err);
+    return res.status(500).json({
+      error: err?.message || 'Study session could not be generated.',
+      topic: req.body?.topic || 'Study session',
+    });
+  }
+});
+
+/**
+ * GET /api/study/sessions?email=...&subject=...
+ * Returns recent study sessions (including quiz progress) for the learner.
+ */
+app.get('/api/study/sessions', async (req: Request, res: Response) => {
+  const email = String((req.query.email as string) || '').trim().toLowerCase();
+  const subject = String((req.query.subject as string) || '').trim();
+  if (!email) return res.status(400).json({ error: 'email required' });
+
+  const client = getServiceSupabaseClient();
+  if (!client) return res.json({ success: true, sessions: [], reason: 'supabase_not_configured' });
+
+  try {
+    const profile = await findProfileByEmail(client, email);
+    if (!profile?.id) return res.json({ success: true, sessions: [] });
+
+    let query = client
+      .from('study_sessions')
+      .select('*')
+      .eq('user_id', profile.id)
+      .order('updated_at', { ascending: false })
+      .limit(20);
+    if (subject) query = query.eq('subject', subject);
+
+    const { data, error } = await query;
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ success: true, sessions: data || [] });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+/**
+ * POST /api/study/sessions
+ * Creates or updates a study session. Used when the UI starts a session before
+ * the AI pack is generated.
+ */
+app.post('/api/study/sessions', async (req: Request, res: Response) => {
+  const body = req.body || {};
+  const email = String(body.email || '').trim().toLowerCase();
+  const topic = String(body.topic || '').trim();
+  if (!email || !topic || !body.subject || !body.grade) {
+    return res.status(400).json({ error: 'email, subject, grade and topic are required' });
+  }
+
+  const sessionId = await saveStudySession({
+    email,
+    sessionId: body.sessionId,
+    subject: body.subject,
+    grade: body.grade,
+    term: body.term,
+    topic,
+    title: body.title || topic,
+    firmamentProfile: body.firmamentProfile,
+    roadmap: body.roadmap,
+    curriculum: body.curriculum,
+    studyPack: body.studyPack,
+    status: body.status,
+  });
+
+  return res.json({ success: Boolean(sessionId), sessionId });
+});
+
+/**
+ * POST /api/study/sessions/:id/progress
+ * Persists quiz attempts and scores so all three agents can use them.
+ */
+app.post('/api/study/sessions/:id/progress', async (req: Request, res: Response) => {
+  const sessionId = String(req.params.id || '').trim();
+  const body = req.body || {};
+  const email = String(body.email || '').trim().toLowerCase();
+  const quizProgress = body.quizProgress || {};
+  if (!sessionId || !email) return res.status(400).json({ error: 'session id and email are required' });
+
+  const client = getServiceSupabaseClient();
+  if (!client) return res.json({ success: false, reason: 'supabase_not_configured' });
+
+  try {
+    const profile = await findProfileByEmail(client, email);
+    if (!profile?.id) return res.status(404).json({ error: 'profile not found' });
+
+    const { data: session } = await client
+      .from('study_sessions')
+      .select('id, user_id')
+      .eq('id', sessionId)
+      .maybeSingle();
+    if (!session || session.user_id !== profile.id) {
+      return res.status(404).json({ error: 'study session not found' });
+    }
+
+    const attempted = Number(quizProgress.attempted) || 0;
+    const correct = Number(quizProgress.correct) || 0;
+    const completed = attempted > 0 && quizProgress.completed !== false;
+    const { error } = await client
+      .from('study_sessions')
+      .update({
+        quiz_progress: quizProgress,
+        status: completed ? 'completed' : 'active',
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', sessionId);
+
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ success: true, score: attempted ? Math.round((correct / attempted) * 100) : 0 });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || String(err) });
   }
 });
 
@@ -1586,17 +2017,22 @@ app.post('/api/roadmap/generate', async (req: Request, res: Response) => {
     if (await rejectWithoutAgentAccess(req, res)) return;
     const { subject, grade, firmamentProfile, previousMark, targetExam, focusTopic, language, state, country, nation } =
       req.body;
+    const email = String(req.body?.email || '').trim().toLowerCase();
     const targetSubject = subject || 'Mathematics (Pure)';
     const targetGrade = grade || 'Grade 12';
     const mark = previousMark !== undefined ? Number(previousMark) : 50;
     const isRemedial = mark < 60;
     const targetLang = language || 'English';
     const curriculum = describeCurriculum(country, state, nation);
+    const learningHistory = await getLearningHistory(email, targetSubject);
+    const progressSignature = `${learningHistory?.overall?.attempted || 0}-${
+      learningHistory?.overall?.correct || 0
+    }`;
 
     const cacheKey =
       `roadmap:${country || 'ZA'}:${state || ''}:${targetGrade}:${targetSubject}:${mark}:${targetExam || 'general'}:${
         focusTopic || 'all'
-      }:${targetLang}`
+      }:${targetLang}:${progressSignature}`
         .toLowerCase()
         .replace(/\s+/g, '_');
     const cached = await getCache(cacheKey);
@@ -1676,11 +2112,13 @@ RETURN STRICT JSON matching this schema:
 }
 `;
 
+    const roadmapSystemInstruction = `${systemInstruction}\n\n${buildLearningHistoryBlock(learningHistory)}`;
+
     if (LLAMA_API_KEY) {
       try {
         const textRaw = await callLlamaChat({
-          system: systemInstruction,
-          user: `Generate a personalized 4-week CAPS study roadmap for ${targetGrade} ${targetSubject} for a student with previous mark ${mark}% and archetype ${
+          system: roadmapSystemInstruction,
+          user: `Generate a personalized 4-week ${curriculum.frameworkLabel} study roadmap for ${targetGrade} ${targetSubject} for a student with previous mark ${mark}% and archetype ${
             firmamentProfile?.lifePath?.archetype || 'The Architect'
           }. Focus: ${focusTopic || 'Full Curriculum'}.`,
           jsonMode: true,
@@ -1738,12 +2176,17 @@ app.post('/api/exam/generate', async (req: Request, res: Response) => {
   try {
     if (await rejectWithoutAgentAccess(req, res)) return;
     const { subject, grade, examType, durationMinutes, topic, term, state, country, nation } = req.body;
+    const email = String(req.body?.email || '').trim().toLowerCase();
     const dur = Number(durationMinutes) || 60;
     const paperType = examType || 'November Final Exam';
     const curriculum = describeCurriculum(country, state, nation);
+    const learningHistory = await getLearningHistory(email, subject);
+    const progressSignature = `${learningHistory?.overall?.attempted || 0}-${
+      learningHistory?.overall?.correct || 0
+    }`;
 
     const cacheKey =
-      `exam:${country || 'ZA'}:${state || ''}:${grade}:${subject}:${paperType}:${dur}:${topic || 'general'}`
+      `exam:${country || 'ZA'}:${state || ''}:${grade}:${subject}:${paperType}:${dur}:${topic || 'general'}:${progressSignature}`
         .toLowerCase()
         .replace(/\s+/g, '_');
     const cached = await getCache(cacheKey);
@@ -1809,11 +2252,18 @@ Return valid JSON conforming strictly to:
 }
 `;
 
+    const examSystemInstruction = `${systemInstruction}\n\n${buildLearningHistoryBlock(learningHistory)}
+\nEXAM AGENT ROLE LOCK (NON-NEGOTIABLE):
+- This is the EXAM AGENT, not the Tutoring Agent and not the Study Agent.
+- Purpose: simulate authentic assessment under exam conditions.
+- Do not teach, coach, scaffold or reveal answers inside the paper. Put all solutions in the memorandum only.
+- Weight question selection toward the learner's recorded weak skills and quiz failures, while remaining inside the official curriculum scope.`;
+
     if (LLAMA_API_KEY) {
       try {
         const textRaw = await callLlamaChat({
-          system: systemInstruction,
-          user: `Generate a realistic ${dur}-minute South African CAPS exam for ${grade} ${subject} (${paperType}) on ${
+          system: examSystemInstruction,
+          user: `Generate a realistic ${dur}-minute ${curriculum.frameworkLabel} examination for ${grade} ${subject} (${paperType}) on ${
             topic || 'core syllabus'
           }.`,
           jsonMode: true,

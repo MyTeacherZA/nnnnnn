@@ -52,6 +52,7 @@ export const TutoringAgentTab: React.FC = () => {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [homeworkMode, setHomeworkMode] = useState(false);
   const [askMode, setAskMode] = useState(false);
+  const [sessionTitle, setSessionTitle] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Spark Notes Analysis State
@@ -154,6 +155,7 @@ export const TutoringAgentTab: React.FC = () => {
           homeworkMode,
           askMode,
           history: messages.slice(-5).map((m) => ({ sender: m.sender, text: m.text })),
+          title: sessionTitle.trim(),
         }),
       });
 
@@ -216,10 +218,23 @@ export const TutoringAgentTab: React.FC = () => {
               <p className="text-[11px] text-slate-400">
                 Pacing: {student?.firmament.mercury.pacingStyle} • Lang: {activeSubject?.tutoringLanguage}
               </p>
+              <p className="text-[11px] text-slate-400">
+                Session: {sessionTitle.trim() || 'Untitled tutoring session'}
+              </p>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
+            {/* Session Naming */}
+            <input
+              type="text"
+              value={sessionTitle}
+              onChange={(e) => setSessionTitle(e.target.value)}
+              placeholder="Tutoring session name (your choice)"
+              className="w-full max-w-[220px] bg-slate-950/90 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500"
+              title="Name this tutoring session"
+            />
+
             {/* Spark Notes Action Button */}
             <button
               onClick={() => handleAnalyzeSparkNotes()}
