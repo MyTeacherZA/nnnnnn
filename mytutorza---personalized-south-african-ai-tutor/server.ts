@@ -109,9 +109,10 @@ async function callLlamaChat(params: {
   jsonMode?: boolean;
   temperature?: number;
   timeoutMs?: number;
+  maxTokens?: number;
 }): Promise<string | null> {
   if (!LLAMA_API_KEY) return null;
-  const { system, user, messages = [], jsonMode = false, temperature = 0.4, timeoutMs = 9000 } = params;
+  const { system, user, messages = [], jsonMode = false, temperature = 0.4, timeoutMs = 9000, maxTokens } = params;
   const payload: any = {
     model: LLAMA_MODEL_ID,
     messages: [
@@ -120,6 +121,7 @@ async function callLlamaChat(params: {
       ...(user ? [{ role: 'user', content: user }] : []),
     ],
     temperature,
+    max_tokens: maxTokens ?? 4000,
   };
   if (jsonMode) {
     payload.response_format = { type: 'json_object' };
@@ -128,6 +130,7 @@ async function callLlamaChat(params: {
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   const useNativeOllama = LLAMA_BASE_URL.endsWith('/api') || LLAMA_BASE_URL.endsWith('/api/');
+  const effectiveMaxTokens = maxTokens ?? 4000;
 
   try {
     const url = useNativeOllama
@@ -140,9 +143,9 @@ async function callLlamaChat(params: {
           messages: payload.messages,
           stream: false,
           format: jsonMode ? 'json' : undefined,
-          options: { temperature: payload.temperature },
+          options: { temperature: payload.temperature, num_predict: effectiveMaxTokens },
         }
-      : payload;
+      : { ...payload, max_tokens: effectiveMaxTokens };
 
     const res = await fetch(url, {
       method: 'POST',
@@ -563,6 +566,7 @@ TUTORING AGENT ROLE LOCK (NON-NEGOTIABLE):
           user: message,
           temperature: 0.7,
           timeoutMs: 9000,
+          maxTokens: 8000,
         });
 
         if (reply) {
@@ -1329,6 +1333,7 @@ app.post('/api/study/generate', async (req: Request, res: Response) => {
           jsonMode: true,
           temperature: 0.35,
           timeoutMs: 20000,
+          maxTokens: 8000,
         });
         let text = (textRaw || '').trim();
         if (text.startsWith('```json')) {
@@ -2124,6 +2129,7 @@ RETURN STRICT JSON matching this schema:
           jsonMode: true,
           temperature: 0.4,
           timeoutMs: 9000,
+          maxTokens: 3000,
         });
         let text = (textRaw || '').trim();
         if (text.startsWith('```json')) {
@@ -2269,6 +2275,7 @@ Return valid JSON conforming strictly to:
           jsonMode: true,
           temperature: 0.3,
           timeoutMs: 9000,
+          maxTokens: 5000,
         });
         let text = (textRaw || '').trim();
         if (text.startsWith('```json')) {
@@ -2372,7 +2379,7 @@ app.post('/api/tutoring/chat', async (req: Request, res: Response) => {
           { role: 'user', content: cappedQuery },
         ],
         temperature: 0.3,
-        max_tokens: 2000,
+        max_tokens: 8000,
         top_p: 0.9,
       }),
     });

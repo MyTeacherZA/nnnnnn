@@ -604,6 +604,7 @@ STUDY DESIGN RULES:
 - Never shame the learner for a gap. Normalise the gap and show the exact repair.
 - Quiz items must test recall and application, not trivia. Include 5–8 items with 4 options each.
 - Correct answers and explanations are for the learner after they attempt the quiz; include them in the JSON.
+- CONTENT LENGTH (NON-NEGOTIABLE — DO NOT BOTTLE): You are NEVER forced to fit all curriculum content into a single response of roughly 1,500–2,000 words. You are ALLOWED to deliver the response in up to 3 installments. Each installment must not exceed 2,000 words (≈2,600 tokens). The maximum number of installments delivered at one time is 3. Split the response into installments as needed to remain thorough; never truncate content just to satisfy a single-installment limit.
 
 RETURN VALID JSON ONLY, matching exactly this schema:
 {
@@ -626,6 +627,9 @@ RETURN VALID JSON ONLY, matching exactly this schema:
     "spacedRepetition": string[]
   },
   "confidenceBuilders": string[],
+  "installments": [
+    { "index": number, "content": string }
+  ],
   "quiz": [
     {
       "id": string,
