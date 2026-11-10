@@ -453,6 +453,9 @@ CREATE TABLE IF NOT EXISTS public.tutoring_sessions (
   grade TEXT NOT NULL,
   language TEXT DEFAULT 'English',
   title TEXT,
+  topic TEXT,
+  pdf_name TEXT,
+  pdf_text TEXT,
   messages JSONB DEFAULT '[]'::jsonb,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()

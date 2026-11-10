@@ -15,6 +15,7 @@ import {
   RotateCw,
   Maximize2,
   Minimize2,
+  Plus,
 } from 'lucide-react';
 import { ChatMessage, PersonalizedSparkNotes } from '../types';
 import { SparkNotesModal } from './SparkNotesModal';
@@ -54,6 +55,13 @@ export const TutoringAgentTab: React.FC = () => {
   const [askMode, setAskMode] = useState(false);
   const [sessionTitle, setSessionTitle] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // New tutoring session: locked topic + optional uploaded source (PDF/text).
+  const [isNewSessionOpen, setIsNewSessionOpen] = useState(false);
+  const [tutoringTopic, setTutoringTopic] = useState('');
+  const [lockedTopic, setLockedTopic] = useState<string | null>(null);
+  const [tutoringPdf, setTutoringPdf] = useState<{ name: string; text: string } | null>(null);
+  const pdfInputRef = useRef<HTMLInputElement>(null);
 
   // Spark Notes Analysis State
   const [activeSparkNotes, setActiveSparkNotes] = useState<PersonalizedSparkNotes | null>(() => {

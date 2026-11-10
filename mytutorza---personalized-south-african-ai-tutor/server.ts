@@ -509,6 +509,8 @@ app.post('/api/tutoring/chat', async (req: Request, res: Response) => {
       history,
       homeworkMode,
       askMode,
+      lockedTopic,
+      pdf,
       state,
       country,
       nation,
@@ -552,6 +554,22 @@ TUTORING AGENT ROLE LOCK (NON-NEGOTIABLE):
 - Use Socratic questioning and guided discovery. Do not hand over final answers.
 - Do not convert this into a study note pack, flashcard drill, quiz drill or exam paper. The Study Agent owns gap-closing and recall; the Exam Agent owns assessment simulation.
 `;
+
+    systemInstruction += `
+
+LOCKED TUTORING TOPIC (SESSION-HARD LOCK, NON-NEGOTIABLE):
+- The learner's locked tutoring topic for this session is: "${String(lockedTopic || '').trim() || 'the subject focus'}".`;
+    if (pdf) {
+      systemInstruction += `
+
+UPLOADED SOURCE / RAG CONTEXT (FIRST CONTEXT — "THE HOLY GRAIL"):
+- An uploaded source was provided for this session: "${String(pdf.name || '').trim() || 'uploaded source'}".
+- Ingested source content: ${String(pdf.text || '').trim() ? String(pdf.text).slice(0, 12000) : '(no extractable text content was provided).'}
+- THE UPLOADED SOURCE IS THE FIRST CONTEXT AND THE HOLY GRAIL FOR THIS TUTORING SESSION. Tutor the student on the locked topic using this uploaded source as the primary grounding.
+- Use internet knowledge to provide further clarity and emphasis on what the uploaded source says about the topic.
+- If the uploaded source has no content relevant to the locked topic, fall back to internet-based knowledge strictly specific to the locked topic.
+- If no source was uploaded/ingested, use internet-based knowledge strictly specific to the locked topic.`;
+    }
 
 
     let extraModeInstruction = '';
@@ -1221,6 +1239,8 @@ async function saveTutoringSession(input: {
   grade: string;
   language?: string;
   title?: string;
+  topic?: string;
+  pdf?: { name?: string; text?: string } | null;
   messages: { role: string; content: string }[];
 }): Promise<string | null> {
   const client = getServiceSupabaseClient();
@@ -1239,6 +1259,9 @@ async function saveTutoringSession(input: {
           grade: input.grade,
           language: input.language || 'English',
           title: input.title || '',
+          topic: input.topic || '',
+          pdf_name: input.pdf?.name || null,
+          pdf_text: input.pdf?.text || null,
           messages: input.messages,
           updated_at: new Date().toISOString(),
         },
