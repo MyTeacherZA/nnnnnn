@@ -38,6 +38,11 @@ const LLAMA_API_KEY =
 const LLAMA_BASE_URL = (process.env.LLAMA_BASE_URL || 'https://api.groq.com/openai/v1').replace(/\/+$/, '');
 const LLAMA_MODEL_ID = process.env.LLAMA_MODEL || 'llama-3.3-70b-versatile';
 
+// DeepSeek (OpenAI-compatible) — used by the Tutoring + Exam agents for deep reasoning / long outputs.
+const DEEPSEEK_BASE_URL = (process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1').replace(/\/+$/, '');
+const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
+const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-chat';
+
 // Upstash Redis REST
 const UPSTASH_URL = (process.env.UPSTASH_REDIS_REST_URL || '').replace(/\/+$/, '');
 const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || '';
@@ -110,47 +115,56 @@ async function callLlamaChat(params: {
   temperature?: number;
   timeoutMs?: number;
   maxTokens?: number;
+  baseUrl?: string;
+  apiKey?: string;
+  model?: string;
 }): Promise<string | null> {
-  if (!LLAMA_API_KEY) return null;
-  const { system, user, messages = [], jsonMode = false, temperature = 0.4, timeoutMs = 9000, maxTokens } = params;
+  const providerApiKey = params.apiKey || LLAMA_API_KEY;
+  const providerBaseUrl = (params.baseUrl || LLAMA_BASE_URL).replace(/\/+$/, '');
+  const providerModel = params.model || LLAMA_MODEL_ID;
+  const providerTemperature = params.temperature ?? 0.4;
+  const providerTimeoutMs = params.timeoutMs ?? 9000;
+  const providerMaxTokens = params.maxTokens ?? 4000;
+  const providerJsonMode = params.jsonMode ?? false;
+  if (!providerApiKey) return null;
   const payload: any = {
-    model: LLAMA_MODEL_ID,
+    model: providerModel,
     messages: [
       ...(system ? [{ role: 'system', content: system }] : []),
       ...messages,
       ...(user ? [{ role: 'user', content: user }] : []),
     ],
-    temperature,
-    max_tokens: maxTokens ?? 4000,
+    temperature: providerTemperature,
+    max_tokens: providerMaxTokens,
   };
-  if (jsonMode) {
+  if (providerJsonMode) {
     payload.response_format = { type: 'json_object' };
   }
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timer = setTimeout(() => controller.abort(), providerTimeoutMs);
 
-  const useNativeOllama = LLAMA_BASE_URL.endsWith('/api') || LLAMA_BASE_URL.endsWith('/api/');
-  const effectiveMaxTokens = maxTokens ?? 4000;
+  const useNativeOllama = providerBaseUrl.endsWith('/api') || providerBaseUrl.endsWith('/api/');
+  const effectiveMaxTokens = providerMaxTokens;
 
   try {
     const url = useNativeOllama
-      ? `${LLAMA_BASE_URL.replace(/\/+$/, '')}/chat`
-      : `${LLAMA_BASE_URL}/chat/completions`;
+      ? `${providerBaseUrl}/chat`
+      : `${providerBaseUrl}/chat/completions`;
 
     const body = useNativeOllama
       ? {
-          model: LLAMA_MODEL_ID,
+          model: providerModel,
           messages: payload.messages,
           stream: false,
-          format: jsonMode ? 'json' : undefined,
-          options: { temperature: payload.temperature, num_predict: effectiveMaxTokens },
+          format: providerJsonMode ? 'json' : undefined,
+          options: { temperature: providerTemperature, num_predict: effectiveMaxTokens },
         }
       : { ...payload, max_tokens: effectiveMaxTokens };
 
     const res = await fetch(url, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${LLAMA_API_KEY}`,
+        Authorization: `Bearer ${providerApiKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
@@ -551,7 +565,7 @@ TUTORING AGENT ROLE LOCK (NON-NEGOTIABLE):
       systemInstruction = systemInstruction + extraModeInstruction;
     }
 
-    if (LLAMA_API_KEY) {
+    if (DEEPSEEK_API_KEY) {
       try {
         const historyMessages = Array.isArray(history)
           ? history.slice(-6).map((h: any) => ({
@@ -567,6 +581,9 @@ TUTORING AGENT ROLE LOCK (NON-NEGOTIABLE):
           temperature: 0.7,
           timeoutMs: 9000,
           maxTokens: 8000,
+          baseUrl: DEEPSEEK_BASE_URL,
+          apiKey: DEEPSEEK_API_KEY,
+          model: DEEPSEEK_MODEL,
         });
 
         if (reply) {
@@ -2851,7 +2868,7 @@ Return valid JSON with:
 `.trim();
 
   let paper: any = null;
-  if (LLAMA_API_KEY) {
+  if (DEEPSEEK_API_KEY) {
     try {
       const text = await callLlamaChat({
         system: systemInstruction,
@@ -2859,6 +2876,9 @@ Return valid JSON with:
         jsonMode: true,
         temperature: 0.3,
         timeoutMs: 30000,
+        baseUrl: DEEPSEEK_BASE_URL,
+        apiKey: DEEPSEEK_API_KEY,
+        model: DEEPSEEK_MODEL,
       });
       if (text) {
         let cleaned = text.trim();
