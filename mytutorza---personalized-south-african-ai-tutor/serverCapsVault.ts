@@ -609,17 +609,21 @@ export function getSelectiveCapsCurriculumContext(
       buffer.push(``);
     });
 
-    // CAPS vault PDF chapter references (table-of-contents matches only).
-    const pdfMatches = searchCapsVault(`${normSubject} ${normGrade} ${queryOrTopic || ''}`, 3);
+    // CAPS vault document references (matched chapters + a short digest).
+    const pdfMatches = searchCapsVault(`${normSubject} ${normGrade} ${queryOrTopic || ''}`, 2);
     if (pdfMatches.length > 0) {
-      buffer.push(`CAPS VAULT PDF CHAPTER REFERENCES (IN-APP SOURCES):`);
-      pdfMatches.forEach((match: any) => {
+      buffer.push(`CAPS VAULT DOCUMENT REFERENCES (IN-APP SOURCES):`);
+      pdfMatches.forEach((match: any, index: number) => {
         const chapters = (match.chapters || [])
           .slice(0, 6)
           .map((chapter: any) => chapter.title)
           .join(' | ');
         buffer.push(`- ${match.file} (${match.subject || ''} ${match.grade || ''})`);
         if (chapters) buffer.push(`  Matched chapters: ${chapters}`);
+        // Inject a short digest only for the best match to keep prompt cost low.
+        if (index === 0 && match.preview) {
+          buffer.push(`  CAPS document extract: ${String(match.preview).slice(0, 500)}`);
+        }
       });
       buffer.push(``);
     }
