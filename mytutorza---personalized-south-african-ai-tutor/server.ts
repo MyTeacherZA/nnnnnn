@@ -790,6 +790,10 @@ UPLOADED SOURCE / RAG CONTEXT (FIRST CONTEXT — "THE HOLY GRAIL"):
       cached: replySource === 'cache',
       sessionId: savedTutoringSessionId || requestedSessionId || null,
       sourceId: requestedSourceId || null,
+      sourceResolved: Boolean(sessionSource),
+      // Tells the client to fall back to inline text on the next turn when the
+      // server could not load a previously ingested source (e.g. DDL missing).
+      sourceMissing: Boolean(requestedSourceId) && !sessionSource,
       offTopicFlagged: offTopicHint,
     });
   } catch (err: any) {
@@ -4255,6 +4259,20 @@ const host = '0.0.0.0';
 const server = app.listen(port, host, () => {
   console.log(`Server listening on http://${host}:${port}`);
   console.log(`Static build: ${fs.existsSync(distDir) ? distDir : 'MISSING (run bun run build)'}`);
+
+  // Warm the CAPS retrieval index in the background when it is missing (fresh
+  // deployment or cleared disk). Without this the curriculum vault silently
+  // returns no matches; the request path itself never waits on it.
+  const capsIndexFile = path.resolve(process.cwd(), 'caps_vault', 'manifest-toc.json');
+  if (fs.existsSync(path.resolve(process.cwd(), 'caps_vault')) && !fs.existsSync(capsIndexFile)) {
+    void buildCapsVaultIndex()
+      .then((result) => {
+        console.log(`CAPS vault index built: ${result.processed}/${result.total} documents`);
+      })
+      .catch((err) => {
+        console.warn('CAPS vault index warmup failed:', err?.message || err);
+      });
+  }
 });
 
 server.on('error', (err) => {
