@@ -19,7 +19,9 @@ import {
   searchCapsVault,
   detectTOC,
   splitByTOC,
+  extractPdfTextFromBuffer,
 } from './serverPdfIngestion';
+import { createHash } from 'crypto';
 import {
   pickFiles as pickCapsFiles,
   matchSubject as capsMatchSubject,
@@ -495,6 +497,47 @@ function getAuthenticDBEPaper(
   };
 }
 
+/**
+ * Lightweight RAG: split an ingested textbook/source into overlapping chunks
+ * and return the chunks most relevant to the learner's locked topic + message.
+ */
+function selectSourceChunks(text: string, query: string, maxChars: number = 12000): string {
+  const clean = String(text || '').trim();
+  if (!clean) return '';
+  if (clean.length <= maxChars) return clean;
+
+  const chunkSize = 1800;
+  const overlap = 200;
+  const chunks: { index: number; content: string }[] = [];
+  for (let start = 0; start < clean.length; start += chunkSize - overlap) {
+    chunks.push({ index: chunks.length, content: clean.slice(start, start + chunkSize) });
+    if (start + chunkSize >= clean.length) break;
+  }
+
+  const terms = String(query || '')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((term) => term.length > 2);
+  const scored = chunks.map((chunk) => {
+    const lower = chunk.content.toLowerCase();
+    const score = terms.reduce((sum, term) => sum + (lower.includes(term) ? 1 : 0), 0);
+    return { ...chunk, score };
+  });
+  scored.sort((a, b) => b.score - a.score || a.index - b.index);
+
+  const picked: { index: number; content: string }[] = [];
+  let total = 0;
+  for (const chunk of scored) {
+    if (total + chunk.content.length > maxChars) continue;
+    picked.push(chunk);
+    total += chunk.content.length;
+    if (total >= maxChars - chunkSize) break;
+  }
+  if (picked.length === 0) return clean.slice(0, maxChars);
+  picked.sort((a, b) => a.index - b.index);
+  return picked.map((chunk) => chunk.content).join('\n\n[...]\n\n');
+}
+
 app.post('/api/tutoring/chat', async (req: Request, res: Response) => {
   try {
     if (await rejectWithoutAgentAccess(req, res)) return;
@@ -560,11 +603,23 @@ TUTORING AGENT ROLE LOCK (NON-NEGOTIABLE):
 LOCKED TUTORING TOPIC (SESSION-HARD LOCK, NON-NEGOTIABLE):
 - The learner's locked tutoring topic for this session is: "${String(lockedTopic || '').trim() || 'the subject focus'}".`;
     if (pdf) {
+      const retrievedSource = selectSourceChunks(
+        String(pdf.text || ''),
+        `${String(lockedTopic || '')} ${String(message || '')}`,
+      );
+      const tocList = Array.isArray(pdf.tableOfContents)
+        ? pdf.tableOfContents
+            .filter((entry: any) => entry && (typeof entry === 'string' ? entry : entry.title))
+            .slice(0, 24)
+            .map((entry: any) => (typeof entry === 'string' ? entry : entry.title))
+            .join(' | ')
+        : '';
       systemInstruction += `
 
 UPLOADED SOURCE / RAG CONTEXT (FIRST CONTEXT — "THE HOLY GRAIL"):
 - An uploaded source was provided for this session: "${String(pdf.name || '').trim() || 'uploaded source'}".
-- Ingested source content: ${String(pdf.text || '').trim() ? String(pdf.text).slice(0, 12000) : '(no extractable text content was provided).'}
+- Source table of contents: ${tocList || '(not detected)'}.
+- Retrieved source content (most relevant to the locked topic): ${retrievedSource || '(no extractable text content was provided).'}
 - THE UPLOADED SOURCE IS THE FIRST CONTEXT AND THE HOLY GRAIL FOR THIS TUTORING SESSION. Tutor the student on the locked topic using this uploaded source as the primary grounding.
 - Use internet knowledge to provide further clarity and emphasis on what the uploaded source says about the topic.
 - If the uploaded source has no content relevant to the locked topic, fall back to internet-based knowledge strictly specific to the locked topic.
@@ -611,6 +666,8 @@ UPLOADED SOURCE / RAG CONTEXT (FIRST CONTEXT — "THE HOLY GRAIL"):
             grade: grade || 'Grade 12',
             language: targetLang,
             title: bodyTitle,
+            topic: String(lockedTopic || bodyTitle || '').trim(),
+            pdf: pdf || null,
             messages: [...historyMessages, { role: 'user', content: message }, { role: 'assistant', content: reply }],
           });
           return res.json({ reply, source: LLAMA_MODEL_ID, sessionId: savedTutoringSessionId });
@@ -640,6 +697,8 @@ UPLOADED SOURCE / RAG CONTEXT (FIRST CONTEXT — "THE HOLY GRAIL"):
       grade: grade || 'Grade 12',
       language: targetLang,
       title: bodyTitle,
+      topic: String(lockedTopic || bodyTitle || '').trim(),
+      pdf: pdf || null,
       messages: [...historyMessages, { role: 'user', content: message }, { role: 'assistant', content: reply }],
     });
     return res.json({ reply, source: 'firmament-engine-local', sessionId: savedTutoringSessionId });
@@ -650,6 +709,77 @@ UPLOADED SOURCE / RAG CONTEXT (FIRST CONTEXT — "THE HOLY GRAIL"):
         'Let us work through this together step by step. What is the fundamental formula or theorem we should apply first?',
       source: 'safe-fallback',
     });
+  }
+});
+
+// ---------------------------------------------------------------------
+// 1A-2. TUTORING SOURCE INGEST (PDF / TEXT -> PARSE -> RAG -> SUPABASE & UPSTASH)
+// Parses an uploaded textbook/source, extracts readable text + a table of
+// contents, and caches the source metadata in Upstash for fast reuse.
+// ---------------------------------------------------------------------
+app.post('/api/tutoring/source/ingest', async (req: Request, res: Response) => {
+  try {
+    if (await rejectWithoutAgentAccess(req, res)) return;
+
+    const { name, base64, topic } = req.body || {};
+    const fileName = String(name || '').trim() || 'uploaded-source';
+    const encoded = String(base64 || '').replace(/^data:[^;]+;base64,/, '');
+    if (!encoded) return res.status(400).json({ error: 'Source file is required.' });
+
+    const buffer = Buffer.from(encoded, 'base64');
+    if (!buffer.length) return res.status(400).json({ error: 'Could not read the uploaded source.' });
+    if (buffer.length > 7 * 1024 * 1024) {
+      return res.status(413).json({ error: 'Source is too large. Please upload a file under 7MB.' });
+    }
+
+    let text = '';
+    if (/\.pdf$/i.test(fileName)) {
+      text = await extractPdfTextFromBuffer(buffer);
+    } else {
+      text = buffer.toString('utf8');
+    }
+
+    text = text
+      .replace(/\u0000/g, ' ')
+      .replace(/\r/g, '\n')
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+
+    if (!text) {
+      return res.status(422).json({ error: 'No readable text could be extracted from this source.' });
+    }
+
+    const tableOfContents = detectTOC(text).slice(0, 40);
+    const sourceKey = `tutoring:source:${createHash('sha256')
+      .update(`${fileName}:${text.length}:${String(topic || '')}:${text.slice(0, 500)}`)
+      .digest('hex')
+      .slice(0, 32)}`;
+
+    // Cache source metadata + table of contents (the full text travels with
+    // the tutoring request and is chunk-retrieved by selectSourceChunks).
+    await setCache(
+      sourceKey,
+      {
+        name: fileName,
+        tableOfContents,
+        chars: text.length,
+        topic: String(topic || '').trim(),
+        ingestedAt: new Date().toISOString(),
+      },
+      60 * 60 * 24,
+    );
+
+    return res.json({
+      name: fileName,
+      text,
+      tableOfContents,
+      chars: text.length,
+      sourceKey,
+    });
+  } catch (err: any) {
+    console.error('Tutoring source ingest error:', err);
+    return res.status(500).json({ error: err?.message || 'Source ingest failed.' });
   }
 });
 

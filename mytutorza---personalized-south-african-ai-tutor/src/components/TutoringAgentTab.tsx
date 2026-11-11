@@ -16,6 +16,7 @@ import {
   Maximize2,
   Minimize2,
   Plus,
+  Loader2,
 } from 'lucide-react';
 import { ChatMessage, PersonalizedSparkNotes } from '../types';
 import { SparkNotesModal } from './SparkNotesModal';
@@ -60,7 +61,13 @@ export const TutoringAgentTab: React.FC = () => {
   const [isNewSessionOpen, setIsNewSessionOpen] = useState(false);
   const [tutoringTopic, setTutoringTopic] = useState('');
   const [lockedTopic, setLockedTopic] = useState<string | null>(null);
-  const [tutoringPdf, setTutoringPdf] = useState<{ name: string; text: string } | null>(null);
+  const [tutoringPdf, setTutoringPdf] = useState<{
+    name: string;
+    text: string;
+    tableOfContents?: { title?: string; level?: number }[];
+  } | null>(null);
+  const [isPdfUploading, setIsPdfUploading] = useState(false);
+  const [pdfError, setPdfError] = useState<string | null>(null);
   const pdfInputRef = useRef<HTMLInputElement>(null);
 
   // Spark Notes Analysis State
@@ -127,6 +134,77 @@ export const TutoringAgentTab: React.FC = () => {
     scrollToBottom();
   }, [messages, loading]);
 
+  const startNewTutoringSession = (topicOverride?: string) => {
+    const cleanTopic = (topicOverride ?? tutoringTopic).trim();
+    if (!cleanTopic) return;
+
+    setLockedTopic(cleanTopic);
+    setSessionTitle(cleanTopic);
+    setTutoringPdf(null);
+    setPdfError(null);
+    setIsNewSessionOpen(false);
+    setTutoringTopic('');
+    setInput('');
+    setMessages([
+      {
+        id: `init-${Date.now()}`,
+        sender: 'ai',
+        agent: 'tutoring',
+        text: `${greeting} ${student?.fullName || 'Student'}! New tutoring session locked to **${cleanTopic}** for **${activeSubject?.name || 'Mathematics'}** (${student?.grade || 'Grade 12'}).\n\n🛡️ **Session Hard Lock Active:** This session is dedicated exclusively to "${cleanTopic}". Every explanation, example and guiding question stays inside this topic.\n\n📚 **Source rule:** If you upload a textbook/source with the book button, it becomes my first context and the holy grail for this session. If no source is uploaded, I use internet knowledge strictly specific to "${cleanTopic}".\n\nWhich part of "${cleanTopic}" shall we start with?`,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      },
+    ]);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handlePdfChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    setPdfError(null);
+    setIsPdfUploading(true);
+    try {
+      if (file.size > 7 * 1024 * 1024) {
+        throw new Error('Source is too large. Please upload a file under 7MB.');
+      }
+
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+        reader.onerror = () => reject(reader.error || new Error('Could not read this file.'));
+        reader.readAsDataURL(file);
+      });
+      if (!base64) throw new Error('Could not read this file.');
+
+      const response = await fetch('/api/tutoring/source/ingest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: file.name, base64, topic: lockedTopic || tutoringTopic }),
+      });
+
+      if (notifySubscriptionRequired(response)) return;
+
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.text) {
+        throw new Error(data?.error || 'Could not parse this source. Try a text-based PDF.');
+      }
+
+      setTutoringPdf({
+        name: data.name || file.name,
+        // Cap stored text so each tutoring request stays light; RAG selects
+        // the most relevant chunks from this content.
+        text: String(data.text).slice(0, 400000),
+        tableOfContents: Array.isArray(data.tableOfContents) ? data.tableOfContents : [],
+      });
+      setPdfError(null);
+    } catch (error: any) {
+      setPdfError(error?.message || 'Could not parse this source.');
+    } finally {
+      setIsPdfUploading(false);
+    }
+  };
+
   const handleSend = async (textToSend?: string) => {
     const query = (textToSend || input).trim();
     if (!query || loading || !activeSubject) return;
@@ -164,6 +242,8 @@ export const TutoringAgentTab: React.FC = () => {
           askMode,
           history: messages.slice(-5).map((m) => ({ sender: m.sender, text: m.text })),
           title: sessionTitle.trim(),
+          lockedTopic: lockedTopic || undefined,
+          pdf: tutoringPdf || undefined,
         }),
       });
 
@@ -213,6 +293,14 @@ export const TutoringAgentTab: React.FC = () => {
         {/* Chat Header */}
         <div className="px-4 py-3 bg-slate-900/90 border-b border-slate-800 flex items-center justify-between">
           <div className="flex items-center gap-3">
+            <button
+              onClick={() => setIsNewSessionOpen(true)}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-[11px] font-bold text-slate-200 hover:text-white hover:border-sky-500/60 transition-colors shrink-0"
+              title="Start a new tutoring session locked to a topic"
+            >
+              <Plus className="w-3.5 h-3.5 text-sky-400" />
+              <span className="hidden sm:inline">New session</span>
+            </button>
             <div className="w-9 h-9 rounded-xl btn-accent flex items-center justify-center">
               <Sparkles className="w-5 h-5 text-white" />
             </div>
@@ -273,6 +361,41 @@ export const TutoringAgentTab: React.FC = () => {
             >
               Ask
             </button>
+            {/* Book toggle: upload a textbook / PDF / text source for this session */}
+            <div className="relative">
+              <button
+                onClick={() => pdfInputRef.current?.click()}
+                disabled={isPdfUploading}
+                className={`w-8 h-8 rounded-full border flex items-center justify-center transition-colors ${
+                  isPdfUploading
+                    ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 cursor-wait'
+                    : tutoringPdf
+                    ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
+                    : 'bg-slate-800 border-slate-700 text-sky-300 hover:text-white'
+                }`}
+                title={
+                  isPdfUploading
+                    ? 'Parsing source…'
+                    : tutoringPdf
+                    ? `Source: ${tutoringPdf.name} (click to replace)`
+                    : 'Upload textbook / PDF / text for this session'
+                }
+              >
+                {isPdfUploading ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <BookOpen className="w-4 h-4" />
+                )}
+              </button>
+              <input
+                ref={pdfInputRef}
+                type="file"
+                accept=".pdf,.txt,.md,.doc,.docx"
+                onChange={handlePdfChange}
+                className="hidden"
+              />
+            </div>
+
             <button
               onClick={() => setIsFullscreen((v) => !v)}
               className="p-1.5 rounded-lg bg-slate-800 text-slate-400 hover:text-slate-200 transition-colors"
@@ -283,6 +406,10 @@ export const TutoringAgentTab: React.FC = () => {
 
             <button
               onClick={() => {
+                setLockedTopic(null);
+                setTutoringPdf(null);
+                setPdfError(null);
+                setTutoringTopic('');
                 setMessages([
                   {
                     id: 'restart-1',
@@ -300,6 +427,120 @@ export const TutoringAgentTab: React.FC = () => {
             </button>
           </div>
         </div>
+
+        {/* New session: topic hard-lock entry (Enter to lock) */}
+        {isNewSessionOpen && (
+          <div className="px-4 py-3 bg-slate-900/95 border-b border-slate-800 space-y-2.5 shrink-0">
+            <div className="flex items-center gap-2 text-[10px] font-extrabold uppercase tracking-widest text-sky-400">
+              <Plus className="w-3.5 h-3.5" /> New tutoring session
+            </div>
+            <div className="text-[11px] text-slate-400">
+              What topic / chapter / semester do you want to be tutored on? Press Enter to lock it for this session.
+            </div>
+            <div className="flex flex-col sm:flex-row gap-2">
+              <input
+                autoFocus
+                type="text"
+                value={tutoringTopic}
+                onChange={(e) => setTutoringTopic(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    startNewTutoringSession();
+                  }
+                }}
+                placeholder={`e.g. Business environments — ${activeSubject?.name || 'your subject'}`}
+                className="flex-1 bg-slate-950/90 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500"
+              />
+              <button
+                onClick={() => startNewTutoringSession()}
+                disabled={!tutoringTopic.trim()}
+                className="btn-accent px-4 py-2.5 rounded-xl text-xs font-bold text-white disabled:opacity-40"
+              >
+                Start Session
+              </button>
+              <button
+                onClick={() => setIsNewSessionOpen(false)}
+                className="px-3 py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-xs font-bold text-slate-300 hover:text-white"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Locked topic: pinned at the top of the session, unmoving */}
+        {lockedTopic && (
+          <div className="px-4 py-2 bg-sky-500/5 border-b border-slate-800 flex flex-wrap items-center gap-2 text-xs shrink-0">
+            <BookOpen className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+            <span className="font-extrabold uppercase tracking-wider text-[10px] text-sky-300">
+              Locked topic
+            </span>
+            <span className="font-semibold text-white">{lockedTopic}</span>
+            {tutoringPdf && (
+              <span className="ml-auto inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-[10px] font-bold text-emerald-300">
+                <FileText className="w-3 h-3" />
+                <span className="max-w-[160px] truncate">{tutoringPdf.name}</span>
+                <button
+                  onClick={() => setTutoringPdf(null)}
+                  className="hover:text-white"
+                  title="Remove uploaded source"
+                >
+                  ×
+                </button>
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* Source ingest status: parsing progress + parse errors */}
+        {(isPdfUploading || pdfError) && (
+          <div
+            className={`px-4 py-1.5 border-b border-slate-800 flex items-center gap-2 text-[11px] shrink-0 ${
+              pdfError ? 'bg-rose-500/5 text-rose-300' : 'bg-amber-500/5 text-amber-300'
+            }`}
+          >
+            {isPdfUploading ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+            ) : (
+              <FileText className="w-3.5 h-3.5 shrink-0" />
+            )}
+            <span>
+              {isPdfUploading
+                ? 'Parsing your source and building the table of contents…'
+                : `Could not ingest source: ${pdfError}`}
+            </span>
+            {pdfError && (
+              <button
+                onClick={() => setPdfError(null)}
+                className="ml-auto font-bold hover:text-white"
+              >
+                Dismiss
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Uploaded source chip when no topic is locked yet */}
+        {!lockedTopic && tutoringPdf && (
+          <div className="px-4 py-1.5 bg-emerald-500/5 border-b border-slate-800 flex items-center gap-2 text-[11px] text-emerald-300 shrink-0">
+            <BookOpen className="w-3.5 h-3.5 shrink-0" />
+            <span className="font-bold">Session source:</span>
+            <span className="max-w-[220px] truncate">{tutoringPdf.name}</span>
+            {tutoringPdf.tableOfContents && tutoringPdf.tableOfContents.length > 0 && (
+              <span className="text-emerald-400/70">
+                • {tutoringPdf.tableOfContents.length} sections detected
+              </span>
+            )}
+            <button
+              onClick={() => setTutoringPdf(null)}
+              className="ml-auto hover:text-white font-bold"
+              title="Remove uploaded source"
+            >
+              Remove
+            </button>
+          </div>
+        )}
 
         {/* Proactive Spark Notes Prompt when conversation has 2+ exchanges */}
         {messages.length >= 2 && (

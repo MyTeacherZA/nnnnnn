@@ -22,6 +22,22 @@ export async function extractPdfText(filePath: string): Promise<string> {
   }
 }
 
+/** Extracts text from an uploaded PDF buffer (used by the tutoring source ingest route). */
+export async function extractPdfTextFromBuffer(buf: Buffer): Promise<string> {
+  try {
+    const mod: any = await import('pdf-parse');
+    const pdfParse = mod.default || mod;
+    const data = await pdfParse(buf);
+    let text = typeof data?.text === 'string' ? data.text : '';
+    text = text.replace(/\r/g, '\n').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+    if (text.length > 50) return text;
+    return buf.toString('latin1');
+  } catch (err: any) {
+    console.warn('pdf-parse (buffer) failed, raw fallback:', err?.message);
+    return buf.toString('latin1');
+  }
+}
+
 export async function extractPdfPages(filePath: string): Promise<string[]> {
   const text = await extractPdfText(filePath);
   return text.split(/\f/).filter((p) => p.trim().length > 0);
