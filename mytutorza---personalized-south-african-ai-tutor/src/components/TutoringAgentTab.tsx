@@ -279,6 +279,11 @@ export const TutoringAgentTab: React.FC = () => {
 
       const data = await response.json();
       if (data?.sessionId) setSessionId(String(data.sessionId));
+      if (data?.sourceMissing && tutoringPdf) {
+        // Server could not load the stored source (e.g. SQL not applied yet).
+        // Drop the id so the next turn sends the inline text as a fallback.
+        setTutoringPdf({ ...tutoringPdf, sourceId: null });
+      }
       const aiReplyText = data.reply || data.error || 'I am ready to help you work through this step-by-step.';
 
       const aiMessage: ChatMessage = {
