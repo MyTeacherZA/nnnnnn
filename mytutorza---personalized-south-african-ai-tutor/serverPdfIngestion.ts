@@ -56,12 +56,117 @@ export function splitByTOC(fullText: string, toc: TOCEntry[]): ChapterContent[] 
   return chapters;
 }
 
+const CAPS_SUBJECT_PATTERNS: Array<[RegExp, string]> = [
+  [/\bmaths?\s*lit(eracy)?\b|\bwiskunde\s*geletterdheid\b/i, 'Mathematical Literacy'],
+  [/\btech(nical)?\s*math/i, 'Technical Mathematics'],
+  [/\bmaths?\b|\bmathematics\b|\bwiskunde\b/i, 'Mathematics'],
+  [/\bphys(ical)?\s*sci/i, 'Physical Sciences'],
+  [/\blife\s*sci/i, 'Life Sciences'],
+  [/\bagric\s*man\s*prac/i, 'Agricultural Management Practices'],
+  [/\bagric\s*sci/i, 'Agricultural Sciences'],
+  [/\bagric\s*tech/i, 'Agricultural Technology'],
+  [/\bacc\b|\baccounting\b|\bgrondslag\b/i, 'Accounting'],
+  [/\bbus\s*stu|\bbusiness\s*studies\b|\bbesigheid/i, 'Business Studies'],
+  [/\beco\b|\beconomics\b|\bekonomie\b/i, 'Economics'],
+  [/\bgeo\b|\bgeography\b|\bgeografie\b/i, 'Geography'],
+  [/\bhis\b|\bhistory\b|\bgeskiedenis\b/i, 'History'],
+  [/\blo\b|\blife\s*orientation\b|\blewensori[eë]ntasie\b/i, 'Life Orientation'],
+  [/\bcomp\s*app\s*tech|\bcat\b/i, 'Computer Applications Technology'],
+  [/\binfo\s*tech|\binformation\s*technology\b/i, 'Information Technology'],
+  [/\bcon\s*stu|\bconsumer\s*studies\b/i, 'Consumer Studies'],
+  [/\bhos\s*stu|\bhospitality\b/i, 'Hospitality Studies'],
+  [/\btou\b|\btourism\b/i, 'Tourism'],
+  [/\bdram|\bdan\s*stu|\bdance\b/i, 'Dramatic Arts'],
+  [/\bmus\b|\bmusic\b|\bmusiek\b/i, 'Music'],
+  [/\bvis\s*art|\bvisual\s*arts\b/i, 'Visual Arts'],
+  [/\brel\s*stu|\breligion\b/i, 'Religion Studies'],
+  [/\bsign\s*la|\bsign\s*language\b/i, 'South African Sign Language'],
+  [/\benglish\b|\bengels\b/i, 'English'],
+  [/\bafrikaans\b/i, 'Afrikaans'],
+  [/\bisizulu\b|\bzulu\b/i, 'isiZulu'],
+  [/\bisixhosa\b|\bxhosa\b/i, 'isiXhosa'],
+  [/\bisindebele\b|\bndebele\b/i, 'isiNdebele'],
+  [/\bsepedi\b|\bpedi\b/i, 'Sepedi'],
+  [/\bsesotho\b|\bsotho\b/i, 'Sesotho'],
+  [/\bsetswana\b|\btswana\b/i, 'Setswana'],
+  [/\bsiswati\b|\bswati\b/i, 'siSwati'],
+  [/\btshivenda\b|\bvenda\b/i, 'Tshivenda'],
+  [/\bxitsonga\b|\btsonga\b/i, 'Xitsonga'],
+];
+
+const LANGUAGE_SUBJECTS = new Set([
+  'English',
+  'Afrikaans',
+  'isiZulu',
+  'isiXhosa',
+  'isiNdebele',
+  'Sepedi',
+  'Sesotho',
+  'Setswana',
+  'siSwati',
+  'Tshivenda',
+  'Xitsonga',
+  'South African Sign Language',
+]);
+
+/** Infers subject / grade / language variant from a CAPS vault filename. */
+export function inferCapsMeta(file: string): { subject: string; grade: string; term: string } {
+  const name = String(file || '').replace(/[_-]+/g, ' ');
+
+  let subject = 'General';
+  for (const [pattern, label] of CAPS_SUBJECT_PATTERNS) {
+    if (pattern.test(name)) {
+      subject = label;
+      break;
+    }
+  }
+
+  if (LANGUAGE_SUBJECTS.has(subject)) {
+    if (/\bhl\b|\bhome\s*language\b|\bhuistaal\b/i.test(name)) subject = `${subject} Home Language`;
+    else if (/\bfal\b|\bfirst\s*additional\b|\beerste\s*addisionele\b/i.test(name))
+      subject = `${subject} First Additional Language`;
+    else if (/\bsal\b|\bsecond\s*additional\b|\btweede\s*addisionele\b/i.test(name))
+      subject = `${subject} Second Additional Language`;
+  }
+
+  const gradeMatch = name.match(/\bgr(?:ade)?\s*(\d{1,2})\b/i);
+  const grade = gradeMatch ? `Grade ${gradeMatch[1]}` : 'Grade 12';
+  const termMatch = name.match(/\bterm\s*([1-4])\b/i);
+  const term = termMatch ? `Term ${termMatch[1]}` : 'Term 1';
+
+  return { subject, grade, term };
+}
+
+/**
+ * Builds `caps_vault/manifest-toc.json` from the PDFs that are actually in the
+ * vault. Previously this required a `manifest.json` that did not exist, so the
+ * index (and therefore all CAPS retrieval) was always empty.
+ *
+ * Only ATP / examination-guideline documents are indexed: question papers have
+ * no curriculum table of contents and would add noise.
+ */
 export async function buildCapsVaultIndex(): Promise<{ total: number; processed: number; results: PdfTOCResult[] }> {
   const vaultDir = path.resolve(process.cwd(), 'caps_vault');
+  if (!fs.existsSync(vaultDir)) return { total: 0, processed: 0, results: [] };
+
   const manifestPath = path.resolve(vaultDir, 'manifest.json');
-  if (!fs.existsSync(manifestPath)) return { total: 0, processed: 0, results: [] };
-  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
-  const files: string[] = Array.isArray(manifest?.files) ? manifest.files : [];
+  let files: string[] = [];
+  if (fs.existsSync(manifestPath)) {
+    try {
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+      files = Array.isArray(manifest?.files) ? manifest.files : [];
+    } catch {
+      files = [];
+    }
+  }
+  if (!files.length) {
+    files = fs
+      .readdirSync(vaultDir)
+      .filter((file) => /\.pdf$/i.test(file))
+      .filter((file) => /atp|guideline/i.test(file))
+      .sort((a, b) => a.localeCompare(b));
+  }
+
   const results: PdfTOCResult[] = [];
   for (const file of files) {
     const fullPath = path.resolve(vaultDir, file);
@@ -69,13 +174,34 @@ export async function buildCapsVaultIndex(): Promise<{ total: number; processed:
     try {
       const fullText = await extractPdfText(fullPath);
       if (!fullText || fullText.length < 50) continue;
-      const toc = detectTOC(fullText); const chapters = splitByTOC(fullText, toc);
-      const fn = file.toLowerCase(); const subject = fn.includes('math') ? 'Mathematics (Pure)' : fn.includes('physic') || fn.includes('science') ? 'Physical Sciences' : fn.includes('life') ? 'Life Sciences' : fn.includes('account') ? 'Accounting' : fn.includes('geog') ? 'Geography' : fn.includes('english') ? 'English Home Language' : 'General';
-      const grade = /grade\s*(\d+)/i.test(fn) ? `Grade ${fn.match(/grade\s*(\d+)/i)![1]}` : 'Grade 12'; const term = /term\s*([1-4])/i.test(fn) ? `Term ${fn.match(/term\s*([1-4])/i)![1]}` : 'Term 1';
+      const toc = detectTOC(fullText);
+      const chapters = splitByTOC(fullText, toc);
+      const { subject, grade, term } = inferCapsMeta(file);
       results.push({ file, subject, grade, term, toc, chapters, fullText, totalChars: fullText.length });
-    } catch (err) { console.warn(`Skipping ${file}:`, err); }
+    } catch (err) {
+      console.warn(`Skipping ${file}:`, err);
+    }
   }
-  const enriched = { files: results.map((r) => r.file), tocIndex: results.map((r) => ({ file: r.file, subject: r.subject, grade: r.grade, term: r.term, toc: r.toc, chapterCount: r.chapters.length })) };
+
+  const enriched = {
+    generatedAt: new Date().toISOString(),
+    files: results.map((r) => r.file),
+    tocIndex: results.map((r) => ({
+      file: r.file,
+      subject: r.subject,
+      grade: r.grade,
+      term: r.term,
+      toc: r.toc,
+      chapterCount: r.chapters.length,
+      // Short, cleaned digest so matched subjects give the model real CAPS
+      // wording instead of only chapter titles. Kept small for prompt cost.
+      preview: String(r.fullText || '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 900),
+    })),
+  };
+
   fs.writeFileSync(path.resolve(vaultDir, 'manifest-toc.json'), JSON.stringify(enriched, null, 2));
   return { total: files.length, processed: results.length, results };
 }
@@ -133,13 +259,24 @@ export function searchCapsVault(query: string, limit: number = 5): any[] {
       const headerHits = terms.filter((term) => header.includes(term)).length;
       const score = matchedChapters.length * 2 + headerHits;
 
-      if (score === 0 || matchedChapters.length === 0) return null;
+      if (score === 0) return null;
+
+      // Subject/grade-only queries (e.g. "isiZulu Grade 11") still return the
+      // document with its opening chapters so callers get a usable reference.
+      const chapters = matchedChapters.length
+        ? matchedChapters
+        : toc
+            .slice(0, 4)
+            .map((t: any) => ({ title: String(t?.title || ''), page: t?.page }))
+            .filter((t: any) => t.title);
+
       return {
         file: String(entry?.file || ''),
         subject: entry?.subject || '',
         grade: entry?.grade || '',
         term: entry?.term || '',
-        chapters: matchedChapters,
+        chapters,
+        preview: String(entry?.preview || ''),
         score,
       };
     })

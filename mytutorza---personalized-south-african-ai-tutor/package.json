@@ -15,6 +15,7 @@
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
     "mail:test": "tsx scripts/test-mail.ts",
+    "test:tutoring": "bun scripts/test-tutoring-context.ts",
     "paypal:plans": "tsx scripts/create-paypal-plans.ts"
   },
   "dependencies": {
