@@ -11,7 +11,88 @@ const SCOPE_STOPWORDS = new Set([
   'has', 'had', 'can', 'could', 'would', 'should', 'please', 'explain', 'help', 'understand',
   'question', 'answer', 'work', 'show', 'tell', 'give', 'need', 'want', 'know', 'think',
   'again', 'more', 'some', 'then', 'than', 'them', 'they', 'does', 'did', 'how', 'why',
+  'topic', 'lesson', 'chapter', 'section', 'case', 'study', 'evidence', 'example',
+  'argument', 'typical', 'common', 'inside', 'outside',
 ]);
+
+/** Field-of-knowledge terms so an on-topic question passes even when it does
+ * not share vocabulary with the specific locked topic. */
+const DOMAIN_TERMS: Array<{ pattern: RegExp; terms: string[] }> = [
+  {
+    pattern: /math|algebra|calculus|geometry|trig|statist|pre[- ]?calculus|number theory/i,
+    terms: [
+      'equation', 'solve', 'factor', 'algebra', 'calculus', 'derivative', 'integral', 'limit',
+      'function', 'graph', 'parabola', 'quadratic', 'polynomial', 'linear', 'exponential',
+      'trigonometric', 'sine', 'cosine', 'tangent', 'vector', 'matrix', 'probability',
+      'statistics', 'circle', 'angle', 'theorem', 'proof', 'slope', 'sequence',
+    ],
+  },
+  {
+    pattern: /physic|kinetic|mechanic|electrodynamics|wave|thermodynam/i,
+    terms: [
+      'velocity', 'acceleration', 'force', 'mass', 'energy', 'momentum', 'newton', 'circuit',
+      'electric', 'voltage', 'current', 'resistance', 'friction', 'motion', 'projectile',
+      'kinematics', 'dynamics', 'thermodynamics', 'wave', 'frequency', 'optics', 'gravity',
+      'torque', 'work', 'power', 'field', 'charge', 'potential', 'capacitor', 'inductor',
+    ],
+  },
+  {
+    pattern: /chem/i,
+    terms: [
+      'acid', 'base', 'ph', 'mole', 'reaction', 'compound', 'element', 'atom', 'ion',
+      'organic', 'bonding', 'enthalpy', 'equilibrium', 'isotope', 'stoichiometry',
+      'electrolyte', 'oxidation', 'reduction', 'titration', 'concentration',
+    ],
+  },
+  {
+    pattern: /bio|life science/i,
+    terms: [
+      'cell', 'dna', 'gene', 'protein', 'photosynthesis', 'respiration', 'organism',
+      'ecosystem', 'evolution', 'species', 'membrane', 'mitosis', 'meiosis', 'nucleus',
+      'enzyme', 'amino', 'chromosome', 'inheritance', 'mutation', 'homeostasis',
+    ],
+  },
+  {
+    pattern: /english|literatur|lang|language arts|grammar|composition/i,
+    terms: [
+      'metaphor', 'simile', 'theme', 'character', 'plot', 'structure', 'writer',
+      'poet', 'analysis', 'essay', 'quotation', 'perspective', 'genre', 'imagery',
+      'language', 'poem', 'novel', 'drama', 'narrator',
+    ],
+  },
+  {
+    pattern: /historic|history/i,
+    terms: [
+      'cause', 'effect', 'war', 'treaty', 'empire', 'revolution', 'century',
+      'government', 'dynasty', 'cold', 'colonial', 'independence', 'constitution',
+      'civil', 'conflict', 'movement', 'reform',
+    ],
+  },
+  {
+    pattern: /geograph/i,
+    terms: [
+      'river', 'landscape', 'management', 'erosion', 'flood', 'drainage', 'basin',
+      'waterfall', 'meander', 'delta', 'plate', 'tectonic', 'climate', 'weathering',
+      'relief', 'coast', 'population', 'urban', 'migration', 'settlement',
+    ],
+  },
+  {
+    pattern: /account|business|econom|finance/i,
+    terms: [
+      'marketing', 'finance', 'profit', 'cost', 'market', 'consumer', 'organisation',
+      'strategy', 'stakeholder', 'business', 'revenue', 'expense', 'asset', 'liability',
+      'ledger', 'depreciation', 'cash', 'budget', 'supply', 'demand',
+    ],
+  },
+  {
+    pattern: /comput|programming|it|informat/i,
+    terms: [
+      'variable', 'loop', 'function', 'array', 'algorithm', 'boolean', 'index',
+      'string', 'integer', 'class', 'object', 'logic', 'debug', 'compile', 'syntax',
+      'method', 'parameter', 'return', 'condition', 'iteration',
+    ],
+  },
+];
 
 function normalise(value: string): string {
   return String(value || '')
@@ -73,6 +154,7 @@ export function isPossiblyOffTopic(
   message: string,
   lockedTopic: string,
   tocTitles: string[] = [],
+  subject: string = '',
 ): boolean {
   const raw = String(message || '').trim();
   if (raw.length < 12) return false;
@@ -89,7 +171,16 @@ export function isPossiblyOffTopic(
     return false;
   }
 
-  const scopeHaystack = normalise([lockedTopic, ...tocTitles].join(' '));
+  // Scope haystack = locked topic + source sections + a field-of-knowledge
+  // vocabulary for the subject, so genuinely on-topic asks pass.
+  const domainTerms: string[] = [];
+  for (const { pattern, terms } of DOMAIN_TERMS) {
+    if (pattern.test(subject) || pattern.test(lockedTopic)) {
+      domainTerms.push(...terms);
+    }
+  }
+
+  const scopeHaystack = normalise([lockedTopic, ...tocTitles, ...domainTerms].join(' '));
   if (!scopeHaystack) return false;
 
   const messageTerms = normalise(raw)

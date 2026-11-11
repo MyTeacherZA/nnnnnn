@@ -352,6 +352,7 @@ export function buildCurriculumDirective(params: CurriculumParams): string {
     `[${snap.code === 'US' ? 'US STATE STANDARDS MODE' : 'UK CURRICULUM MODE'} — ${snap.regionLabel.toUpperCase()}]`,
     `Framework: ${snap.frameworkTitle}. Stage: ${snap.bandLabel}.`,
     `Qualifications: ${snap.qualifications}.`,
+    `Examiner style: ${snap.examinerLabel}.`,
     ...snap.directives.map((d) => `- ${d}`),
     `- ${topicLine}`,
     `Conventions:`,

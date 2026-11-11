@@ -684,7 +684,7 @@ UPLOADED SOURCE / RAG CONTEXT (FIRST CONTEXT — "THE HOLY GRAIL"):
 - If the uploaded source has no content relevant to the locked topic, say so briefly and fall back to internet-based knowledge strictly specific to the locked topic.`;
     }
 
-    const offTopicHint = isPossiblyOffTopic(cleanMessage, cleanTopic, tocTitles);
+    const offTopicHint = isPossiblyOffTopic(cleanMessage, cleanTopic, tocTitles, cleanSubject);
 
     systemInstruction += `\n\n${buildTutoringSessionScope({
       lockedTopic: cleanTopic,

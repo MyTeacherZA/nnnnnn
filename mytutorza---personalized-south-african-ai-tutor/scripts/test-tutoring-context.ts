@@ -16,6 +16,7 @@ import {
   buildFirmamentSystemPrompt,
   getCurriculumDirective,
 } from '../serverFirmamentRules';
+import { describeCurriculumUsUk } from '../serverUsUkCurriculum';
 import { searchCapsVault } from '../serverPdfIngestion';
 import { selectSourceChunks, isPossiblyOffTopic } from '../serverTutoringContext';
 
@@ -153,6 +154,105 @@ check(
   'Scope: confusion follow-up not flagged',
   isPossiblyOffTopic('I do not understand what you mean', 'Business environments') === false,
 );
+check(
+  'Scope: Physics on-topic not flagged',
+  isPossiblyOffTopic(
+    'A ball is tossed vertically upward at 20 m/s. What happens to its velocity?',
+    'Kinematics',
+    [],
+    'Physics',
+  ) === false,
+);
+check(
+  'Scope: Geography on-topic not flagged',
+  isPossiblyOffTopic(
+    'Explain how a case study could strengthen an argument here.',
+    'Managing river landscapes',
+    [],
+    'Geography',
+  ) === false,
+);
+check(
+  'Scope: Maths on-topic not flagged',
+  isPossiblyOffTopic('Solve x^2 - 5x + 6 = 0', 'Quadratic equations', [], 'Mathematics') === false,
+);
+check(
+  'Scope: off-topic poem in Physics session flagged',
+  isPossiblyOffTopic('Write me a love poem about the moon', 'Kinematics', [], 'Physics') === true,
+);
+
+// Remove the explicit "NEVER reference: ..." line before leak testing so the
+// ban itself (which must contain the forbidden terms) is not counted.
+function stripBan(text: string): string {
+  return text
+    .split('\n')
+    .filter((line) => !line.includes('NEVER reference'))
+    .join('\n');
+}
+
+// ---- US/UK curriculum grounding: no CAPS leakage, correct frameworks -------
+const txMath = getCurriculumDirective({
+  subject: 'Mathematics',
+  grade: 'Grade 9',
+  topic: 'Linear Functions',
+  country: 'US',
+  state: 'Texas',
+});
+check('US/Texas Mathematics references TEKS', txMath.includes('TEKS'));
+check('US directive leaks no CAPS', !stripBan(txMath).match(/CAPS|DBE/));
+
+const caAp = getCurriculumDirective({
+  subject: 'English Language',
+  grade: 'Grade 11',
+  country: 'US',
+  state: 'CA',
+});
+check('US/California references AP and state standards', /AP English/.test(caAp) && caAp.includes('California'));
+
+const engGcse = getCurriculumDirective({
+  subject: 'Mathematics',
+  grade: 'Year 11',
+  country: 'UK',
+  nation: 'England',
+});
+check('UK England references GCSE', engGcse.includes('GCSE'));
+check('UK directive leaks no US framework', !stripBan(engGcse).match(/Common Core|TEKS|SOL/));
+check('UK directive leaks no CAPS', !stripBan(engGcse).match(/CAPS|DBE/));
+
+const scotBio = getCurriculumDirective({
+  subject: 'Biology',
+  grade: 'Year 5',
+  country: 'UK',
+  nation: 'Scotland',
+});
+check('Scotland references SQA / CfE', scotBio.includes('SQA') && scotBio.includes('Curriculum for Excellence'));
+
+const walesBio = getCurriculumDirective({
+  subject: 'Biology',
+  grade: 'Year 11',
+  country: 'UK',
+  nation: 'Wales',
+});
+check('Wales references WJEC', walesBio.includes('WJEC'));
+
+const usFallback = describeCurriculumUsUk({
+  subject: 'Philosophy',
+  grade: 'Grade 10',
+  country: 'US',
+  state: 'OH',
+});
+check(
+  'US fallback has state-style quals (EOC / AP / state)',
+  /EOC|state end-of-course/i.test(usFallback.qualifications),
+);
+
+const zaStillWorks = getCurriculumDirective({
+  subject: 'Mathematics',
+  grade: 'Grade 12',
+  topic: 'Differential Calculus',
+  country: 'ZA',
+});
+check('ZA still returns CAPS vault', zaStillWorks.includes('DBE-CAPS-MATH-GR12'));
 
 // ---- CAPS vault retrieval ---------------------------------------------------
 const vaultMatches = searchCapsVault('Mathematics Grade 12 Algebra', 3, {
