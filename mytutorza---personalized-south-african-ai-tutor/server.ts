@@ -272,7 +272,7 @@ app.get('/api/health', (req: Request, res: Response) => {
     llamaModel: LLAMA_MODEL_ID,
     supabaseConfigured: !!(supabaseServerUrl && supabaseServerAnonKey),
     upstashConfigured: !!(UPSTASH_URL && UPSTASH_TOKEN),
-    curriculumDb: 'CAPS 450+ Knowledge Base Active (local vault)',
+    curriculumDb: 'US state standards / AP · UK nation curricula / ZA CAPS vault (fallback)',
   });
 });
 
@@ -2708,7 +2708,7 @@ RETURN STRICT JSON matching this schema:
 });
 
 // ---------------------------------------------------------------------
-// 3. EXAM AI AGENT API (NSC DBE Paper Simulator - 90% Accuracy)
+// 3. EXAM AI AGENT API (US state/AP & UK exam-board simulator, ZA NSC fallback)
 // ---------------------------------------------------------------------
 app.post('/api/exam/generate', async (req: Request, res: Response) => {
   try {
@@ -2716,7 +2716,8 @@ app.post('/api/exam/generate', async (req: Request, res: Response) => {
     const { subject, grade, examType, durationMinutes, topic, term, state, country, nation } = req.body;
     const email = String(req.body?.email || '').trim().toLowerCase();
     const dur = Number(durationMinutes) || 60;
-    const paperType = examType || (curriculum.isUS ? 'Final Exam' : curriculum.isUK ? 'Mock Exam' : 'November Final Exam');
+    const countryCode = String(country || 'US').toUpperCase();
+    const paperType = examType || (countryCode === 'US' ? 'Final Exam' : countryCode === 'UK' ? 'Mock Exam' : 'November Final Exam');
     const curriculum = describeCurriculum(country, state, nation);
     const learningHistory = await getLearningHistory(email, subject);
     const progressSignature = `${learningHistory?.overall?.attempted || 0}-${
