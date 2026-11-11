@@ -14,7 +14,7 @@ import {
   getCurriculumDirective,
 } from './serverFirmamentRules';
 import { isMailConfigured, sendMail } from './serverMailer';
-import { getSelectiveCapsCurriculumContext } from './serverCapsVault';
+// NOTE: prompts use getCurriculumDirective() for country-correct content.
 import {
   buildCapsVaultIndex,
   searchCapsVault,
@@ -909,8 +909,13 @@ function generatePersonalizedSparkNotesFallback(params: {
   firmamentProfile: any;
   language?: string;
   focus?: string;
+  country?: string;
+  state?: string;
+  nation?: string;
 }) {
   const { conversation, subject, grade, firmamentProfile } = params;
+  const countryCode = String(params.country || 'US').toUpperCase();
+  const frameworkWord = countryCode === 'UK' ? 'exam-board mark-scheme' : countryCode === 'US' ? 'state standards / AP rubric' : 'CAPS';
   const combinedText = conversation.map((c: any) => c.text || '').join(' ').toLowerCase();
 
   let detectedTopic = 'Core Concept Socratic Mastery';
@@ -979,7 +984,7 @@ function generatePersonalizedSparkNotesFallback(params: {
     grade,
     topic: detectedTopic,
     title: `${detectedTopic} - Personalized Socratic Spark Notes`,
-    summary: `Synthesized directly from live dialogue between student and MyTutorZA AI Tutor. Analyzed ${conversation.length} exchange(s) covering foundational rules, Socratic problem-solving under CAPS guidelines, and targeted error elimination calibrated to ${archetype}.`,
+    summary: `Synthesized directly from live dialogue between student and MyTutorZA AI Tutor. Analyzed ${conversation.length} exchange(s) covering foundational rules, Socratic problem-solving under ${frameworkWord} guidelines, and targeted error elimination calibrated to ${archetype}.`,
     keyBreakdowns: [
       {
         heading: 'Socratic Concept Foundation',
@@ -1007,14 +1012,18 @@ function generatePersonalizedSparkNotesFallback(params: {
         correction: 'Place negative multipliers in explicit brackets -(...) and distribute step-by-step.',
       },
       {
-        misconception: 'Omitting accepted DBE reasons in geometric or formal proofs.',
+        misconception: `Omitting accepted ${frameworkWord} reasons in geometric or formal proofs.`,
         correction:
-          'Every mathematical claim in CAPS Paper 2 requires an approved shorthand reason (e.g., "∠s on a straight line").',
+          countryCode === 'ZA'
+            ? 'Every mathematical claim in CAPS Paper 2 requires an approved shorthand reason (e.g., "∠s on a straight line").'
+            : countryCode === 'UK'
+              ? 'Every mathematical claim at GCSE/A-level requires a clearly stated reason or justification consistent with the mark scheme.'
+              : 'Every mathematical claim on state exams requires a clearly stated justification written in complete sentences.',
       },
     ],
     sparkBullets: [
       `Mastered core theorem for ${detectedTopic} in ${grade} ${subject}.`,
-      'Never omit intermediate factorization steps; DBE memo awards method marks (M1) even before final accuracy (A1).',
+      'Never omit intermediate factorization steps; mark schemes award method marks (M1) even before final accuracy.',
       'Watch bracket placement when working with negative signs.',
       'Always verify whether the question asks for exact surd form or rounding to 2 decimal places.',
       'Check consistency with real-world constraints (dimensions, rates, and probabilities cannot be negative).',
@@ -1023,7 +1032,9 @@ function generatePersonalizedSparkNotesFallback(params: {
     coreFormulasOrRules: [
       "f'(x) = lim_{h→0} [f(x+h) - f(x)] / h",
       'Quadratic Formula: x = [-b ± √(b² - 4ac)] / (2a)',
-      'DBE Method Mark Rule: Method mark retained on consistent accuracy (CA) provided no conceptual error occurred.',
+      countryCode === 'ZA'
+        ? 'DBE Method Mark Rule: Method mark retained on consistent accuracy (CA) provided no conceptual error occurred.'
+        : 'Method Mark Rule: Method marks are retained for consistent accuracy even after an earlier error, provided the approach is correct.',
     ],
     examinerTraps: [
       'Examiner Trap #1: Distributing powers over addition: (a + b)² ≠ a² + b².',
@@ -1033,10 +1044,12 @@ function generatePersonalizedSparkNotesFallback(params: {
     flashcards: [
       {
         front: `What is the crucial first step when working with ${detectedTopic}?`,
-        back: 'Write down the authentic formula or definition from the CAPS formula sheet before substituting.',
+        back: countryCode === 'ZA'
+          ? 'Write down the authentic formula or definition from the CAPS formula sheet before substituting.'
+          : 'Write down the official formula, definition or rule from your specification before substituting values.',
       },
       {
-        front: 'What does Consistent Accuracy (CA) mean in DBE marking memos?',
+        front: countryCode === 'ZA' ? 'What does Consistent Accuracy (CA) mean in DBE marking memos?' : 'What does Method Mark Consistency mean in mark schemes?',
         back: 'You still get method marks for subsequent correct working even if an earlier arithmetic calculation had an error.',
       },
       {
@@ -1067,6 +1080,9 @@ app.post('/api/tutoring/analyze-spark-notes', async (req: Request, res: Response
       jwtToken,
       supabaseUrl,
       supabaseAnonKey,
+      country,
+      state,
+      nation,
     } = req.body;
 
     if (!Array.isArray(conversation) || conversation.length === 0) {
@@ -1093,6 +1109,9 @@ app.post('/api/tutoring/analyze-spark-notes', async (req: Request, res: Response
         language: lang,
         userQuery: transcript,
         taskType: 'spark-notes',
+        country,
+        state,
+        nation,
       });
 
       const systemInstruction = `
@@ -1103,8 +1122,8 @@ Perform deep cognitive analysis of the tutoring dialogue transcript and turn it 
 1. Exact topics and concepts discussed in the session
 2. Specific misconceptions, errors, or hesitation the student showed, along with the precise corrective insight
 3. 5-8 punchy, high-yield Spark Notes bullet points
-4. Core CAPS formulas, theorems, or rules used or required
-5. DBE Examiner Traps relevant to the conversation
+4. Core formulas, theorems, or rules used or required (aligned to this learner's curriculum framework)
+5. Examiner traps relevant to the conversation (as expected by this learner's exam board)
 6. 4-6 interactive self-test flashcards directly derived from what was discussed
 7. Actionable cognitive advice calibrated specifically to ${archetype} (${firmamentProfile?.cognitiveScore || modality})
 
@@ -1188,6 +1207,9 @@ Do not include markdown code fences if responseMimeType is json.
           firmamentProfile,
           language: lang,
           focus,
+          country,
+          state,
+          nation,
         }),
         source: 'firmament-engine-local',
       };
@@ -2097,7 +2119,16 @@ function getFirmamentRoadmapFallback(
   previousMark: number,
   targetExam?: string,
   focusTopic?: string,
+  country?: string,
+  state?: string,
+  nation?: string,
 ) {
+  const countryCode = String(country || 'US').toUpperCase();
+  const planWord =
+    countryCode === 'US' ? 'US state standards / AP' : countryCode === 'UK' ? 'the UK curriculum' : 'DBE CAPS';
+  const paperWord =
+    countryCode === 'US' ? 'state/AP past papers' : countryCode === 'UK' ? 'exam-board past papers' : 'past DBE trial papers';
+  const examinerWord = countryCode === 'US' ? 'state/AP' : countryCode === 'UK' ? 'UK exam-board' : 'DBE';
   const mark = Number(previousMark) || 50;
   const isRemedial = mark < 60;
   const archetype = firmamentProfile?.lifePath?.archetype || 'The Architect';
@@ -2284,12 +2315,12 @@ function getFirmamentRoadmapFallback(
       'Confusing frequency observed with emitted frequency when source is moving towards observer',
     ];
 
-    week4Theme = 'Week 4: Electric Circuits, Acids & Bases, Full NSC Paper Trial';
+    week4Theme = 'Week 4: Electric Circuits, Acids & Bases, Full Mock Paper Trial';
     week4Topics = [
       'Internal Resistance & EMF Calculations (ε = I(R + r))',
       'Acid-Base Titrations & Ka/Kb',
       'Photoelectric Effect & Work Function',
-      'Timed NSC Physics & Chemistry Trials',
+      'Timed physics and chemistry mock exam trials',
     ];
     week4Traps = [
       'Forgetting that internal resistance drops terminal voltage under load',
@@ -2422,7 +2453,7 @@ function getFirmamentRoadmapFallback(
       title: `${topics[2] || 'Synthesis'} & Exam Trap Immunity`,
       description: `Deep dive into common mistakes students make. Solve 3 challenging past paper problems under timed conditions.`,
       durationMinutes: mercuryElement === 'Fire' ? 40 : 55,
-      cognitiveTip: `Pay close attention to DBE examiner traps: check signs, units, and geometric/scientific reasons.`,
+      cognitiveTip: `Pay close attention to ${examinerWord} traps: check signs, units, and geometric/scientific reasons.`,
       completed: false,
     },
     {
@@ -2441,10 +2472,10 @@ function getFirmamentRoadmapFallback(
     subject,
     grade,
     createdAt: new Date().toISOString(),
-    overallGoal: `4-Week DBE CAPS Mastery for ${grade} ${subject} targeting ${
-      isRemedial ? '70%+ Achievement Band' : '85%+ Distinction Band'
+    overallGoal: `4-Week ${planWord} Mastery for ${grade} ${subject} targeting ${
+      isRemedial ? '70%+ Achievement Level' : '85%+ Distinction Level'
     }`,
-    targetExam: targetExam || 'Term 2 / NSC Examination',
+    targetExam: targetExam || (countryCode === 'ZA' ? 'Term 2 / NSC Examination' : 'Final Examination'),
     firmamentSummary: {
       archetype,
       lifePathNumber,
@@ -2461,13 +2492,13 @@ function getFirmamentRoadmapFallback(
           ? 'Remedial Scaffold: emphasize axiomatic foundations'
           : 'Advancement: prioritize complex synthesis & time trial'
       }).`,
-      `Never leave blank questions in formal DBE assessments; partial method marks (CA - consistent accuracy) can elevate your achievement band.`,
+      `Never leave blank questions in formal examinations; partial method marks can elevate your result.`,
     ],
     weeks: [
       {
         weekNumber: 1,
         theme: week1Theme,
-        atpFocus: `CAPS Diagnostic Phase: ${week1Topics.slice(0, 2).join(' & ')}`,
+        atpFocus: `${planWord} — Diagnostic Phase: ${week1Topics.slice(0, 2).join(' & ')}`,
         mercuryRhythmNotes: pacingNote,
         estimatedHours: mercuryElement === 'Earth' ? 6 : 5,
         topics: week1Topics,
@@ -2478,18 +2509,18 @@ function getFirmamentRoadmapFallback(
       {
         weekNumber: 2,
         theme: week2Theme,
-        atpFocus: `CAPS Procedural Phase: ${week2Topics.slice(0, 2).join(' & ')}`,
+        atpFocus: `${planWord} — Procedural Phase: ${week2Topics.slice(0, 2).join(' & ')}`,
         mercuryRhythmNotes: `${mercuryElement} rhythm: Transition into routine calculation patterns and structured proofs.`,
         estimatedHours: 6,
         topics: week2Topics,
-        milestoneCheckpoint: `Complete 12 past DBE routine questions with correct intermediate step-by-step layout.`,
+        milestoneCheckpoint: `Complete 12 ${paperWord} routine questions with correct intermediate step-by-step layout.`,
         examinerTraps: week2Traps,
         tasks: makeTasks(2, 'w2', week2Topics),
       },
       {
         weekNumber: 3,
         theme: week3Theme,
-        atpFocus: `CAPS Synthesis & Traps: ${week3Topics.slice(0, 2).join(' & ')}`,
+        atpFocus: `${planWord} — Synthesis & Traps: ${week3Topics.slice(0, 2).join(' & ')}`,
         mercuryRhythmNotes: `${mercuryElement} rhythm: High-order synthesis drills; analyze complex multi-step problems.`,
         estimatedHours: 7,
         topics: week3Topics,
@@ -2500,11 +2531,11 @@ function getFirmamentRoadmapFallback(
       {
         weekNumber: 4,
         theme: week4Theme,
-        atpFocus: `CAPS Final Exam Readiness: ${week4Topics.slice(0, 2).join(' & ')}`,
+        atpFocus: `${planWord} — Final Exam Readiness: ${week4Topics.slice(0, 2).join(' & ')}`,
         mercuryRhythmNotes: `${mercuryElement} rhythm: Full exam condition rehearsals with official memorandum mark schemes.`,
         estimatedHours: 8,
         topics: week4Topics,
-        milestoneCheckpoint: `Complete a full timed NSC mock examination under standard test conditions, scoring above your target band.`,
+        milestoneCheckpoint: `Complete a full timed mock exam under standard test conditions, scoring above your target level.`,
         examinerTraps: week4Traps,
         tasks: makeTasks(4, 'w4', week4Topics),
       },
@@ -2518,7 +2549,7 @@ app.post('/api/roadmap/generate', async (req: Request, res: Response) => {
     const { subject, grade, firmamentProfile, previousMark, targetExam, focusTopic, language, state, country, nation } =
       req.body;
     const email = String(req.body?.email || '').trim().toLowerCase();
-    const targetSubject = subject || 'Mathematics (Pure)';
+    const targetSubject = subject || 'Mathematics';
     const targetGrade = grade || 'Grade 12';
     const mark = previousMark !== undefined ? Number(previousMark) : 50;
     const isRemedial = mark < 60;
@@ -2565,7 +2596,7 @@ CURRICULUM SPECIFICATIONS:
 - Subject: ${targetSubject}
 - Grade: ${targetGrade}
 - Target Milestones: ${targetExam || (curriculum.isUS ? 'Upcoming state assessment' : 'Upcoming DBE Assessment')}
-- Focus Area: ${focusTopic || (curriculum.isUS ? 'Full state standards for this grade' : 'Full CAPS Syllabus')}
+- Focus Area: ${focusTopic || 'Full curriculum for this course and grade'}
 - Language of instruction: ${targetLang}
 
 CURRICULUM GROUNDING (${curriculum.frameworkLabel}):
@@ -2653,18 +2684,24 @@ RETURN STRICT JSON matching this schema:
       mark,
       targetExam,
       focusTopic,
+      country,
+      state,
+      nation,
     );
     await setCache(cacheKey, fallback, 7200);
     return res.json({ ...fallback, source: 'firmament-engine-local' });
   } catch (err: any) {
     console.error('Roadmap endpoint error:', err);
     const safeFallback = getFirmamentRoadmapFallback(
-      req.body?.subject || 'Mathematics (Pure)',
+      req.body?.subject || 'Mathematics',
       req.body?.grade || 'Grade 12',
       req.body?.firmamentProfile,
       req.body?.previousMark || 50,
       req.body?.targetExam,
       req.body?.focusTopic,
+      req.body?.country,
+      req.body?.state,
+      req.body?.nation,
     );
     return res.json({ ...safeFallback, source: 'emergency-safe-fallback' });
   }
@@ -2679,7 +2716,7 @@ app.post('/api/exam/generate', async (req: Request, res: Response) => {
     const { subject, grade, examType, durationMinutes, topic, term, state, country, nation } = req.body;
     const email = String(req.body?.email || '').trim().toLowerCase();
     const dur = Number(durationMinutes) || 60;
-    const paperType = examType || 'November Final Exam';
+    const paperType = examType || (curriculum.isUS ? 'Final Exam' : curriculum.isUK ? 'Mock Exam' : 'November Final Exam');
     const curriculum = describeCurriculum(country, state, nation);
     const learningHistory = await getLearningHistory(email, subject);
     const progressSignature = `${learningHistory?.overall?.attempted || 0}-${
@@ -3271,20 +3308,35 @@ app.post('/api/billing/paypal/webhook', async (req: Request, res: Response) => {
 
 // ---------------------------------------------------------------------
 app.post('/api/termtests/generate', async (req: Request, res: Response) => {
-  const { subject, grade, term, examType, durationMinutes } = req.body || {};
+  const { subject, grade, term, examType, durationMinutes, country, state, nation } = req.body || {};
   const sub = subject || 'Mathematics';
   const grd = grade || 'Grade 12';
-  const trm = term || 'Term 1';
-  const exam = examType || 'Term Test';
+  const countryCode = String(country || 'US').toUpperCase();
+  const trm = term || (countryCode === 'ZA' ? 'Term 1' : 'Unit 1');
+  const exam = examType || (countryCode === 'US' ? 'Exam' : countryCode === 'UK' ? 'Mock Exam' : 'Term Test');
   const dur = Number(durationMinutes) || 60;
 
-  const caps = getSelectiveCapsCurriculumContext(sub, grd, '');
-  const pdfRefs = (caps.match(/\.pdf/g) || []).length;
+  // Country-correct grounding (US state standards / UK boards / ZA CAPS vault).
+  const framework = getCurriculumDirective({
+    subject: sub,
+    grade: grd,
+    topic: trm,
+    state,
+    country: countryCode,
+    nation,
+  });
+  const examiner =
+    countryCode === 'US'
+      ? 'an experienced US state / Advanced Placement chief examiner'
+      : countryCode === 'UK'
+        ? 'an experienced UK exam-board chief examiner (GCSE / A-level / SQA mark-scheme conventions)'
+        : 'a DBE Senior Chief Examiner';
+
   const systemInstruction = `
-You are a DBE Senior Chief Examiner. Generate a ${exam} for ${grd} ${sub} (${trm}).
+You are ${examiner}. Generate a ${exam} for ${grd} ${sub} (${trm}).
 Duration: ${dur} minutes. Include sections, questions, mark allocations, examiner traps, and an official answer sheet with rubrics.
-Ground all content in the CAPS curriculum and annual teaching plans:
-${caps}
+Ground all content in the learner's curriculum framework:
+${framework}
 
 Return valid JSON with:
 {
@@ -3477,16 +3529,24 @@ app.post('/api/batch/generate-all', async (req: Request, res: Response) => {
 // AUTO-NOTES BATCH (one chapter/term per call, respecting model limits)
 // ---------------------------------------------------------------------
 app.post('/api/notes/batch-generate', async (req: Request, res: Response) => {
-  const { subject, grade, terms } = req.body || {};
-  const sub = subject || 'Mathematics (Pure)';
+  const { subject, grade, terms, country, state, nation } = req.body || {};
+  const sub = subject || 'Mathematics';
   const grd = grade || 'Grade 12';
+  const countryCode = String(country || 'US').toUpperCase();
   const termList =
-    Array.isArray(terms) && terms.length ? terms : ['Term 1', 'Term 2', 'Term 3', 'Term 4'];
+    Array.isArray(terms) && terms.length ? terms : ['Units 1-10'];
   const results: any[] = [];
 
   for (const term of termList) {
     try {
-      const capsText = getSelectiveCapsCurriculumContext(sub, grd, term);
+      const framework = getCurriculumDirective({
+        subject: sub,
+        grade: grd,
+        topic: term,
+        state,
+        country: countryCode,
+        nation,
+      });
       const r = await fetch(`http://localhost:${port}/api/notes/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -3494,10 +3554,13 @@ app.post('/api/notes/batch-generate', async (req: Request, res: Response) => {
           subject: sub,
           grade: grd,
           term,
-          chapter: `CAPS ${term} Core Coverage`,
+          country: countryCode,
+          state,
+          nation,
+          chapter: `${term} Curriculum Coverage`,
           section: 'Core curriculum blocks',
-          text: capsText,
-          sourceFile: 'CAPS vault',
+          text: framework,
+          sourceFile: framework ? 'US/UK directive' : 'Curriculum vault',
         }),
       });
       const data = await r.json();
@@ -3514,23 +3577,30 @@ app.post('/api/notes/batch-generate', async (req: Request, res: Response) => {
 // CHUNKED NOTES GENERATION (one chapter/section at a time)
 // ---------------------------------------------------------------------
 app.post('/api/notes/generate', async (req: Request, res: Response) => {
-  const { subject, grade, term, chapter, section, text, sourceFile } = req.body || {};
+  const { subject, grade, term, chapter, section, text, sourceFile, country, state, nation } = req.body || {};
   if (!subject || !grade || !term || !chapter) {
     return res.status(400).json({ error: 'subject, grade, term, chapter required' });
   }
-  const fallbackText = getSelectiveCapsCurriculumContext(subject, grade, chapter);
-  const excerpt = (text ? text : fallbackText).slice(0, 4000);
+  const countryCode = String(country || 'US').toUpperCase();
+  const curriculum = describeCurriculum(countryCode, state, nation);
+  const framework = getCurriculumDirective({ subject, grade, topic: chapter, state, country: countryCode, nation });
+  const excerpt = (text ? text : framework).slice(0, 4000);
   const isMathOrPhysics = /math|physic|science/i.test(subject);
   const hardLock = isMathOrPhysics
     ? '\\nHARD RULE: Every formula in the chapter MUST be generated with full notation, variables explained, and examples. No omission.'
     : '';
 
-  const caps = getSelectiveCapsCurriculumContext(subject, grade, chapter);
+  const frameworkName =
+    countryCode === 'US'
+      ? `State standards-aligned (AP/EOC, ${curriculum.regionLabel})`
+      : countryCode === 'UK'
+        ? `UK curriculum-aligned (${curriculum.ukFramework.qualifications})`
+        : 'DBE CAPS';
   const systemInstruction = `
-You are a DBE CAPS study notes generator. Create concise, accurate study notes for:
+You are an expert ${frameworkName} study notes generator. Create concise, accurate study notes for:
 Subject: ${subject}  Grade: ${grade}  Term: ${term}
 Chapter: ${chapter}  Section: ${section || 'General'}
-RAW CAPS reference: ${caps}${hardLock}
+GROUNDING FRAMEWORK: ${framework}${hardLock}
 
 Source excerpt:
 ${excerpt}
@@ -4037,7 +4107,7 @@ app.post('/api/notes/generate-from-pdf-toc', async (req: Request, res: Response)
   const results: any[] = [];
   for (let i = 0; i < Math.min(limit, chapters.length); i++) {
     const ch = chapters[i];
-    const caps = getSelectiveCapsCurriculumContext(subject, grade, ch.title);
+    const caps = getCurriculumDirective({ subject, grade, topic: ch.title, country: 'ZA' });
     const systemInstruction = `You are a DBE CAPS study notes generator.\n\nTABLE OF CONTENTS:\n${tocContext}\n\nWrite notes for chapter: ${ch.title}\nSubject: ${subject} Grade: ${grade} Term: ${term}\n\nCAPS reference:\n${caps}\n\nSource:\n${ch.content.slice(
       0,
       5000,
@@ -4120,7 +4190,7 @@ app.post('/api/notes/batch-from-pdfs-toc', async (req: Request, res: Response) =
       const tocContext = toc.map((t: any) => `${'  '.repeat(t.level - 1)}${t.title}`).join('\n');
       for (let i = 0; i < Math.min(chLimit, chapters.length); i++) {
         const ch = chapters[i];
-        const caps = getSelectiveCapsCurriculumContext(sub, grd, ch.title);
+        const caps = getCurriculumDirective({ subject: sub, grade: grd, topic: ch.title, country: 'ZA' });
         const sys = `You are a DBE CAPS study notes generator.\n\nTABLE OF CONTENTS:\n${tocContext}\n\nWrite notes for: ${ch.title}\nSubject: ${sub} Grade: ${grd} Term: ${trm}\n\nCAPS reference:\n${caps}\n\nSource:\n${ch.content.slice(
           0,
           5000,
@@ -4294,3 +4364,4 @@ for (const sig of ['SIGTERM', 'SIGINT'] as const) {
     server.close(() => process.exit(0));
   });
 }
+

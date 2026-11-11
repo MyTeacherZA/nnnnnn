@@ -8,6 +8,7 @@
  */
 
 import { getSelectiveCapsCurriculumContext } from './serverCapsVault';
+import { buildCurriculumDirective as buildUsUkCurriculumDirective } from './serverUsUkCurriculum';
 import {
   COGNITIVE_PROFILE_GUIDE,
   DIMENSION_GUIDE,
@@ -128,26 +129,17 @@ export function buildFirmamentSystemPrompt(params: FirmamentPromptParams): strin
   const mark = Number(previousMark) || 50;
   const diagnosticScaffold = mark < 60 ? 'REMEDIAL_SCAFFOLD' : 'ADVANCEMENT_SCAFFOLD';
 
-  // Curriculum grounding: CAPS vault text for South African learners, or an
-  // explicit US state-standards directive so the model never mixes frameworks.
-  const rawCurriculum = isUS
-    ? `
-[US STATE STANDARDS MODE — ACTIVE]
-Curriculum framework: ${regionLabel} state academic standards for ${grade} ${subject}.
-- Align every explanation, worked example and assessment item to ${regionLabel} standards.
-- Use US conventions: US spelling, dollars, miles/feet/inches, US civic and historical context.
-- Where ${regionLabel} has adopted the Common Core (or similar) standards, follow those grade-level expectations.
-- Reference the style of ${regionLabel} state assessments / end-of-course exams for ${grade}.
-- You must NOT reference DBE, CAPS, NSC, ATP, South African provinces, or South African exams.`
-    : isUK
-    ? `
-[UK CURRICULUM MODE — ${ukNation.toUpperCase()}]
-Curriculum framework: ${ukFramework.curriculum}. Qualifications: ${ukFramework.qualifications}.
-- Align every explanation, worked example and assessment item to the ${ukNation} curriculum for ${grade} ${subject}.
-- Use UK conventions: British English spelling, pounds sterling (£), metric units, and UK exam command words.
-- Match the command words and mark-scheme style of ${ukFramework.qualifications}.
-- Do NOT reference CAPS, DBE, NSC, ATP or South African provinces, and do NOT reference US Common Core or US state standards.`
-    : getSelectiveCapsCurriculumContext(subject, grade, userQuery);
+  // Curriculum grounding: a country-correct directive (US state standards +
+  // AP / UK nation curriculum + exam boards) for US/UK learners, or the raw
+  // CAPS vault text for South African learners. Never mixed.
+  const rawCurriculum = getCurriculumDirective({
+    subject,
+    grade,
+    topic: userQuery,
+    state,
+    country,
+    nation,
+  });
   const rawAnswers = firmamentProfile?.rawAnswers || firmamentProfile?.onboardingAnswers || {};
 
   return `
@@ -345,7 +337,8 @@ export function describeCurriculum(country?: string, state?: string, nation?: st
 
 /**
  * Returns the curriculum grounding block for a generator prompt.
- * ZA -> raw CAPS vault text; US -> state-standards directive; UK -> nation curriculum.
+ * US -> state standards + AP; UK -> nation curriculum + SQA/GCSE boards;
+ * ZA -> raw CAPS vault text.
  */
 export function getCurriculumDirective(params: {
   subject: string;
@@ -355,31 +348,10 @@ export function getCurriculumDirective(params: {
   country?: string;
   nation?: string;
 }): string {
-  const { isUS, isUK, ukNation, ukFramework, regionLabel } = describeCurriculum(
-    params.country,
-    params.state,
-    params.nation,
-  );
+  const code = String(params.country || 'US').toUpperCase();
 
-  if (isUS) {
-    return `[US STATE STANDARDS MODE — ${regionLabel.toUpperCase()}]
-- Framework: ${regionLabel} academic standards for ${params.grade} ${params.subject}${
-      params.topic ? ` (focus: ${params.topic})` : ''
-    }.
-- Follow ${regionLabel} grade-level expectations and the command words used by its state assessments.
-- Use US conventions (US spelling, dollars, miles/feet) and US cultural/historical context.
-- Do NOT reference CAPS, DBE, NSC, ATP, South African provinces or South African exams.`;
-  }
-
-  if (isUK) {
-    return `[UK CURRICULUM MODE — ${ukNation.toUpperCase()}]
-- Framework: ${ukFramework.curriculum}; qualifications: ${ukFramework.qualifications}.
-- Align to the ${ukNation} curriculum for ${params.grade} ${params.subject}${
-      params.topic ? ` (focus: ${params.topic})` : ''
-    }.
-- Use UK conventions: British English spelling, pounds sterling (£), metric units, UK exam command words.
-- Mirror ${ukFramework.qualifications} mark-scheme style and specification wording.
-- Do NOT reference CAPS, DBE, NSC, ATP or South African provinces, and do NOT reference US Common Core or US state standards.`;
+  if (code === 'US' || code === 'UK' || code === 'GB') {
+    return buildUsUkCurriculumDirective(params);
   }
 
   return getSelectiveCapsCurriculumContext(params.subject, params.grade, params.topic);
