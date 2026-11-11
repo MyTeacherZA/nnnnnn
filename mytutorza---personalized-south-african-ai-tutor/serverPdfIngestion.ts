@@ -226,26 +226,104 @@ function readCapsManifest(): any[] {
   }
 }
 
+const CAPS_QUERY_STOPWORDS = new Set([
+  'grade', 'grades', 'gr', 'term', 'atp', 'caps', 'final', 'paper', 'p1', 'p2', 'p3',
+  'nov', 'exam', 'guideline', 'guidelines', 'sba', 'eng', 'afr', 'teacher', 'learner',
+  'memo', 'mg', 'answer', 'book', 'activity', 'activities', 'revision', 'notes',
+  '2023', '2024', '2025', '2026',
+]);
+
+function capsTokens(value: string): string[] {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]+/g, ' ')
+    .split(/\s+/)
+    .filter((token) => token.length > 2 && !CAPS_QUERY_STOPWORDS.has(token));
+}
+
+const CAPS_LANGUAGE_NAMES = [
+  'isiZulu',
+  'isiXhosa',
+  'isiNdebele',
+  'Sepedi',
+  'Sesotho',
+  'Setswana',
+  'siSwati',
+  'Tshivenda',
+  'Xitsonga',
+  'Afrikaans',
+  'English',
+  'South African Sign Language',
+];
+
+function capsLanguage(value: string): string | null {
+  const lower = String(value || '').toLowerCase();
+  return CAPS_LANGUAGE_NAMES.find((name) => lower.includes(name.toLowerCase())) || null;
+}
+
+function capsSubjectScore(requested: string, entrySubject: string): number {
+  const a = requested.toLowerCase().replace(/[^a-z ]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const b = entrySubject.toLowerCase().replace(/[^a-z ]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!a || !b) return 0;
+  if (a === b) return 20;
+  if (b.includes(a) || a.includes(b)) return 14;
+
+  const at = capsTokens(a);
+  const bt = capsTokens(b);
+  const common = at.filter((token) =>
+    bt.some(
+      (other) =>
+        token === other ||
+        token.startsWith(other.slice(0, 4)) ||
+        other.startsWith(token.slice(0, 4)),
+    ),
+  );
+  return common.length > 0 ? common.length * 4 : -10;
+}
+
 /**
  * Synchronous, safe retrieval over the CAPS vault table of contents.
  *
  * IMPORTANT: this used to be `async` but was consumed synchronously by the
  * prompt builders, so the CAPS PDF snippets were never actually injected.
- * It now returns plain arrays (manifest is cached in memory and re-read only
- * when the file changes).
+ *
+ * When `opts.subject`/`opts.grade` are supplied the ranking is subject- and
+ * grade-aware, and documents from a different subject are never returned. This
+ * is what stops (for example) a Grade 10 Technical Mathematics document from
+ * being injected into a Grade 12 Life Sciences lesson.
  */
-export function searchCapsVault(query: string, limit: number = 5): any[] {
+export function searchCapsVault(
+  query: string,
+  limit: number = 5,
+  opts?: { subject?: string; grade?: string },
+): any[] {
   const entries = readCapsManifest();
   if (!entries.length) return [];
 
-  const terms = String(query || '')
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter((term) => term.length > 2);
-  if (!terms.length) return [];
+  const subject = String(opts?.subject || '').trim();
+  const grade = String(opts?.grade || '').trim();
+  const terms = capsTokens(query).filter(
+    (term) =>
+      !capsTokens(subject).includes(term) &&
+      term !== grade.toLowerCase().replace(/\s+/g, ''),
+  );
 
   const scored = entries
     .map((entry: any) => {
+      // Never mix languages (e.g. isiZulu with isiNdebele) just because both
+      // say "First Additional Language".
+      const requestedLanguage = capsLanguage(subject);
+      const entryLanguage = capsLanguage(String(entry?.subject || ''));
+      if (requestedLanguage && entryLanguage && requestedLanguage !== entryLanguage) return null;
+
+      const subjectScore = subject ? capsSubjectScore(subject, String(entry?.subject || '')) : 0;
+      if (subject && subjectScore <= 0) return null;
+
+      let gradeScore = 0;
+      if (grade) {
+        gradeScore = String(entry?.grade || '').toLowerCase() === grade.toLowerCase() ? 10 : -8;
+      }
+
       const toc = Array.isArray(entry?.toc) ? entry.toc : [];
       const matchedChapters = toc
         .filter((t: any) => {
@@ -255,14 +333,21 @@ export function searchCapsVault(query: string, limit: number = 5): any[] {
         .slice(0, 10)
         .map((t: any) => ({ title: String(t.title || ''), page: t.page }));
 
-      const header = `${entry?.subject || ''} ${entry?.grade || ''} ${entry?.term || ''}`.toLowerCase();
-      const headerHits = terms.filter((term) => header.includes(term)).length;
-      const score = matchedChapters.length * 2 + headerHits;
+      // Free-text mode (no subject/grade supplied): let the header contribute.
+      const headerHits =
+        subject || grade
+          ? 0
+          : terms.filter((term) =>
+              `${entry?.subject || ''} ${entry?.grade || ''} ${entry?.file || ''}`
+                .toLowerCase()
+                .includes(term),
+            ).length * 4;
 
-      if (score === 0) return null;
+      const score = subjectScore + gradeScore + headerHits + matchedChapters.length * 2;
+      if (score <= 0) return null;
 
-      // Subject/grade-only queries (e.g. "isiZulu Grade 11") still return the
-      // document with its opening chapters so callers get a usable reference.
+      // With no chapter hit, still return the document with its opening
+      // chapters so callers get a usable reference.
       const chapters = matchedChapters.length
         ? matchedChapters
         : toc

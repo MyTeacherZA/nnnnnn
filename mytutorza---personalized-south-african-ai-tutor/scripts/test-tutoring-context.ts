@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Regression checks for the tutoring lock + RAG pipeline.
  *
  * Run: bun run test:tutoring
@@ -33,7 +33,7 @@ function check(label: string, condition: boolean, detail?: string) {
 const business = getSelectiveCapsCurriculumContext('Business Studies', 'Grade 12', 'Business environments');
 check(
   'Business Studies: no Mathematics CAPS leakage',
-  business.includes('NO EXACT PLANNER') &&
+  business.includes('NO INDEXED PLANNER') &&
     !business.includes('DBE-CAPS-MATH') &&
     !business.includes('Two 3-hour papers'),
   business.slice(0, 300),
@@ -54,7 +54,7 @@ check(
 const life = getSelectiveCapsCurriculumContext('Life Sciences', 'Grade 12', 'Photosynthesis');
 check(
   'Life Sciences: no Physical Sciences leakage',
-  life.includes('NO EXACT PLANNER') && !life.includes('DBE-CAPS-PHSC'),
+  life.includes('NO INDEXED PLANNER') && !life.includes('DBE-CAPS-PHSC'),
   life.slice(0, 300),
 );
 
@@ -72,7 +72,7 @@ check('Physical Sciences: correct planner', physical.includes('DBE-CAPS-PHSC-GR1
 const grade11Maths = getSelectiveCapsCurriculumContext('Mathematics', 'Grade 11', 'Functions');
 check(
   'Grade 11 Mathematics: no Grade 12 substitution',
-  grade11Maths.includes('NO EXACT PLANNER') && !grade11Maths.includes('DBE-CAPS-MATH-GR12'),
+  grade11Maths.includes('NO INDEXED PLANNER') && !grade11Maths.includes('DBE-CAPS-MATH-GR12'),
   grade11Maths.slice(0, 300),
 );
 
@@ -155,19 +155,50 @@ check(
 );
 
 // ---- CAPS vault retrieval ---------------------------------------------------
-const vaultMatches = searchCapsVault('Mathematics Grade 12', 3);
-check('CAPS vault search returns an array', Array.isArray(vaultMatches));
+const vaultMatches = searchCapsVault('Mathematics Grade 12 Algebra', 3, {
+  subject: 'Mathematics',
+  grade: 'Grade 12',
+});
+check('CAPS vault search returns matches', vaultMatches.length > 0);
 if (vaultMatches.length > 0) {
   check(
     'CAPS vault match shape',
     typeof vaultMatches[0].file === 'string' &&
       Array.isArray(vaultMatches[0].chapters) &&
-      typeof vaultMatches[0].chapters[0]?.title === 'string',
+      typeof vaultMatches[0].preview === 'string',
     JSON.stringify(vaultMatches[0]).slice(0, 300),
+  );
+  check(
+    'CAPS vault respects subject + grade',
+    vaultMatches.every((m: any) => m.subject === 'Mathematics' && m.grade === 'Grade 12'),
+    JSON.stringify(vaultMatches.map((m: any) => `${m.subject} ${m.grade} ${m.file}`)),
   );
 } else {
   console.log('SKIP  CAPS vault manifest has no Mathematics matches');
 }
+
+// Language documents must never cross languages.
+const zuluMatches = searchCapsVault('isiZulu Grade 11', 3, {
+  subject: 'isiZulu First Additional Language',
+  grade: 'Grade 11',
+});
+check(
+  'CAPS vault never crosses language subjects',
+  zuluMatches.length > 0 &&
+    zuluMatches.every((m: any) => String(m.subject).toLowerCase().includes('isizulu')),
+  JSON.stringify(zuluMatches.map((m: any) => m.subject)),
+);
+
+// The vault now actually reaches the prompt (regression: it used to be empty).
+const businessWithVault = getSelectiveCapsCurriculumContext(
+  'Business Studies',
+  'Grade 12',
+  'Business environments',
+);
+check(
+  'Business Studies context includes CAPS vault references',
+  businessWithVault.includes('CAPS VAULT DOCUMENT REFERENCES'),
+);
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} CHECK(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);
