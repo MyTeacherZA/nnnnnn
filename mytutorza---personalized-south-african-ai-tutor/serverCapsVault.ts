@@ -464,101 +464,182 @@ export const CAPS_CURRICULUM_DATABASE: Record<string, CapsSubjectPlanner> = {
  * Selectively retrieves only the exact CAPS curriculum documents, ATP planner,
  * examination guidelines, formula requirements, and examiner traps needed
  * for the student's active subject, grade, and question topic.
+ *
+ * SAFETY: never substitutes a different subject or grade. Previously any
+ * unsupported subject (e.g. Business Studies) fell back to the Grade 12
+ * Mathematics planner, which injected Maths content into unrelated lessons
+ * and actively steered the tutor off the locked topic.
  */
 import { searchCapsVault } from './serverPdfIngestion';
+
+const CAPS_SUBJECT_ALIASES: Record<string, string> = {
+  mathematics: 'Mathematics',
+  maths: 'Mathematics',
+  math: 'Mathematics',
+  wiskunde: 'Mathematics',
+  'physical sciences': 'Physical Sciences',
+  'physical science': 'Physical Sciences',
+  physics: 'Physical Sciences',
+  chemistry: 'Physical Sciences',
+};
+
+const capsContextMemo = new Map<string, string>();
+
+function normaliseSubject(value: string): string {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function resolveCapsPlanner(subject: string, grade: string): CapsSubjectPlanner | null {
+  const normGrade = String(grade || '').trim().toLowerCase();
+  const normSubject = normaliseSubject(subject);
+  if (!normSubject) return null;
+
+  // 1. Exact grade + subject planner.
+  const exact = Object.entries(CAPS_CURRICULUM_DATABASE).find(
+    ([key]) => key.toLowerCase() === `${normGrade} ${normSubject}`.toLowerCase(),
+  );
+  if (exact) return exact[1];
+
+  // 2. Same grade + an explicitly known subject alias (no fuzzy cross-subject
+  //    matching — "Life Sciences" must never resolve to "Physical Sciences").
+  const canonical = CAPS_SUBJECT_ALIASES[normSubject];
+  if (!canonical) return null;
+
+  const aliasMatch = Object.entries(CAPS_CURRICULUM_DATABASE).find(
+    ([key, planner]) =>
+      key.toLowerCase() === `${normGrade} ${canonical}`.toLowerCase() ||
+      (planner.grade || '').toLowerCase() === normGrade &&
+        normaliseSubject(planner.subject) === normaliseSubject(canonical),
+  );
+  return aliasMatch ? aliasMatch[1] : null;
+}
+
+function topicTerms(value: string): string[] {
+  return normaliseSubject(value)
+    .split(' ')
+    .filter((term) => term.length > 2);
+}
+
+function topicMatches(topicName: string, terms: string[]): number {
+  const haystack = normaliseSubject(topicName);
+  let score = 0;
+  for (const term of terms) {
+    if (haystack.includes(term)) score += 1;
+    else if (term.length >= 5 && haystack.includes(term.slice(0, 4))) score += 0.5;
+  }
+  return score;
+}
 
 export function getSelectiveCapsCurriculumContext(
   subject: string,
   grade: string,
   queryOrTopic?: string
 ): string {
-  const normSubject = subject || 'Mathematics';
-  const normGrade = grade || 'Grade 12';
-  const key = `${normGrade} ${normSubject}`;
+  const normSubject = String(subject || 'Mathematics').trim() || 'Mathematics';
+  const normGrade = String(grade || 'Grade 12').trim() || 'Grade 12';
+  const memoKey = `${normGrade}|${normaliseSubject(normSubject)}|${normaliseSubject(
+    String(queryOrTopic || ''),
+  )}`;
 
-  // Find exact match or fallback by matching grade and partial subject
-  let planner: CapsSubjectPlanner | undefined = CAPS_CURRICULUM_DATABASE[key];
+  const memoHit = capsContextMemo.get(memoKey);
+  if (memoHit) return memoHit;
 
-  if (!planner) {
-    const entry = Object.entries(CAPS_CURRICULUM_DATABASE).find(([k, v]) => {
-      const matchGrade = k.toLowerCase().includes(normGrade.toLowerCase());
-      const matchSubj = k.toLowerCase().includes(normSubject.toLowerCase()) ||
-                        normSubject.toLowerCase().includes(v.subject.toLowerCase());
-      return matchGrade && matchSubj;
+  try {
+    const planner = resolveCapsPlanner(normSubject, normGrade);
+
+    if (!planner) {
+      const noPlanner = [
+        `=== RAW DBE CAPS CURRICULUM VAULT: NO EXACT PLANNER AVAILABLE ===`,
+        `No indexed CAPS ATP/planner exists for ${normGrade} ${normSubject}.`,
+        `- Do NOT substitute content, codes, paper structures or examiner requirements from another subject or grade (for example, never import Mathematics CAPS content into ${normSubject}).`,
+        `- Stay strictly on the learner's locked topic and the official CAPS scope for ${normGrade} ${normSubject}.`,
+        `- If exact CAPS wording is unknown, say so and teach only what the locked topic and uploaded source support.`,
+        `=== END OF CAPS CURRICULUM INJECTION ===`,
+      ].join('\n');
+      capsContextMemo.set(memoKey, noPlanner);
+      return noPlanner;
+    }
+
+    // Rank topics against the locked topic / question. Only matched topics are
+    // injected; when nothing matches, keep the subject's own ATP overview.
+    const terms = topicTerms(String(queryOrTopic || ''));
+    const ranked = planner.topics
+      .map((topic) => ({ topic, score: terms.length ? topicMatches(topic.topicName, terms) : 0 }))
+      .sort((a, b) => b.score - a.score);
+
+    const matched = ranked.filter((entry) => entry.score > 0);
+    const selectedTopics = (matched.length > 0 ? matched : ranked).slice(0, 3).map((e) => e.topic);
+
+    const buffer: string[] = [
+      `=== RAW DBE CAPS CURRICULUM VAULT: SELECTIVE CURRICULUM INJECTION ===`,
+      `Official DBE Curriculum: ${planner.subject} (${planner.grade})`,
+      `CAPS Code: ${planner.curriculumCode}`,
+      `Official Examination Structure: ${planner.officialPaperStructure}`,
+      ``,
+      `DBE EXAMINATION GUIDELINES & MARKING PRINCIPLES:`,
+      ...planner.examinationGuidelines.map((eg) => `• ${eg}`),
+      ``,
+      `DBE APPROVED TEXTBOOK REFERENCES:`,
+      ...planner.textbookReferences.map((tb) => `• ${tb}`),
+      ``,
+      `ACTIVE ANNUAL TEACHING PLAN (ATP) TOPICS & CHIEF EXAMINER WARNINGS:`,
+    ];
+
+    selectedTopics.forEach((t) => {
+      buffer.push(`--- Term ${t.term} (${t.week}): ${t.topicName} ---`);
+      buffer.push(`  Syllabus Core Competencies:`);
+      t.syllabusRequirements.forEach((req) => buffer.push(`    - ${req}`));
+
+      if (t.requiredDefinitions && t.requiredDefinitions.length > 0) {
+        buffer.push(`  Verbatim DBE Definitions Required for Full Marks:`);
+        t.requiredDefinitions.forEach((def) => buffer.push(`    * ${def}`));
+      }
+
+      if (t.requiredFormulas && t.requiredFormulas.length > 0) {
+        buffer.push(`  Official DBE Formula Sheet References:`);
+        t.requiredFormulas.forEach((f) => buffer.push(`    * ${f}`));
+      }
+
+      buffer.push(`  Official Chief Examiner Trap Alerts (Common Learner Errors):`);
+      t.examinerTraps.forEach((trap) => buffer.push(`    ! TRAP: ${trap}`));
+      buffer.push(``);
     });
-    if (entry) {
-      planner = entry[1];
+
+    // CAPS vault PDF chapter references (table-of-contents matches only).
+    const pdfMatches = searchCapsVault(`${normSubject} ${normGrade} ${queryOrTopic || ''}`, 3);
+    if (pdfMatches.length > 0) {
+      buffer.push(`CAPS VAULT PDF CHAPTER REFERENCES (IN-APP SOURCES):`);
+      pdfMatches.forEach((match: any) => {
+        const chapters = (match.chapters || [])
+          .slice(0, 6)
+          .map((chapter: any) => chapter.title)
+          .join(' | ');
+        buffer.push(`- ${match.file} (${match.subject || ''} ${match.grade || ''})`);
+        if (chapters) buffer.push(`  Matched chapters: ${chapters}`);
+      });
+      buffer.push(``);
     }
+
+    buffer.push(`=== END OF SELECTIVE CAPS CURRICULUM INJECTION ===`);
+    const built = buffer.join('\n');
+
+    // Bound the memo so a long-lived process cannot grow without limit.
+    if (capsContextMemo.size > 250) capsContextMemo.clear();
+    capsContextMemo.set(memoKey, built);
+    return built;
+  } catch (err: any) {
+    console.warn('CAPS curriculum context failed (neutral fallback):', err?.message || err);
+    return [
+      `=== RAW DBE CAPS CURRICULUM VAULT: UNAVAILABLE ===`,
+      `Curriculum retrieval failed for ${normGrade} ${normSubject}.`,
+      `- Do NOT invent CAPS codes, paper structures or examiner requirements.`,
+      `- Teach strictly from the learner's locked topic and uploaded source.`,
+      `=== END OF CAPS CURRICULUM INJECTION ===`,
+    ].join('\n');
   }
-
-  // Fallback to Grade 12 Physical Sciences if Physical Sciences is selected for other grades, or Math
-  if (!planner) {
-    if (normSubject.toLowerCase().includes('physical') || normSubject.toLowerCase().includes('science')) {
-      planner = CAPS_CURRICULUM_DATABASE['Grade 10 Physical Sciences'];
-    } else {
-      planner = CAPS_CURRICULUM_DATABASE['Grade 12 Mathematics'];
-    }
-  }
-
-  // Filter topics if a specific topic or query keyword is provided
-  let selectedTopics = planner.topics;
-  if (queryOrTopic) {
-    const qLower = queryOrTopic.toLowerCase();
-    const filtered = planner.topics.filter(t => 
-      t.topicName.toLowerCase().includes(qLower) ||
-      t.syllabusRequirements.some(req => req.toLowerCase().includes(qLower)) ||
-      (t.requiredFormulas && t.requiredFormulas.some(f => f.toLowerCase().includes(qLower)))
-    );
-    if (filtered.length > 0) {
-      selectedTopics = filtered;
-    }
-  }
-
-  // Build the authoritative CAPS Document Injection Block
-  const buffer: string[] = [
-    `=== RAW DBE CAPS CURRICULUM VAULT: SELECTIVE CURRICULUM INJECTION ===`,
-    `Official DBE Curriculum: ${planner.subject} (${planner.grade})`,
-    `CAPS Code: ${planner.curriculumCode}`,
-    `Official Examination Structure: ${planner.officialPaperStructure}`,
-    ``,
-    `DBE EXAMINATION GUIDELINES & MARKING PRINCIPLES:`,
-    ...planner.examinationGuidelines.map(eg => `• ${eg}`),
-    ``,
-    `DBE APPROVED TEXTBOOK REFERENCES:`,
-    ...planner.textbookReferences.map(tb => `• ${tb}`),
-    ``,
-    `ACTIVE ANNUAL TEACHING PLAN (ATP) TOPICS & CHIEF EXAMINER WARNINGS:`,
-  ];
-
-  selectedTopics.forEach((t) => {
-    buffer.push(`--- Term ${t.term} (${t.week}): ${t.topicName} ---`);
-    buffer.push(`  Syllabus Core Competencies:`);
-    t.syllabusRequirements.forEach(req => buffer.push(`    - ${req}`));
-    
-    if (t.requiredDefinitions && t.requiredDefinitions.length > 0) {
-      buffer.push(`  Verbatim DBE Definitions Required for Full Marks:`);
-      t.requiredDefinitions.forEach(def => buffer.push(`    * ${def}`));
-    }
-
-    if (t.requiredFormulas && t.requiredFormulas.length > 0) {
-      buffer.push(`  Official DBE Formula Sheet References:`);
-      t.requiredFormulas.forEach(f => buffer.push(`    * ${f}`));
-    }
-
-    buffer.push(`  Official Chief Examiner Trap Alerts (Common Learner Errors):`);
-    t.examinerTraps.forEach(trap => buffer.push(`    ! TRAP: ${trap}`));
-    buffer.push(``);
-  });
-
-  const pdfSnippets = searchCapsVault(`${subject} ${grade} ${queryOrTopic || ''}`, 4);
-  if (pdfSnippets.length > 0) {
-    buffer.splice(1, 0, `CAPS VAULT PDF SNIPPETS (IN-APP, FIRST POINT OF REFERENCE):`);
-    pdfSnippets.forEach((s, i) => {
-      buffer.splice(2 + i, 0, `--- PDF: ${s.file} (chunk ${s.index}) ---`);
-      buffer.splice(3 + i, 0, s.text.slice(0, 1200));
-    });
-  }
-
-  buffer.push(`=== END OF SELECTIVE CAPS CURRICULUM INJECTION ===`);
-  return buffer.join('\n');
 }
+

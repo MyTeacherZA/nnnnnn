@@ -80,10 +80,73 @@ export async function buildCapsVaultIndex(): Promise<{ total: number; processed:
   return { total: files.length, processed: results.length, results };
 }
 
-export async function searchCapsVault(query: string, limit: number = 5): Promise<any[]> {
+let capsManifestCache: { mtimeMs: number; entries: any[] } | null = null;
+
+function readCapsManifest(): any[] {
   const manifestPath = path.resolve(process.cwd(), 'caps_vault', 'manifest-toc.json');
-  if (!fs.existsSync(manifestPath)) return [];
-  const enriched = JSON.parse(fs.readFileSync(manifestPath, 'utf-8')); const q = query.toLowerCase(); return enriched.tocIndex.filter((entry: any) => entry.toc.some((t: any) => t.title.toLowerCase().includes(q))).slice(0, limit);
+  try {
+    if (!fs.existsSync(manifestPath)) return [];
+    const stat = fs.statSync(manifestPath);
+    if (capsManifestCache && capsManifestCache.mtimeMs === stat.mtimeMs) {
+      return capsManifestCache.entries;
+    }
+    const parsed = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+    const entries = Array.isArray(parsed?.tocIndex) ? parsed.tocIndex : [];
+    capsManifestCache = { mtimeMs: stat.mtimeMs, entries };
+    return entries;
+  } catch (err: any) {
+    console.warn('CAPS manifest read failed:', err?.message || err);
+    return [];
+  }
+}
+
+/**
+ * Synchronous, safe retrieval over the CAPS vault table of contents.
+ *
+ * IMPORTANT: this used to be `async` but was consumed synchronously by the
+ * prompt builders, so the CAPS PDF snippets were never actually injected.
+ * It now returns plain arrays (manifest is cached in memory and re-read only
+ * when the file changes).
+ */
+export function searchCapsVault(query: string, limit: number = 5): any[] {
+  const entries = readCapsManifest();
+  if (!entries.length) return [];
+
+  const terms = String(query || '')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((term) => term.length > 2);
+  if (!terms.length) return [];
+
+  const scored = entries
+    .map((entry: any) => {
+      const toc = Array.isArray(entry?.toc) ? entry.toc : [];
+      const matchedChapters = toc
+        .filter((t: any) => {
+          const title = String(t?.title || '').toLowerCase();
+          return terms.some((term) => title.includes(term));
+        })
+        .slice(0, 10)
+        .map((t: any) => ({ title: String(t.title || ''), page: t.page }));
+
+      const header = `${entry?.subject || ''} ${entry?.grade || ''} ${entry?.term || ''}`.toLowerCase();
+      const headerHits = terms.filter((term) => header.includes(term)).length;
+      const score = matchedChapters.length * 2 + headerHits;
+
+      if (score === 0 || matchedChapters.length === 0) return null;
+      return {
+        file: String(entry?.file || ''),
+        subject: entry?.subject || '',
+        grade: entry?.grade || '',
+        term: entry?.term || '',
+        chapters: matchedChapters,
+        score,
+      };
+    })
+    .filter(Boolean) as any[];
+
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, Math.max(1, limit));
 }
 
 function cleanTitle(raw: string): string {

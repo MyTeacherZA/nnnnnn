@@ -9,6 +9,7 @@ import {
   buildFirmamentSystemPrompt,
   buildLearningHistoryBlock,
   buildStudySystemPrompt,
+  buildTutoringSessionScope,
   describeCurriculum,
   getCurriculumDirective,
 } from './serverFirmamentRules';
@@ -57,8 +58,9 @@ const port = parseInt(process.env.PORT || '8080', 10);
 
 app.use(express.json({ limit: '10mb' }));
 
-// In-memory cache fallback (used when Upstash is not configured)
+// In-memory cache mirror (L1). Upstash is the shared L2 when configured.
 const cacheVault = new Map<string, { data: any; expiry: number }>();
+const CACHE_MEMORY_LIMIT = 400;
 
 function encodeCacheKey(key: string) {
   return Buffer.from(key)
@@ -68,45 +70,77 @@ function encodeCacheKey(key: string) {
     .replace(/=+$/, '');
 }
 
-async function getCache(key: string): Promise<any> {
-  if (UPSTASH_URL && UPSTASH_TOKEN) {
-    try {
-      const r = await fetch(`${UPSTASH_URL}/get/${encodeCacheKey(key)}`, {
-        headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
-      });
-      if (r.ok) {
-        const json = await r.json();
-        if (json?.result) {
-          return JSON.parse(json.result);
-        }
-      }
-    } catch (e) {
-      console.warn('Upstash get error:', (e as any)?.message || e);
-    }
+function pruneLocalCache() {
+  if (cacheVault.size <= CACHE_MEMORY_LIMIT) return;
+  const now = Date.now();
+  for (const [key, item] of cacheVault) {
+    if (now > item.expiry) cacheVault.delete(key);
   }
-  const item = cacheVault.get(key);
-  if (!item) return null;
-  if (Date.now() > item.expiry) {
+  while (cacheVault.size > CACHE_MEMORY_LIMIT) {
+    const oldest = cacheVault.keys().next().value as string | undefined;
+    if (!oldest) break;
+    cacheVault.delete(oldest);
+  }
+}
+
+async function getCache(key: string): Promise<any> {
+  // L1: process memory.
+  const local = cacheVault.get(key);
+  if (local) {
+    if (Date.now() <= local.expiry) return local.data;
     cacheVault.delete(key);
+  }
+
+  // L2: Upstash (shared across instances).
+  if (!UPSTASH_URL || !UPSTASH_TOKEN) return null;
+  try {
+    const r = await fetch(`${UPSTASH_URL}/get/${encodeCacheKey(key)}`, {
+      headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
+    });
+    if (!r.ok) return null;
+    const json = await r.json();
+    if (json?.result === null || json?.result === undefined) return null;
+
+    let parsed: any = json.result;
+    if (typeof parsed === 'string') {
+      try {
+        parsed = JSON.parse(parsed);
+      } catch {
+        // Plain string values are valid cache entries.
+      }
+    }
+    cacheVault.set(key, { data: parsed, expiry: Date.now() + 5 * 60 * 1000 });
+    pruneLocalCache();
+    return parsed;
+  } catch (e) {
+    console.warn('Upstash get error:', (e as any)?.message || e);
     return null;
   }
-  return item.data;
 }
 
 async function setCache(key: string, data: any, ttlSeconds: number = 3600): Promise<void> {
-  if (UPSTASH_URL && UPSTASH_TOKEN) {
-    try {
-      const value = JSON.stringify(data);
-      await fetch(
-        `${UPSTASH_URL}/set/${encodeCacheKey(key)}/${encodeURIComponent(value)}?EX=${ttlSeconds}`,
-        { headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` } },
-      );
-      return;
-    } catch (e) {
-      console.warn('Upstash set error:', (e as any)?.message || e);
-    }
-  }
   cacheVault.set(key, { data, expiry: Date.now() + ttlSeconds * 1000 });
+  pruneLocalCache();
+
+  if (!UPSTASH_URL || !UPSTASH_TOKEN) return;
+  try {
+    // POST body avoids the URL-length limits that silently broke larger
+    // payloads (study packs, exam references) with the old GET-style write.
+    const r = await fetch(`${UPSTASH_URL}/set/${encodeCacheKey(key)}?EX=${ttlSeconds}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${UPSTASH_TOKEN}`,
+        'Content-Type': 'text/plain',
+      },
+      body: JSON.stringify(data),
+    });
+    if (!r.ok) {
+      const detail = await r.text().catch(() => '');
+      console.warn('Upstash set rejected:', r.status, detail.slice(0, 200));
+    }
+  } catch (e) {
+    console.warn('Upstash set error:', (e as any)?.message || e);
+  }
 }
 
 async function callLlamaChat(params: {
@@ -501,6 +535,60 @@ function getAuthenticDBEPaper(
  * Lightweight RAG: split an ingested textbook/source into overlapping chunks
  * and return the chunks most relevant to the learner's locked topic + message.
  */
+function hashForCache(value: string): string {
+  return createHash('sha256').update(value).digest('hex').slice(0, 40);
+}
+
+const SCOPE_STOPWORDS = new Set([
+  'the', 'and', 'for', 'with', 'this', 'that', 'these', 'those', 'from', 'about', 'into',
+  'what', 'when', 'where', 'which', 'while', 'your', 'you', 'are', 'was', 'were', 'have',
+  'has', 'had', 'can', 'could', 'would', 'should', 'please', 'explain', 'help', 'understand',
+  'question', 'answer', 'work', 'show', 'tell', 'give', 'need', 'want', 'know', 'think',
+  'again', 'more', 'some', 'then', 'than', 'them', 'they', 'does', 'did', 'how', 'why',
+]);
+
+/**
+ * Cheap, local heuristic (zero LLM cost) that flags messages with no lexical
+ * overlap with the locked topic or the source's detected sections. It never
+ * blocks a message: it only adds a soft "apply the off-topic test" directive.
+ */
+function isPossiblyOffTopic(message: string, lockedTopic: string, tocTitles: string[] = []): boolean {
+  const raw = String(message || '').trim();
+  if (raw.length < 12) return false;
+  // Conversational continuations are always in-scope.
+  if (
+    /^(hi|hello|hey|thanks|thank you|ok|okay|yes|no|sure|help|i (do not|don't) (understand|get it)|can you (explain|help|repeat)|what do you mean|repeat|again|next|continue|go on|why|how)\b/i.test(
+      raw,
+    )
+  ) {
+    return false;
+  }
+
+  const normalise = (value: string) =>
+    value.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+
+  const scopeHaystack = normalise([lockedTopic, ...tocTitles].join(' '));
+  if (!scopeHaystack) return false;
+
+  const messageTerms = normalise(raw)
+    .split(' ')
+    .filter((term) => term.length > 3 && !SCOPE_STOPWORDS.has(term));
+  if (messageTerms.length < 3) return false;
+
+  const scopeTerms = new Set(scopeHaystack.split(' ').filter((term) => term.length > 3));
+  const overlaps = messageTerms.some((term) =>
+    [...scopeTerms].some(
+      (scopeTerm) => term === scopeTerm || term.startsWith(scopeTerm.slice(0, 4)) || scopeTerm.startsWith(term.slice(0, 4)),
+    ),
+  );
+
+  return !overlaps;
+}
+
+/**
+ * Lightweight RAG: split an ingested textbook/source into overlapping chunks
+ * and return the chunks most relevant to the learner's locked topic + message.
+ */
 function selectSourceChunks(text: string, query: string, maxChars: number = 12000): string {
   const clean = String(text || '').trim();
   if (!clean) return '';
@@ -554,40 +642,95 @@ app.post('/api/tutoring/chat', async (req: Request, res: Response) => {
       askMode,
       lockedTopic,
       pdf,
+      sourceId,
+      sessionId,
       state,
       country,
       nation,
       email: bodyEmail,
-    } = req.body;
+    } = req.body || {};
 
     const email = String(bodyEmail || '').trim().toLowerCase();
     const bodyTitle = String(req.body?.title || '').trim();
+    const cleanMessage = String(message || '').trim().slice(0, 6000);
 
-    if (!message) {
+    if (!cleanMessage) {
       return res.status(400).json({ error: 'Message is required' });
     }
 
+    const cleanTopic = String(lockedTopic || bodyTitle || '').trim().slice(0, 300);
+    const requestedSessionId =
+      typeof sessionId === 'string' && /^[0-9a-fA-F-]{16,64}$/.test(sessionId) ? sessionId : undefined;
+    const requestedSourceId =
+      typeof sourceId === 'string' && /^[0-9a-fA-F-]{16,64}$/.test(sourceId) ? sourceId : undefined;
+
     const targetLang = language || 'English';
     const mark = previousMark !== undefined ? Number(previousMark) : 50;
-    const gapSeverity = mark < 60 ? 'REMEDIAL_SCAFFOLD' : 'ADVANCEMENT_SCAFFOLD';
-    const learningHistory = await getLearningHistory(email, subject);
+    const cleanSubject = String(subject || 'Mathematics');
+    const cleanGrade = String(grade || 'Grade 12');
+
+    // -----------------------------------------------------------------
+    // 1. CONTEXT HOLDING: rebuild history from the database when the
+    //    client has none (page reload / resumed session).
+    // -----------------------------------------------------------------
+    let historyMessages: { role: string; content: string }[] = Array.isArray(history)
+      ? history
+          .slice(-8)
+          .map((h: any) => ({
+            role: h?.sender === 'user' ? 'user' : 'assistant',
+            content: String(h?.text || '').trim().slice(0, 900),
+          }))
+          .filter((m: any) => m.content)
+      : [];
+
+    if (historyMessages.length === 0 && requestedSessionId) {
+      historyMessages = await loadTutoringHistory(email, requestedSessionId, 8);
+    }
+
+    // -----------------------------------------------------------------
+    // 2. RAG SOURCE RESOLUTION: Supabase/cache first, inline payload second.
+    //    Requests stay small when the source is already ingested.
+    // -----------------------------------------------------------------
+    let sessionSource: { id?: string; name: string; text: string; tableOfContents?: any[] } | null = null;
+    if (requestedSourceId) {
+      sessionSource = await getTutoringSource(email, requestedSourceId);
+    }
+    if (!sessionSource && pdf && String(pdf.text || '').trim()) {
+      sessionSource = {
+        name: String(pdf.name || 'uploaded source').trim(),
+        text: String(pdf.text).slice(0, 400000),
+        tableOfContents: Array.isArray(pdf.tableOfContents) ? pdf.tableOfContents : [],
+      };
+    }
+
+    const tocTitles = Array.isArray(sessionSource?.tableOfContents)
+      ? (sessionSource!.tableOfContents as any[])
+          .map((entry) => (typeof entry === 'string' ? entry : String(entry?.title || '')))
+          .filter(Boolean)
+      : [];
+
+    // -----------------------------------------------------------------
+    // 3. SYSTEM PROMPT: stable base → progress → role → modes → source →
+    //    session contract LAST (highest recency / priority).
+    // -----------------------------------------------------------------
+    const learningHistory = await getLearningHistory(email, cleanSubject);
 
     let systemInstruction = buildFirmamentSystemPrompt({
       firmamentProfile,
-      subject: subject || 'Mathematics',
-      grade: grade || 'Grade 12',
+      subject: cleanSubject,
+      grade: cleanGrade,
       previousMark: mark,
       language: targetLang,
       state,
       country,
       nation,
       textbook,
-      userQuery: message,
+      // Curriculum retrieval is filtered by the LOCKED TOPIC, never by an
+      // arbitrary user message, so it cannot pull in off-topic chapters.
+      userQuery: cleanTopic || cleanSubject,
       taskType: 'tutoring',
     });
 
-    // Tutoring still hunts for deep understanding, but it must know which
-    // gaps and quiz failures the Study agent already surfaced.
     systemInstruction += `\n\n${buildLearningHistoryBlock(learningHistory)}`;
     systemInstruction += `
 
@@ -598,116 +741,152 @@ TUTORING AGENT ROLE LOCK (NON-NEGOTIABLE):
 - Do not convert this into a study note pack, flashcard drill, quiz drill or exam paper. The Study Agent owns gap-closing and recall; the Exam Agent owns assessment simulation.
 `;
 
-    systemInstruction += `
-
-LOCKED TUTORING TOPIC (SESSION-HARD LOCK, NON-NEGOTIABLE):
-- The learner's locked tutoring topic for this session is: "${String(lockedTopic || '').trim() || 'the subject focus'}".`;
-    if (pdf) {
-      const retrievedSource = selectSourceChunks(
-        String(pdf.text || ''),
-        `${String(lockedTopic || '')} ${String(message || '')}`,
-      );
-      const tocList = Array.isArray(pdf.tableOfContents)
-        ? pdf.tableOfContents
-            .filter((entry: any) => entry && (typeof entry === 'string' ? entry : entry.title))
-            .slice(0, 24)
-            .map((entry: any) => (typeof entry === 'string' ? entry : entry.title))
-            .join(' | ')
-        : '';
-      systemInstruction += `
-
-UPLOADED SOURCE / RAG CONTEXT (FIRST CONTEXT — "THE HOLY GRAIL"):
-- An uploaded source was provided for this session: "${String(pdf.name || '').trim() || 'uploaded source'}".
-- Source table of contents: ${tocList || '(not detected)'}.
-- Retrieved source content (most relevant to the locked topic): ${retrievedSource || '(no extractable text content was provided).'}
-- THE UPLOADED SOURCE IS THE FIRST CONTEXT AND THE HOLY GRAIL FOR THIS TUTORING SESSION. Tutor the student on the locked topic using this uploaded source as the primary grounding.
-- Use internet knowledge to provide further clarity and emphasis on what the uploaded source says about the topic.
-- If the uploaded source has no content relevant to the locked topic, fall back to internet-based knowledge strictly specific to the locked topic.
-- If no source was uploaded/ingested, use internet-based knowledge strictly specific to the locked topic.`;
-    }
-
-
     let extraModeInstruction = '';
     if (homeworkMode)
       extraModeInstruction +=
-        "\nHOMEWORK MODE ACTIVE: Evaluate the student's submitted work, pinpoint errors, and guide correction without revealing final answers.";
+        "\nHOMEWORK MODE ACTIVE: Evaluate the student's submitted work, pinpoint errors, and guide correction without revealing final answers. Stay inside the session's locked topic.";
     if (askMode)
       extraModeInstruction +=
-        "\nASK MODE ACTIVE: Opening should be synonymous with: What is it that you don't understand? Feel free to open up.";
-    if (extraModeInstruction) {
-      systemInstruction = systemInstruction + extraModeInstruction;
+        "\nASK MODE ACTIVE: Opening should be synonymous with: What is it that you don't understand? Feel free to open up. Stay inside the session's locked topic.";
+    if (extraModeInstruction) systemInstruction += extraModeInstruction;
+
+    if (sessionSource) {
+      const retrievedSource = selectSourceChunks(
+        String(sessionSource.text || ''),
+        `${cleanTopic} ${cleanMessage}`,
+      );
+      const tocList = tocTitles.slice(0, 24).join(' | ');
+
+      systemInstruction += `
+
+UPLOADED SOURCE / RAG CONTEXT (FIRST CONTEXT — "THE HOLY GRAIL"):
+- An uploaded source was provided for this session: "${String(sessionSource.name || 'uploaded source').trim()}".
+- Source table of contents: ${tocList || '(not detected)'}.
+- Retrieved source content (most relevant to the locked topic): ${
+        retrievedSource || '(no extractable text content was provided).'
+      }
+- THE UPLOADED SOURCE IS THE FIRST CONTEXT AND THE HOLY GRAIL FOR THIS TUTORING SESSION. Tutor the student on the locked topic using this uploaded source as the primary grounding.
+- Use internet knowledge only to provide further clarity and emphasis on what the uploaded source says about the topic.
+- If the uploaded source has no content relevant to the locked topic, say so briefly and fall back to internet-based knowledge strictly specific to the locked topic.`;
     }
 
+    const offTopicHint = isPossiblyOffTopic(cleanMessage, cleanTopic, tocTitles);
+
+    systemInstruction += `\n\n${buildTutoringSessionScope({
+      lockedTopic: cleanTopic,
+      subject: cleanSubject,
+      grade: cleanGrade,
+      hasSource: Boolean(sessionSource),
+      sourceName: sessionSource?.name,
+      sourceToc: tocTitles,
+      offTopicHint,
+    })}`;
+
+    // -----------------------------------------------------------------
+    // 4. LLM CALL with response cache (repeat prompts cost $0) and
+    //    tight output/cost caps for Socratic tutoring.
+    // -----------------------------------------------------------------
+    const cacheKey = `tutoring:reply:${hashForCache(
+      [
+        DEEPSEEK_MODEL,
+        cleanSubject,
+        cleanGrade,
+        targetLang,
+        country || '',
+        state || '',
+        firmamentProfile?.cognitiveScore || '',
+        firmamentProfile?.mercury?.element || '',
+        homeworkMode ? 'hw' : '',
+        askMode ? 'ask' : '',
+        cleanTopic,
+        cleanMessage,
+        historyMessages
+          .slice(-4)
+          .map((m) => `${m.role}:${m.content}`)
+          .join('|'),
+        sessionSource
+          ? `${sessionSource.name}:${hashForCache(String(sessionSource.text || '').slice(0, 5000))}`
+          : 'no-source',
+      ].join('||'),
+    )}`;
+
+    let reply: string | null = null;
+    let replySource = 'deepseek';
+
     if (DEEPSEEK_API_KEY) {
-      try {
-        const historyMessages = Array.isArray(history)
-          ? history.slice(-6).map((h: any) => ({
-              role: h.sender === 'user' ? 'user' : 'assistant',
-              content: h.text,
-            }))
-          : [];
-
-        const reply = await callLlamaChat({
-          system: systemInstruction,
-          messages: historyMessages,
-          user: message,
-          temperature: 0.7,
-          timeoutMs: 9000,
-          maxTokens: 8000,
-          baseUrl: DEEPSEEK_BASE_URL,
-          apiKey: DEEPSEEK_API_KEY,
-          model: DEEPSEEK_MODEL,
-        });
-
-        if (reply) {
-          const savedTutoringSessionId = await saveTutoringSession({
-            email,
-            subject: subject || 'Mathematics',
-            grade: grade || 'Grade 12',
-            language: targetLang,
-            title: bodyTitle,
-            topic: String(lockedTopic || bodyTitle || '').trim(),
-            pdf: pdf || null,
-            messages: [...historyMessages, { role: 'user', content: message }, { role: 'assistant', content: reply }],
+      const cachedReply = await getCache(cacheKey);
+      if (typeof cachedReply === 'string' && cachedReply.trim()) {
+        reply = cachedReply;
+        replySource = 'cache';
+      } else {
+        try {
+          reply = await callLlamaChat({
+            system: systemInstruction,
+            messages: historyMessages,
+            user: cleanMessage,
+            temperature: 0.35,
+            timeoutMs: 30000,
+            maxTokens: 1400,
+            baseUrl: DEEPSEEK_BASE_URL,
+            apiKey: DEEPSEEK_API_KEY,
+            model: DEEPSEEK_MODEL,
           });
-          return res.json({ reply, source: LLAMA_MODEL_ID, sessionId: savedTutoringSessionId });
+          if (reply) await setCache(cacheKey, reply, 900);
+        } catch (llamaErr: any) {
+          console.warn(
+            'Tutoring LLM timeout/error, serving topic-locked fallback:',
+            llamaErr?.message || llamaErr,
+          );
         }
-      } catch (llamaErr: any) {
-        console.warn(
-          'Llama tutoring timeout/error, serving firmament fallback:',
-          llamaErr?.message || llamaErr,
-        );
       }
     }
 
-    // Offline Socratic fallback
-    const fallbackCurriculum = describeCurriculum(country, state, nation);
-    const greeting = fallbackCurriculum.isUS ? 'Hi there!' : fallbackCurriculum.isUK ? 'Hello!' : 'Sawubona!';
-    const frameworkWord = fallbackCurriculum.isUS
-      ? `${state || 'state'} standards`
-      : fallbackCurriculum.isUK
-      ? `${fallbackCurriculum.ukFramework.qualifications} (${fallbackCurriculum.ukNation})`
-      : 'CAPS';
-    const reply = `${greeting} Working in ${subject} (${targetLang}) against ${frameworkWord}. Based on your ${
-      firmamentProfile?.cognitiveVector?.primaryModality || 'Logical'
-    } profile and ${mark}% baseline, let us break this down step-by-step. What is the very first rule or formula we need to write down before substituting?`;
+    if (!reply) {
+      const fallbackCurriculum = describeCurriculum(country, state, nation);
+      const greeting = fallbackCurriculum.isUS
+        ? 'Hi there!'
+        : fallbackCurriculum.isUK
+        ? 'Hello!'
+        : 'Sawubona!';
+      reply = `${greeting} Let's stay with "${cleanTopic || cleanSubject}". ${
+        sessionSource ? `I have "${sessionSource.name}" loaded as our source. ` : ''
+      }What is the first definition, rule or step you would write down for it?`;
+      replySource = 'topic-locked-fallback';
+    }
+
+    // Persist the exchange against ONE session row (never one row per message).
     const savedTutoringSessionId = await saveTutoringSession({
       email,
-      subject: subject || 'Mathematics',
-      grade: grade || 'Grade 12',
+      sessionId: requestedSessionId,
+      subject: cleanSubject,
+      grade: cleanGrade,
       language: targetLang,
       title: bodyTitle,
-      topic: String(lockedTopic || bodyTitle || '').trim(),
-      pdf: pdf || null,
-      messages: [...historyMessages, { role: 'user', content: message }, { role: 'assistant', content: reply }],
+      topic: cleanTopic,
+      source: sessionSource,
+      messages: [
+        { role: 'user', content: cleanMessage },
+        { role: 'assistant', content: reply },
+      ],
     });
-    return res.json({ reply, source: 'firmament-engine-local', sessionId: savedTutoringSessionId });
+
+    return res.json({
+      reply,
+      source: replySource,
+      cached: replySource === 'cache',
+      sessionId: savedTutoringSessionId || requestedSessionId || null,
+      sourceId: requestedSourceId || null,
+      offTopicFlagged: offTopicHint,
+    });
   } catch (err: any) {
     console.error('Tutoring API error:', err);
+    const safeTopic = String(req.body?.lockedTopic || req.body?.title || '').trim();
     return res.json({
-      reply:
-        'Let us work through this together step by step. What is the fundamental formula or theorem we should apply first?',
+      reply: safeTopic
+        ? `Let us keep this session on "${safeTopic}". What is the first step or idea you would write down?`
+        : 'Let us work through this together step by step. What is the fundamental formula or theorem we should apply first?',
       source: 'safe-fallback',
+      sessionId: null,
     });
   }
 });
@@ -721,8 +900,10 @@ app.post('/api/tutoring/source/ingest', async (req: Request, res: Response) => {
   try {
     if (await rejectWithoutAgentAccess(req, res)) return;
 
-    const { name, base64, topic } = req.body || {};
+    const { name, base64, topic, subject, grade } = req.body || {};
+    const email = String(req.body?.email || '').trim().toLowerCase();
     const fileName = String(name || '').trim() || 'uploaded-source';
+    const cleanTopic = String(topic || '').trim().slice(0, 300);
     const encoded = String(base64 || '').replace(/^data:[^;]+;base64,/, '');
     if (!encoded) return res.status(400).json({ error: 'Source file is required.' });
 
@@ -750,32 +931,48 @@ app.post('/api/tutoring/source/ingest', async (req: Request, res: Response) => {
       return res.status(422).json({ error: 'No readable text could be extracted from this source.' });
     }
 
-    const tableOfContents = detectTOC(text).slice(0, 40);
-    const sourceKey = `tutoring:source:${createHash('sha256')
-      .update(`${fileName}:${text.length}:${String(topic || '')}:${text.slice(0, 500)}`)
-      .digest('hex')
-      .slice(0, 32)}`;
+    // Cap stored text (≈400k chars ≈ 100k tokens) so one textbook cannot
+    // blow up request/database sizes. RAG selects the relevant slices.
+    if (text.length > 400000) text = text.slice(0, 400000);
 
-    // Cache source metadata + table of contents (the full text travels with
-    // the tutoring request and is chunk-retrieved by selectSourceChunks).
+    const tableOfContents = detectTOC(text).slice(0, 40);
+    const contentHash = createHash('sha256').update(text).digest('hex');
+    const sourceKey = `tutoring:source:${contentHash.slice(0, 32)}`;
+
+    // L2 (Supabase) stores the full text so later requests only need the id.
+    // If the table has not been created yet, the inline fallback still works.
+    const storedSource = await saveTutoringSource({
+      email,
+      name: fileName,
+      subject: String(subject || '').trim(),
+      grade: String(grade || '').trim(),
+      topic: cleanTopic,
+      text,
+      contentHash,
+      tableOfContents,
+    });
+
     await setCache(
       sourceKey,
       {
+        id: storedSource?.id || null,
         name: fileName,
         tableOfContents,
         chars: text.length,
-        topic: String(topic || '').trim(),
+        topic: cleanTopic,
         ingestedAt: new Date().toISOString(),
       },
-      60 * 60 * 24,
+      60 * 60 * 24 * 7,
     );
 
     return res.json({
       name: fileName,
+      sourceId: storedSource?.id || null,
       text,
       tableOfContents,
       chars: text.length,
       sourceKey,
+      persisted: Boolean(storedSource?.id),
     });
   } catch (err: any) {
     console.error('Tutoring source ingest error:', err);
@@ -1362,15 +1559,157 @@ async function saveStudySession(input: StudySessionInput): Promise<string | null
   }
 }
 
-/** Persists a tutoring conversation (with its user-chosen title) for later reuse. */
+interface TutoringSourceRow {
+  id?: string;
+  name: string;
+  text: string;
+  tableOfContents?: any[];
+}
+
+/**
+ * Persists an ingested textbook/source in Supabase (L2) so later tutoring
+ * requests only need the source id instead of re-uploading the full text.
+ * Deduplicates by (user, content hash).
+ */
+async function saveTutoringSource(input: {
+  email: string;
+  name: string;
+  subject?: string;
+  grade?: string;
+  topic?: string;
+  text: string;
+  contentHash?: string;
+  tableOfContents?: any[];
+}): Promise<{ id: string | null; deduped: boolean }> {
+  const client = getServiceSupabaseClient();
+  if (!client || !input.email || !input.text) return { id: null, deduped: false };
+
+  try {
+    const profile = await findProfileByEmail(client, input.email);
+    if (!profile?.id) return { id: null, deduped: false };
+
+    const contentHash =
+      input.contentHash || createHash('sha256').update(input.text).digest('hex');
+
+    const { data: existing } = await client
+      .from('tutoring_sources')
+      .select('id')
+      .eq('user_id', profile.id)
+      .eq('content_hash', contentHash)
+      .maybeSingle();
+
+    if (existing?.id) return { id: existing.id, deduped: true };
+
+    const { data, error } = await client
+      .from('tutoring_sources')
+      .insert([
+        {
+          user_id: profile.id,
+          name: input.name,
+          subject: input.subject || '',
+          grade: input.grade || '',
+          topic: input.topic || '',
+          content: input.text,
+          content_hash: contentHash,
+          chars: input.text.length,
+          table_of_contents: Array.isArray(input.tableOfContents) ? input.tableOfContents : [],
+          updated_at: new Date().toISOString(),
+        },
+      ])
+      .select('id')
+      .single();
+
+    if (error) {
+      console.warn('Tutoring source could not be stored (run the tutoring_sources DDL):', error.message);
+      return { id: null, deduped: false };
+    }
+    return { id: data?.id || null, deduped: false };
+  } catch (err: any) {
+    console.warn('Tutoring source save failed:', err?.message || err);
+    return { id: null, deduped: false };
+  }
+}
+
+/** Loads an ingested source and enforces per-user ownership. */
+async function getTutoringSource(email: string, sourceId: string): Promise<TutoringSourceRow | null> {
+  const client = getServiceSupabaseClient();
+  if (!client || !email || !sourceId) return null;
+
+  try {
+    const profile = await findProfileByEmail(client, email);
+    if (!profile?.id) return null;
+
+    const { data, error } = await client
+      .from('tutoring_sources')
+      .select('id,user_id,name,content,table_of_contents')
+      .eq('id', sourceId)
+      .maybeSingle();
+
+    if (error || !data) return null;
+    if (data.user_id && data.user_id !== profile.id) return null;
+
+    return {
+      id: data.id,
+      name: data.name || 'uploaded source',
+      text: String(data.content || ''),
+      tableOfContents: Array.isArray(data.table_of_contents) ? data.table_of_contents : [],
+    };
+  } catch (err: any) {
+    console.warn('Tutoring source lookup failed:', err?.message || err);
+    return null;
+  }
+}
+
+/** Rebuilds recent tutoring context from the database (reload / resume). */
+async function loadTutoringHistory(
+  email: string,
+  sessionId: string,
+  limit: number = 8,
+): Promise<{ role: string; content: string }[]> {
+  const client = getServiceSupabaseClient();
+  if (!client || !email || !sessionId) return [];
+
+  try {
+    const profile = await findProfileByEmail(client, email);
+    if (!profile?.id) return [];
+
+    const { data, error } = await client
+      .from('tutoring_sessions')
+      .select('user_id,messages')
+      .eq('id', sessionId)
+      .maybeSingle();
+
+    if (error || !data) return [];
+    if (data.user_id && data.user_id !== profile.id) return [];
+
+    const messages = Array.isArray(data.messages) ? data.messages : [];
+    return messages
+      .slice(-Math.max(1, limit))
+      .map((m: any) => ({
+        role: m?.role === 'user' ? 'user' : 'assistant',
+        content: String(m?.content || '').slice(0, 900),
+      }))
+      .filter((m: any) => m.content);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Persists a tutoring conversation against ONE row per session.
+ *
+ * Previously every message inserted a brand new session row, so the database
+ * filled with duplicate fragments and no real conversation could be resumed.
+ */
 async function saveTutoringSession(input: {
   email: string;
+  sessionId?: string;
   subject: string;
   grade: string;
   language?: string;
   title?: string;
   topic?: string;
-  pdf?: { name?: string; text?: string } | null;
+  source?: TutoringSourceRow | null;
   messages: { role: string; content: string }[];
 }): Promise<string | null> {
   const client = getServiceSupabaseClient();
@@ -1380,26 +1719,94 @@ async function saveTutoringSession(input: {
     const profile = await findProfileByEmail(client, input.email);
     if (!profile?.id) return null;
 
-    const { data } = await client
-      .from('tutoring_sessions')
-      .insert([
+    const row: Record<string, any> = {
+      user_id: profile.id,
+      subject: input.subject,
+      grade: input.grade,
+      language: input.language || 'English',
+      title: input.title || '',
+      topic: input.topic || '',
+      pdf_name: input.source?.name || null,
+      pdf_source_id: input.source?.id || null,
+      // Store a short excerpt only; the full text lives in tutoring_sources.
+      pdf_text: input.source?.text ? input.source.text.slice(0, 4000) : null,
+      updated_at: new Date().toISOString(),
+    };
+
+    // Schema-tolerant write: retry with fewer optional columns when a
+    // deployment has not run the latest DDL yet. Core fields are preserved.
+    const insertRow = async (messages: any[]): Promise<string | null> => {
+      const attempts: Record<string, any>[] = [
+        { ...row, messages },
+        (() => {
+          const copy = { ...row, messages };
+          delete copy.pdf_source_id;
+          return copy;
+        })(),
         {
           user_id: profile.id,
           subject: input.subject,
           grade: input.grade,
           language: input.language || 'English',
           title: input.title || '',
-          topic: input.topic || '',
-          pdf_name: input.pdf?.name || null,
-          pdf_text: input.pdf?.text || null,
-          messages: input.messages,
+          messages,
           updated_at: new Date().toISOString(),
         },
-      ])
-      .select('id')
-      .single();
-    return data?.id || null;
-  } catch {
+      ];
+      for (const attempt of attempts) {
+        const { data, error } = await client
+          .from('tutoring_sessions')
+          .insert([attempt])
+          .select('id')
+          .maybeSingle();
+        if (!error) return data?.id || null;
+      }
+      return null;
+    };
+
+    if (input.sessionId) {
+      const { data: existing } = await client
+        .from('tutoring_sessions')
+        .select('id,user_id,messages')
+        .eq('id', input.sessionId)
+        .maybeSingle();
+
+      if (existing?.user_id && existing.user_id !== profile.id) return null;
+
+      if (existing) {
+        const prior = Array.isArray(existing.messages) ? existing.messages : [];
+        const merged = [...prior, ...input.messages].slice(-60);
+        const updateAttempts: Record<string, any>[] = [
+          { ...row, messages: merged },
+          (() => {
+            const copy = { ...row, messages: merged };
+            delete copy.pdf_source_id;
+            return copy;
+          })(),
+        ];
+        for (const attempt of updateAttempts) {
+          const { error } = await client
+            .from('tutoring_sessions')
+            .update(attempt)
+            .eq('id', input.sessionId);
+          if (!error) return input.sessionId;
+        }
+        return input.sessionId;
+      }
+
+      // First message of a client-generated session: create it with that id.
+      const { data, error } = await client
+        .from('tutoring_sessions')
+        .insert([{ id: input.sessionId, ...row, messages: input.messages.slice(-60) }])
+        .select('id')
+        .maybeSingle();
+      if (!error) return data?.id || input.sessionId;
+      return insertRow(input.messages.slice(-60));
+    }
+
+    return insertRow(input.messages.slice(-60));
+  } catch (err: any) {
+    console.warn('Tutoring session save failed:', err?.message || err);
     return null;
   }
 }
@@ -1502,7 +1909,7 @@ app.post('/api/study/generate', async (req: Request, res: Response) => {
           user: `Create today's STUDY SESSION pack for ${grade} ${subject} on the topic "${cleanTopic}". Diagnose gaps first, teach directly in the learner's cognitive delivery style, then build recall and a short quiz. JSON only.`,
           jsonMode: true,
           temperature: 0.35,
-          timeoutMs: 20000,
+          timeoutMs: 60000,
           maxTokens: 8000,
         });
         let text = (textRaw || '').trim();
@@ -2513,54 +2920,11 @@ app.post('/api/feedback', async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------
 // LLM TUTOR (firmament-guarded, cost-efficient)
 // ---------------------------------------------------------------------
-app.post('/api/tutoring/chat', async (req: Request, res: Response) => {
-  if (await rejectWithoutAgentAccess(req, res)) return;
-  const { message, firmamentProfile, subject, grade, country, state, nation, language, taskType } = req.body || {};
-  const userQuery = message;
-  // Cap user input to ~1500 words to control cost.
-  const words = userQuery.split(/\s+/);
-  const cappedQuery = words.length > 1500 ? words.slice(0, 1500).join(' ') + '…' : userQuery;
-
-  const baseUrl = process.env.LLAMA_BASE_URL || 'https://api.groq.com/openai/v1';
-  const apiKey = process.env.LLAMA_API_KEY || '';
-  const model = process.env.LLAMA_MODEL || 'llama-3.3-70b-versatile';
-  if (!apiKey) return res.status(500).json({ error: 'LLAMA_API_KEY not configured' });
-
-  const systemPrompt = buildFirmamentSystemPrompt({
-    firmamentProfile: firmamentProfile || {},
-    subject: subject || 'Mathematics',
-    grade: grade || 'Grade 12',
-    language: language || 'English',
-    state: state || '',
-    country: country || 'ZA',
-    nation: nation || '',
-    userQuery: cappedQuery,
-    taskType: taskType || 'tutoring',
-  });
-
-  try {
-    const r = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: cappedQuery },
-        ],
-        temperature: 0.3,
-        max_tokens: 8000,
-        top_p: 0.9,
-      }),
-    });
-    const j: any = await r.json();
-    const content = j?.choices?.[0]?.message?.content || '';
-    if (!content) return res.status(500).json({ error: j?.error?.message || 'No response', raw: j });
-    return res.json({ reply: content, model, usage: j?.usage });
-  } catch (err: any) {
-    return res.status(500).json({ error: err?.message || String(err) });
-  }
-});
+// NOTE: The canonical tutoring chat handler is registered earlier (section 1A)
+// so it can apply the per-session topic lock, source RAG grounding, response
+// caching and transcript persistence. Do not register a second handler for
+// `/api/tutoring/chat` here: Express uses the first match, so a duplicate is
+// dead code that silently bypasses the lock.
 
 
 // ---------------------------------------------------------------------
@@ -3028,7 +3392,8 @@ Return valid JSON with:
         user: `Generate the ${exam} now for ${grd} ${sub} (${trm}).`,
         jsonMode: true,
         temperature: 0.3,
-        timeoutMs: 30000,
+        timeoutMs: 90000,
+        maxTokens: 6000,
         baseUrl: DEEPSEEK_BASE_URL,
         apiKey: DEEPSEEK_API_KEY,
         model: DEEPSEEK_MODEL,

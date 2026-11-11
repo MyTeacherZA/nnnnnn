@@ -456,10 +456,47 @@ CREATE TABLE IF NOT EXISTS public.tutoring_sessions (
   topic TEXT,
   pdf_name TEXT,
   pdf_text TEXT,
+  pdf_source_id UUID,
   messages JSONB DEFAULT '[]'::jsonb,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
+
+-- Existing installs: add columns introduced by the tutoring session lock.
+ALTER TABLE public.tutoring_sessions ADD COLUMN IF NOT EXISTS topic TEXT;
+ALTER TABLE public.tutoring_sessions ADD COLUMN IF NOT EXISTS pdf_name TEXT;
+ALTER TABLE public.tutoring_sessions ADD COLUMN IF NOT EXISTS pdf_text TEXT;
+ALTER TABLE public.tutoring_sessions ADD COLUMN IF NOT EXISTS pdf_source_id UUID;
+
+-- 4a. Ingested tutoring sources (parsed textbook / PDF / text) for RAG.
+-- The full extracted text lives here so tutoring requests only send the id.
+CREATE TABLE IF NOT EXISTS public.tutoring_sources (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID DEFAULT auth.uid(),
+  name TEXT NOT NULL,
+  subject TEXT,
+  grade TEXT,
+  topic TEXT,
+  content TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  chars INTEGER DEFAULT 0,
+  table_of_contents JSONB DEFAULT '[]'::jsonb,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS tutoring_sources_user_hash_idx
+  ON public.tutoring_sources (user_id, content_hash);
+
+ALTER TABLE public.tutoring_sources ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can manage own tutoring sources" ON public.tutoring_sources;
+CREATE POLICY "Users can manage own tutoring sources"
+  ON public.tutoring_sources
+  FOR ALL
+  TO authenticated
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
 
 -- 4b. Study sessions + quiz progress shared by all three agents
 CREATE TABLE IF NOT EXISTS public.study_sessions (

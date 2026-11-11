@@ -58,10 +58,17 @@ export const TutoringAgentTab: React.FC = () => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // New tutoring session: locked topic + optional uploaded source (PDF/text).
+  const [sessionId, setSessionId] = useState<string>(() => {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+    return `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`.slice(0, 32);
+  });
   const [isNewSessionOpen, setIsNewSessionOpen] = useState(false);
   const [tutoringTopic, setTutoringTopic] = useState('');
   const [lockedTopic, setLockedTopic] = useState<string | null>(null);
   const [tutoringPdf, setTutoringPdf] = useState<{
+    sourceId?: string | null;
     name: string;
     text: string;
     tableOfContents?: { title?: string; level?: number }[];
@@ -138,6 +145,11 @@ export const TutoringAgentTab: React.FC = () => {
     const cleanTopic = (topicOverride ?? tutoringTopic).trim();
     if (!cleanTopic) return;
 
+    setSessionId(
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`.slice(0, 32),
+    );
     setLockedTopic(cleanTopic);
     setSessionTitle(cleanTopic);
     setTutoringPdf(null);
@@ -180,7 +192,14 @@ export const TutoringAgentTab: React.FC = () => {
       const response = await fetch('/api/tutoring/source/ingest', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: file.name, base64, topic: lockedTopic || tutoringTopic }),
+        body: JSON.stringify({
+          email: student?.email,
+          name: file.name,
+          base64,
+          topic: lockedTopic || tutoringTopic,
+          subject: activeSubject?.name,
+          grade: student?.grade,
+        }),
       });
 
       if (notifySubscriptionRequired(response)) return;
@@ -191,10 +210,11 @@ export const TutoringAgentTab: React.FC = () => {
       }
 
       setTutoringPdf({
+        sourceId: data.sourceId || null,
         name: data.name || file.name,
-        // Cap stored text so each tutoring request stays light; RAG selects
-        // the most relevant chunks from this content.
-        text: String(data.text).slice(0, 400000),
+        // Inline text is only a fallback for when the source could not be
+        // persisted; once sourceId exists the server reloads it from the DB.
+        text: String(data.text || '').slice(0, 400000),
         tableOfContents: Array.isArray(data.tableOfContents) ? data.tableOfContents : [],
       });
       setPdfError(null);
@@ -243,13 +263,22 @@ export const TutoringAgentTab: React.FC = () => {
           history: messages.slice(-5).map((m) => ({ sender: m.sender, text: m.text })),
           title: sessionTitle.trim(),
           lockedTopic: lockedTopic || undefined,
-          pdf: tutoringPdf || undefined,
+          sessionId,
+          sourceId: tutoringPdf?.sourceId || undefined,
+          pdf: tutoringPdf
+            ? {
+                name: tutoringPdf.name,
+                tableOfContents: tutoringPdf.tableOfContents,
+                ...(tutoringPdf.sourceId ? {} : { text: tutoringPdf.text }),
+              }
+            : undefined,
         }),
       });
 
       if (notifySubscriptionRequired(response)) return;
 
       const data = await response.json();
+      if (data?.sessionId) setSessionId(String(data.sessionId));
       const aiReplyText = data.reply || data.error || 'I am ready to help you work through this step-by-step.';
 
       const aiMessage: ChatMessage = {
@@ -270,7 +299,9 @@ export const TutoringAgentTab: React.FC = () => {
           id: `ai-err-${Date.now()}`,
           sender: 'ai',
           agent: 'tutoring',
-          text: `Let us break down this question: What is the very first definition or formula given in the CAPS guideline for ${activeSubject.name}? Tell me what you remember first.`,
+          text: lockedTopic
+            ? `Let us keep this session on "${lockedTopic}". What is the first step, definition or rule you would write down for it?`
+            : `Let us break down this question. What is the very first definition or formula you would write down for ${activeSubject.name}?`,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         },
       ]);
@@ -410,6 +441,12 @@ export const TutoringAgentTab: React.FC = () => {
                 setTutoringPdf(null);
                 setPdfError(null);
                 setTutoringTopic('');
+                setSessionTitle('');
+                setSessionId(
+                  typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+                    ? crypto.randomUUID()
+                    : `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`.slice(0, 32),
+                );
                 setMessages([
                   {
                     id: 'restart-1',

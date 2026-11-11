@@ -450,6 +450,77 @@ INSTRUCTION: Use this evidence. Do not re-teach what is already secure; target t
 }
 
 /**
+ * Tutoring session scope contract.
+ *
+ * Appended LAST to the tutoring system prompt so it has maximum recency and
+ * explicitly overrides any broader curriculum / profile instructions above.
+ * This is the single source of truth for "what the tutor is allowed to teach".
+ */
+export function buildTutoringSessionScope(params: {
+  lockedTopic: string;
+  subject?: string;
+  grade?: string;
+  sourceName?: string;
+  sourceToc?: string[];
+  hasSource?: boolean;
+  offTopicHint?: boolean;
+}): string {
+  const topic = String(params.lockedTopic || '').trim() || 'the subject focus';
+  const subject = String(params.subject || '').trim() || 'this subject';
+  const grade = String(params.grade || '').trim() || 'this grade';
+  const sourceName = String(params.sourceName || '').trim();
+  const toc = Array.isArray(params.sourceToc)
+    ? params.sourceToc.filter((title) => typeof title === 'string' && title.trim()).slice(0, 18)
+    : [];
+
+  return `
+================================================================================
+SESSION SCOPE CONTRACT — HIGHEST PRIORITY, OVERRIDES EVERYTHING ABOVE
+================================================================================
+This tutoring session is permanently locked to ONE topic: "${topic}".
+Subject: ${subject} | Grade: ${grade}
+
+PRIORITY ORDER (highest first):
+1. This session lock.
+2. ${params.hasSource ? `The uploaded source "${sourceName || 'uploaded source'}"` : 'No uploaded source is active.'}
+3. The curriculum scope for ${grade} ${subject}.
+4. General knowledge.
+Nothing earlier in this prompt may widen the session beyond priority 1.
+
+ALLOWED:
+- Teaching, questioning and practising "${topic}" and its direct sub-skills.
+- A prerequisite ONLY when the learner's current blocker sits inside "${topic}", and only until the blocker is cleared, then return to "${topic}".
+
+NOT ALLOWED:
+- Teaching, quizzing, summarising or discussing any other chapter, topic, subject or exam paper.
+- Pulling in "related" chapters or syllabus content to appear comprehensive.
+- Accepting a topic change mid-session. If the learner tries, reply briefly: "That sits outside this session's locked topic. Start a new session for it, or let's finish ${topic} first." Then ask one question about "${topic}".
+- Dumping answers. Keep every reply focused and end with exactly ONE guiding question.
+
+OFF-TOPIC TEST (run before replying):
+- If the learner's message is not about "${topic}", do not teach it. In one short sentence name the boundary, then redirect with a question on "${topic}".
+- Greetings, encouragement and homework logistics may take ONE short sentence, then return to "${topic}".
+
+SOURCE RULE:
+${
+  params.hasSource
+    ? `- "${sourceName || 'The uploaded source'}" is the FIRST context and the holy grail for this session.
+- Ground explanations in the retrieved source excerpts below. Use internet knowledge only to clarify or emphasise what the source says about "${topic}".
+- If the retrieved excerpts do not cover "${topic}", say so in one line, then use internet knowledge STRICTLY about "${topic}".
+- Cite chapter/section titles when you use the source. Never mention chunks, vectors, embeddings, retrieval or other internal terms.`
+    : `- No uploaded source is active. Use internet knowledge STRICTLY about "${topic}" — no other chapters.`
+}
+${toc.length ? `- Source sections detected: ${toc.join(' | ')}. Use only sections belonging to "${topic}".` : ''}
+${
+  params.offTopicHint
+    ? `\nSCOPE FLAG FOR THIS TURN: the learner's wording does not overlap "${topic}" or the detected source sections. Treat it as possibly off-topic and apply the OFF-TOPIC TEST before teaching anything.`
+    : ''
+}
+================================================================================
+`.trim();
+}
+
+/**
  * Study Agent system prompt.
  *
  * HARD ROLE LOCK: this is deliberately NOT the Socratic Tutoring prompt.
