@@ -172,10 +172,21 @@ export function selectSourceChunks(text: string, query: string, maxChars: number
 }
 
 /**
- * Cheap, local heuristic (zero LLM cost) that flags messages with no lexical
- * overlap with the locked topic or the source's detected sections. It never
- * blocks a message: it only adds a soft "apply the off-topic test" directive.
+ * Cheap, zero-LLM signal that a tutoring exchange is worth extracting
+ * learning data from. Runs before we spend a single DeepSeek query on
+ * extraction.
  */
+const STRUGGLE_SIGNAL =
+  /\b(don'?t understand|doesn'?t (make sense|add up)|confused|confus(?:ion|ing)|wrong|incorrect|nope|no sense|stuck|lost|unclear|explain again|how (do|does|can) (i|we|you)|what (do|does|is) .* for|mark|failing|flunk|impossible|impossible|hard|difficult)\b/i;
+const ASSESS_SIGNAL =
+  /\b(solve|answer|work out|find|calculate|evaluate|prove|show|identify|state|derive|explain|why)\b/i;
+
+export function detectStruggleSignal(message: string): boolean {
+  const raw = String(message || '').trim();
+  if (raw.length < 10) return false;
+  return STRUGGLE_SIGNAL.test(raw) || ASSESS_SIGNAL.test(raw);
+}
+
 export function isPossiblyOffTopic(
   message: string,
   lockedTopic: string,

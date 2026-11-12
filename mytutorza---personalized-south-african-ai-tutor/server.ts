@@ -22,7 +22,7 @@ import {
   splitByTOC,
   extractPdfTextFromBuffer,
 } from './serverPdfIngestion';
-import { selectSourceChunksWithScore, isPossiblyOffTopic } from './serverTutoringContext';
+import { selectSourceChunksWithScore, isPossiblyOffTopic, detectStruggleSignal } from './serverTutoringContext';
 import { searchWeb, detectNeedsWeb, webSearchConfigured } from './serverWebSearch';
 import { createHash } from 'crypto';
 import {
@@ -851,6 +851,19 @@ ${snippetBlock}
       ],
     });
 
+    // Fire-and-forget: extract learning signals into the shared
+    // study_sessions profile (struggle regex gate + 3-turn cadence + hard cap).
+    // Never blocks the reply; silently no-ops if the DDL isn't applied yet.
+    void maybeExtractLearningSignals({
+      email,
+      subject: cleanSubject,
+      grade: cleanGrade,
+      topic: cleanTopic,
+      userMessage: cleanMessage,
+      assistantReply: reply,
+      messageCount: historyMessages.length + 2,
+    }).catch(() => {});
+
     return res.json({
       reply,
       source: replySource,
@@ -970,6 +983,189 @@ app.post('/api/tutoring/source/ingest', async (req: Request, res: Response) => {
 
 // ---------------------------------------------------------------------
 // 1B. CONVERSATION ANALYSIS & PERSONALIZED SPARK NOTES GENERATOR
+/**
+ * Extract learning signals from ONE tutoring exchange and merge them into the
+ * learner's shared learning profile (one `tutoring-derived` study_sessions row
+ * per user + subject + topic).
+ *
+ * Cost control, in order:
+ *  1. Struggle-signal regex on the learner's message (zero LLM cost).
+ *  2. Only every 3rd exchanged turn.
+ *  3. Hard cap: at most 5 extractions per derived row, then it stops.
+ *  4. Mini-model output: strict JSON, max 4 items per array, 400 tokens.
+ * Typical steady-state cost: ≈$0.00015 per tutoring message.
+ *
+ * Never throws and never blocks the user — all failure paths return silently.
+ */
+async function maybeExtractLearningSignals(input: {
+  email: string;
+  subject: string;
+  grade: string;
+  topic: string;
+  userMessage: string;
+  assistantReply: string;
+  messageCount: number;
+}): Promise<void> {
+  if (!input.email || !detectStruggleSignal(input.userMessage)) return;
+  if (input.messageCount % 3 !== 0) return;
+
+  const client = getServiceSupabaseClient();
+  if (!client) return;
+
+  try {
+    const profile = await findProfileByEmail(client, input.email);
+    if (!profile?.id) return;
+
+    const { data: rows } = await client
+      .from('study_sessions')
+      .select('id, quiz_progress, study_pack')
+      .eq('user_id', profile.id)
+      .eq('subject', input.subject)
+      .eq('topic', input.topic)
+      .eq('status', 'tutoring-derived')
+      .limit(1);
+
+    const existing = Array.isArray(rows) && rows.length ? rows[0] : null;
+    const previousProgress = existing?.quiz_progress || {};
+    const previousPack = existing?.study_pack || {};
+    if ((Number(previousProgress.extractionCount) || 0) >= 5) return;
+
+    const prompt = `You analyse ONE tutoring exchange and extract learning signals for the learner.
+Return ONLY compact JSON with this exact shape:
+{"weakSkills": string[], "misconceptions": [{"misconception": string, "correction": string}], "masteredSkills": string[], "confident": boolean}
+Rules:
+- Use short, precise skill names (e.g. "factorising quadratics", "ionic bonding", "explaining PESTLE").
+- At most 4 items per array; [] when a category is not clearly evidenced.
+- confident=true ONLY if the learner clearly reasoned or answered correctly.
+- Never include unrelated skills; never guess when the exchange is not diagnostic.`;
+
+    const user = `LOCKED TOPIC: ${String(input.topic).slice(0, 120)}
+STUDENT MESSAGE: ${String(input.userMessage).slice(0, 1500)}
+TUTOR REPLY: ${String(input.assistantReply).slice(0, 1500)}`;
+
+    let raw: string | null = null;
+    if (DEEPSEEK_API_KEY) {
+      raw = await callLlamaChat({
+        system: prompt,
+        user,
+        jsonMode: true,
+        temperature: 0.1,
+        timeoutMs: 8000,
+        maxTokens: 400,
+        baseUrl: DEEPSEEK_BASE_URL,
+        apiKey: DEEPSEEK_API_KEY,
+        model: DEEPSEEK_MODEL,
+      });
+    }
+    if (!raw && LLAMA_API_KEY) {
+      raw = await callLlamaChat({
+        system: prompt,
+        user,
+        jsonMode: true,
+        temperature: 0.1,
+        timeoutMs: 8000,
+        maxTokens: 400,
+      });
+    }
+    if (!raw) return;
+
+    let cleaned = raw.trim();
+    if (cleaned.startsWith('```')) {
+      cleaned = cleaned.replace(/^```(json)?\s*/i, '').replace(/\s*```$/, '');
+    }
+    const parsed: any = JSON.parse(cleaned);
+    if (!parsed || typeof parsed !== 'object') return;
+
+    const weakSkills = Array.isArray(parsed.weakSkills)
+      ? parsed.weakSkills.map(String).filter(Boolean).slice(0, 4)
+      : [];
+    const rawMisconceptions = Array.isArray(parsed.misconceptions) ? parsed.misconceptions : [];
+    const misconceptions = rawMisconceptions
+      .map((m: any) => ({
+        misconception: String(m?.misconception || '').trim().slice(0, 200),
+        correction: String(m?.correction || '').trim().slice(0, 300),
+      }))
+      .filter((m: any) => m.misconception)
+      .slice(0, 4);
+    const masteredSkills = Array.isArray(parsed.masteredSkills)
+      ? parsed.masteredSkills.map(String).filter(Boolean).slice(0, 4)
+      : [];
+
+    if (weakSkills.length === 0 && misconceptions.length === 0 && masteredSkills.length === 0) {
+      return;
+    }
+
+    const previousGapDiagnosis = previousPack?.gapDiagnosis || {};
+    const previousGaps = Array.isArray(previousGapDiagnosis.knowledgeGapsToClose)
+      ? previousGapDiagnosis.knowledgeGapsToClose
+      : [];
+    const previousMisconceptions = Array.isArray(previousGapDiagnosis.commonMisconceptions)
+      ? previousGapDiagnosis.commonMisconceptions
+      : [];
+    const mergedMisconceptions = [...previousMisconceptions, ...misconceptions]
+      .filter(
+        (m: any, i: number, arr: any[]) =>
+          arr.findIndex(
+            (x: any) =>
+              String(x?.misconception || '').toLowerCase() ===
+              String(m?.misconception || '').toLowerCase(),
+          ) === i,
+      )
+      .slice(0, 8);
+
+    const mergedPack = {
+      ...previousPack,
+      gapDiagnosis: {
+        knowledgeGapsToClose: [...new Set([...previousGaps, ...weakSkills])].slice(0, 12),
+        commonMisconceptions: mergedMisconceptions,
+      },
+    };
+
+    const mergedProgress = {
+      attempted:
+        (Number(previousProgress.attempted) || 0) +
+        weakSkills.length +
+        misconceptions.length +
+        masteredSkills.length,
+      correct: (Number(previousProgress.correct) || 0) + masteredSkills.length,
+      wrongSkills: [
+        ...new Set([
+          ...(Array.isArray(previousProgress.wrongSkills) ? previousProgress.wrongSkills : []),
+          ...weakSkills,
+        ]),
+      ].slice(0, 12),
+      extractionCount: (Number(previousProgress.extractionCount) || 0) + 1,
+      updatedAt: new Date().toISOString(),
+    };
+
+    if (existing?.id) {
+      await client
+        .from('study_sessions')
+        .update({
+          study_pack: mergedPack,
+          quiz_progress: mergedProgress,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', existing.id);
+    } else {
+      await client.from('study_sessions').insert([
+        {
+          user_id: profile.id,
+          subject: input.subject,
+          grade: input.grade,
+          topic: input.topic,
+          title: `Tutoring — ${String(input.topic).slice(0, 80)}`,
+          status: 'tutoring-derived',
+          study_pack: mergedPack,
+          quiz_progress: mergedProgress,
+        },
+      ]);
+    }
+  } catch {
+    // Extraction is opportunistic and must never affect the tutoring reply.
+  }
+}
+
 // Transforms Bot-User tutoring transcripts into structured Spark Notes
 // ---------------------------------------------------------------------
 function generatePersonalizedSparkNotesFallback(params: {
