@@ -22,9 +22,11 @@ import {
 } from 'lucide-react';
 import { ExamPaper } from '../types';
 import { notifySubscriptionRequired } from '../services/subscription';
+import { regionalCopy } from '../services/l10n';
 
 export const ExamAgentTab: React.FC = () => {
   const { student, activeSubject } = useApp();
+  const copy = regionalCopy(student?.country, student?.nation, student?.state);
   const [examType, setExamType] = useState<'June Mid-Year Exam' | 'November Final Exam' | 'Term 1 Control Test'>('November Final Exam');
   const [duration, setDuration] = useState<number>(60);
   const [topicFocus, setTopicFocus] = useState<string>('');
