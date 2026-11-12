@@ -318,10 +318,16 @@ export const TutoringAgentTab: React.FC = () => {
   };
 
   const samplePrompts = [
-    'Help me understand first principles using a real-world South African analogy',
+    student?.country === 'US'
+      ? 'an everyday American context'
+      : student?.country === 'UK'
+        ? 'a UK context'
+        : 'a real-world South African analogy',
     'Test my pre-requisite knowledge on this topic first',
-    'I got stuck on a 5-mark past exam question, guide me step-by-step',
-    `Explain the most common DBE examiner traps in ${activeSubject?.name || 'this subject'}`,
+    'I got stuck on a past-paper question, guide me step-by-step',
+    `Explain the most common ${
+      learnerCountry === 'UK' ? 'exam-board' : learnerCountry === 'US' ? 'state/AP' : 'DBE'
+    } traps in ${activeSubject?.name || 'this subject'}`,
   ];
 
   return (
@@ -735,7 +741,9 @@ export const TutoringAgentTab: React.FC = () => {
                 </span>
               ) : (
                 <span>
-                  🚀 <strong>Advancement protocol engaged:</strong> The AI will push higher-order reasoning, multi-topic synthesis, and tricky DBE examiner pitfalls.
+                  🚀 <strong>Advancement protocol engaged:</strong> The AI will push higher-order reasoning,
+                  multi-topic synthesis and tricky{' '}
+                  {learnerCountry === 'UK' ? 'exam-board' : learnerCountry === 'US' ? 'state / AP' : 'DBE'} pitfalls.
                 </span>
               )}
             </div>
@@ -758,7 +766,7 @@ export const TutoringAgentTab: React.FC = () => {
           </div>
 
           <p className="text-xs text-slate-400 leading-tight">
-            Turn your dialogue into high-yield CAPS revision notes, diagnosed misconceptions, and flashcards.
+            Turn your dialogue into high-yield {learnerCountry === 'ZA' ? 'CAPS' : learnerCountry === 'UK' ? 'revision' : 'review'} notes, diagnosed misconceptions, and flashcards.
           </p>
 
           <button

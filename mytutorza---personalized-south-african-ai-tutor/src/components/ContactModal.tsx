@@ -1,9 +1,11 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { X, MessageSquareHeart, Send, CheckCircle2 } from 'lucide-react';
+import { regionalCopy } from '../services/l10n';
 
 export const ContactModal: React.FC = () => {
   const { isContactModalOpen, setIsContactModalOpen, student, activeSubject } = useApp();
+  const copy = regionalCopy(student?.country, student?.nation, student?.state);
   const [name, setName] = useState(student?.fullName || '');
   const [email, setEmail] = useState(student?.email || '');
   const [subject, setSubject] = useState(activeSubject?.name || 'General Curriculum Suggestion');
@@ -63,9 +65,7 @@ export const ContactModal: React.FC = () => {
           </div>
           <div>
             <h2 className="text-xl font-black text-white">Contact Us & Suggestions</h2>
-            <p className="text-xs text-slate-400">
-              Share feedback, curriculum suggestions, or request CAPS past papers
-            </p>
+            <p className="text-xs text-slate-400">{copy.contactHeading}</p>
           </div>
         </div>
 
@@ -73,9 +73,7 @@ export const ContactModal: React.FC = () => {
           <div className="py-12 text-center space-y-3">
             <CheckCircle2 className="w-12 h-12 text-emerald-400 mx-auto animate-bounce" />
             <h3 className="text-lg font-bold text-white">Message Delivered!</h3>
-            <p className="text-xs text-slate-400">
-              Thank you for helping us enrich MyTutorZA for all South African learners.
-            </p>
+            <p className="text-xs text-slate-400">{copy.contactThanks}</p>
           </div>
         ) : (
           <form onSubmit={handleSubmit} className="space-y-4">

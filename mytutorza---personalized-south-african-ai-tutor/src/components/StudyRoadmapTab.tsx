@@ -26,9 +26,11 @@ import { StudyRoadmap, RoadmapWeek } from '../types';
 import confetti from 'canvas-confetti';
 import { notifySubscriptionRequired } from '../services/subscription';
 import { persistSubjectRoadmap, readSubjectRoadmap } from '../services/studySessions';
+import { regionalCopy } from '../services/l10n';
 
 export const StudyRoadmapTab: React.FC = () => {
   const { student, activeSubject, setActiveTab, displayMode } = useApp();
+  const copy = regionalCopy(student?.country, student?.nation, student?.state);
 
   const isLight = displayMode === 'light';
   const isSilver = displayMode === 'normal';
@@ -282,11 +284,11 @@ export const StudyRoadmapTab: React.FC = () => {
                     : 'bg-slate-900 border-slate-700 text-slate-200'
                 }`}
               >
-                <option value="Term 2 Mid-Year Exam">Term 2 Mid-Year Exam</option>
-                <option value="Term 3 Trial/Preparatory">Term 3 Trial / Preparatory</option>
-                <option value="November Final Exam">November Final Exam (NSC)</option>
-                <option value="Term 1 Control Test">Term 1 Control Test</option>
-                <option value="General CAPS Catch-Up">General CAPS Catch-Up Plan</option>
+                <option value="Term 2 Mid-Year Exam">{copy.milestoneOptions.term2}</option>
+                <option value="Term 3 Trial/Preparatory">{copy.milestoneOptions.term3}</option>
+                <option value="November Final Exam">{copy.milestoneOptions.final}</option>
+                <option value="Term 1 Control Test">{copy.milestoneOptions.controlTest}</option>
+                <option value="General CAPS Catch-Up">{copy.milestoneOptions.catchUp}</option>
               </select>
             </div>
 
@@ -432,7 +434,7 @@ export const StudyRoadmapTab: React.FC = () => {
         }`}>
           <div className="flex items-center gap-2 mb-2 font-bold text-xs uppercase tracking-wider text-sky-600 dark:text-sky-400">
             <Sparkles className="w-4 h-4" />
-            <span>Firmament Master Guidance For This 4-Week Block</span>
+            <span>Firmament Master Guidance For This {planLength}-Week Block</span>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
             {roadmap.keyAdvice.map((advice, i) => (
@@ -451,7 +453,7 @@ export const StudyRoadmapTab: React.FC = () => {
           <RotateCw className="w-10 h-10 animate-spin mx-auto text-sky-500" />
           <h2 className="text-lg font-bold">Synthesizing Firmament Study Roadmap...</h2>
           <p className="text-xs text-slate-400 max-w-md mx-auto">
-            Calibrating South African CAPS curriculum sequences, examiner traps, and your psychological learning rhythm for {activeSubject?.name}.
+            Calibrating your curriculum sequences, examiner traps, and your psychological learning rhythm for {activeSubject?.name}.
           </p>
         </div>
       )}
@@ -656,7 +658,7 @@ export const StudyRoadmapTab: React.FC = () => {
                       </div>
                     </div>
 
-                    {/* DBE Examiner Traps Warning Box */}
+                    {/* Examiner Traps Warning Box */}
                     {week.examinerTraps && week.examinerTraps.length > 0 && (
                       <div className={`p-4 rounded-xl border ${
                         isLight
@@ -667,7 +669,7 @@ export const StudyRoadmapTab: React.FC = () => {
                       }`}>
                         <div className="flex items-center gap-2 mb-2 font-bold text-xs uppercase tracking-wider text-rose-600 dark:text-rose-400">
                           <AlertTriangle className="w-4 h-4 shrink-0" />
-                          <span>DBE Examiner Traps & Misconceptions To Avoid In Week {week.weekNumber}</span>
+                          <span>{copy.examinerTrapsHeading} In Week {week.weekNumber}</span>
                         </div>
                         <ul className="space-y-1 text-xs">
                           {week.examinerTraps.map((trap, idx) => (
@@ -733,7 +735,7 @@ export const StudyRoadmapTab: React.FC = () => {
                               ? 'bg-slate-200 border-slate-300 text-slate-900 hover:bg-slate-300'
                               : 'bg-slate-800 border-slate-700 text-slate-200 hover:bg-slate-700'
                           }`}
-                          title="Practice exam under NSC timing"
+                          title={copy.practiceExamTitle}
                         >
                           <FileCheck2 className="w-3.5 h-3.5 text-indigo-400" />
                           <span>Exam Paper</span>

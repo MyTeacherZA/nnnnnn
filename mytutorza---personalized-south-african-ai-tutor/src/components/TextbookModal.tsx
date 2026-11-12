@@ -7,6 +7,7 @@ export const TextbookModal: React.FC = () => {
     isTextbookModalOpen,
     setIsTextbookModalOpen,
     activeSubject,
+    student,
     updateTextbookForActiveSubject,
   } = useApp();
 
@@ -43,7 +44,9 @@ export const TextbookModal: React.FC = () => {
     const authors = [author1, author2].filter(Boolean);
     updateTextbookForActiveSubject({
       title,
-      authors: authors.length > 0 ? authors : ['Department of Basic Education'],
+      authors: authors.length > 0
+        ? authors
+        : [student?.country === 'UK' ? 'National exam board syllabus' : student?.country === 'US' ? 'State / College Board framework' : 'Department of Basic Education'],
       editor: editor || undefined,
       publisher: publisher || undefined,
       year: year || undefined,

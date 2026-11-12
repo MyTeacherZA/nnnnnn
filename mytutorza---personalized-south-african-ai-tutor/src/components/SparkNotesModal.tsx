@@ -19,6 +19,7 @@ import {
   Share2,
 } from 'lucide-react';
 import { saveSparkNotesToSupabase } from '../services/supabase';
+import { regionalCopy } from '../services/l10n';
 
 interface SparkNotesModalProps {
   notes: PersonalizedSparkNotes | null;
@@ -36,6 +37,7 @@ export const SparkNotesModal: React.FC<SparkNotesModalProps> = ({
   isRegenerating,
 }) => {
   const { student, displayMode } = useApp();
+  const copy = regionalCopy(student?.country, student?.nation, student?.state);
   const [copied, setCopied] = useState(false);
   const [selectedFocus, setSelectedFocus] = useState<string>('comprehensive-spark-notes');
   const [activeFlashcardIndex, setActiveFlashcardIndex] = useState<number>(0);
@@ -66,7 +68,7 @@ ${notes.weakSpotsIdentified.map((w) => `⚠ Misconception: ${w.misconception}\n�
 --- CORE FORMULAS & RULES ---
 ${notes.coreFormulasOrRules.map((f) => `• ${f}`).join('\n')}
 
---- DBE EXAMINER TRAPS ---
+--- ${copy.sparkTraps.toUpperCase()} ---
 ${notes.examinerTraps.map((t) => `• ${t}`).join('\n')}
 
 --- COGNITIVE ADVICE (${student?.firmament.lifePath.profile}) ---
@@ -318,7 +320,7 @@ ${notes.cognitiveAdvice}
             >
               <div className="flex items-center gap-2 mb-3 text-xs font-black uppercase tracking-wider text-sky-400">
                 <Sigma className="w-4 h-4" />
-                <span>📐 Core Formulas & CAPS Rules</span>
+                <span>📐 {copy.sparkFormulas}</span>
               </div>
               <div className="space-y-2">
                 {notes.coreFormulasOrRules.map((f, idx) => (
@@ -342,7 +344,7 @@ ${notes.cognitiveAdvice}
             >
               <div className="flex items-center gap-2 mb-3 text-xs font-black uppercase tracking-wider text-amber-400">
                 <AlertTriangle className="w-4 h-4" />
-                <span>⚠️ DBE Examiner Traps</span>
+                <span>⚠️ {copy.sparkTraps}</span>
               </div>
               <div className="space-y-2">
                 {notes.examinerTraps.map((trap, idx) => (

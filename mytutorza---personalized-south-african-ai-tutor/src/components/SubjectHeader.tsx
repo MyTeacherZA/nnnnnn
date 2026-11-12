@@ -13,6 +13,7 @@ import {
   Compass,
 } from 'lucide-react';
 import { AgentTab } from '../types';
+import { regionalCopy } from '../services/l10n';
 
 export const SubjectHeader: React.FC = () => {
   const {
@@ -27,6 +28,7 @@ export const SubjectHeader: React.FC = () => {
   if (!activeSubject) return null;
 
   const mark = activeSubject.previousTermMark;
+  const copy = regionalCopy(student?.country, student?.nation, student?.state);
   const isRemedial = mark < 60;
   const isLight = displayMode === 'light';
   const isSilver = displayMode === 'normal';
@@ -42,25 +44,25 @@ export const SubjectHeader: React.FC = () => {
       id: 'study',
       label: 'Study Agent',
       icon: <BookOpen className="w-4 h-4" />,
-      desc: 'ATP Syllabus, Spark Notes & Flashcards',
+      desc: copy.studyTabDesc,
     },
     {
       id: 'roadmap',
       label: 'Study Roadmap',
       icon: <Compass className="w-4 h-4" />,
-      desc: '4-Week Firmament Personalized Plan',
+      desc: `1–4 Week · ${copy.roadmapJourney}`,
     },
     {
       id: 'exam',
       label: 'Exam AI Agent',
       icon: <FileCheck2 className="w-4 h-4" />,
-      desc: 'Authentic NSC June & Nov Papers (90% Accuracy)',
+      desc: copy.examTabDesc,
     },
     {
       id: 'formulas',
       label: 'Formula Sheets',
       icon: <Sigma className="w-4 h-4" />,
-      desc: 'Grades 7–12 Pure Maths & Maths Lit',
+      desc: copy.formulaTabDesc,
     },
   ];
 

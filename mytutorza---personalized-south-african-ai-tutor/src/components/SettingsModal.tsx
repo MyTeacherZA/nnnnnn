@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
-import { THEME_ACCENTS, DBE_ALL_SUBJECTS, OFFICIAL_LANGUAGES, GRADES } from '../data/curriculumData';
+import { THEME_ACCENTS, DBE_ALL_SUBJECTS, OFFICIAL_LANGUAGES, GRADES, US_GRADES, UK_GRADES, getSubjectsForGrade } from '../data/curriculumData';
+import { regionalCopy } from '../services/l10n';
 import { ThemeAccent, DisplayMode, OfficialLanguage } from '../types';
 import {
   X,
@@ -34,6 +35,7 @@ export const SettingsModal: React.FC = () => {
     displayMode,
     setDisplayMode,
   } = useApp();
+  const copy = regionalCopy(student?.country, student?.nation, student?.state);
 
   const [activeSettingsTab, setActiveSettingsTab] = useState<'subjects' | 'theme' | 'profile'>('subjects');
   const [newSubjectName, setNewSubjectName] = useState('');
@@ -53,7 +55,12 @@ export const SettingsModal: React.FC = () => {
 
   const handleAddSubject = () => {
     if (!newSubjectName) return;
-    const matchedCategory = DBE_ALL_SUBJECTS.find((s) => s.name === newSubjectName)?.category || 'Elective';
+    const matchedCategory =
+      DBE_ALL_SUBJECTS.find((s) => s.name === newSubjectName)?.category ||
+      getSubjectsForGrade((student?.country as any) || 'US', student?.grade || 'Grade 12').find(
+        (s) => s.name === newSubjectName,
+      )?.category ||
+      'Elective';
     addSubjectSlot({
       name: newSubjectName,
       category: matchedCategory as any,
@@ -128,7 +135,7 @@ export const SettingsModal: React.FC = () => {
         {activeSettingsTab === 'subjects' && (
           <div className="flex-1 overflow-y-auto space-y-4 pr-1">
             <div className="bg-slate-900/80 p-3.5 rounded-xl border border-slate-800 text-xs text-slate-300">
-              💡 <strong>Department of Basic Education CAPS Rule:</strong> Grades 8 to 12 have up to 9 subject slots. Entering your previous term average (e.g. 50% in Term 2) allows the Firmament AI to diagnose gaps and calibrate whether to provide <strong>Remedial Scaffolding</strong> (fundamentals first) or <strong>Advancement Scaffolding</strong> (challenge problems).
+              💡 <strong>{copy.settingsRuleHeading}</strong> Entering your previous term average allows the Firmament AI to diagnose gaps and calibrate whether to provide <strong>Remedial Scaffolding</strong> (fundamentals first) or <strong>Advancement Scaffolding</strong> (challenge problems).
             </div>
 
             {/* List of current subjects */}
@@ -233,12 +240,15 @@ export const SettingsModal: React.FC = () => {
                       onChange={(e) => setNewSubjectName(e.target.value)}
                       className="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-xs text-white"
                     >
-                      <option value="">Select Official DBE Subject...</option>
-                      {DBE_ALL_SUBJECTS.map((s) => (
-                        <option key={s.name} value={s.name}>
-                          {s.name} ({s.category})
-                        </option>
-                      ))}
+                      <option value="">{copy.settingsSubjectPlaceholder}</option>
+                       {getSubjectsForGrade(
+                         (student?.country as any) || 'US',
+                         student?.grade || 'Grade 12',
+                       ).map((s) => (
+                         <option key={s.name} value={s.name}>
+                           {s.name} ({s.category})
+                         </option>
+                       ))}
                     </select>
                   </div>
                   <div>
@@ -414,7 +424,7 @@ export const SettingsModal: React.FC = () => {
                   onChange={(e) => updateStudentProfile({ grade: e.target.value })}
                   className="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-xs text-white font-bold"
                 >
-                  {GRADES.map((g) => (
+                  {(student?.country === 'UK' ? UK_GRADES : student?.country === 'US' ? US_GRADES : GRADES).map((g) => (
                     <option key={g} value={g}>
                       {g}
                     </option>

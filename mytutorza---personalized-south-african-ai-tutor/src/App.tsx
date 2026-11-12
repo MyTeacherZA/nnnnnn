@@ -6,6 +6,7 @@
 import React from 'react';
 import { GraduationCap } from 'lucide-react';
 import { AppProvider, useApp } from './context/AppContext';
+import { regionalCopy } from './services/l10n';
 import { Navbar } from './components/Navbar';
 import { SubjectHeader } from './components/SubjectHeader';
 import { TutoringAgentTab } from './components/TutoringAgentTab';
@@ -31,6 +32,7 @@ const AppContent: React.FC = () => {
     setIsSubscriptionOpen,
     refreshSubscription,
   } = useApp();
+  const copy = regionalCopy(student?.country, student?.nation, student?.state);
 
   // PayPal appends ?paypal=success&subscription_id=... on return. Confirm the
   // subscription server-side so access is granted even if a webhook is delayed.
@@ -197,11 +199,9 @@ const AppContent: React.FC = () => {
       >
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
           <p>
-            <strong>MyTutorZA</strong> • Calibrated for South African Department of Basic Education (CAPS) Grades 4–12
+            <strong>MyTutorZA</strong> • {copy.footerLine1}
           </p>
-          <p className="text-[11px]">
-            Powered by The Firmament Psychological Engine • 11 Official South African Languages Supported
-          </p>
+          <p className="text-[11px]">{copy.footerLine2}</p>
         </div>
       </footer>
 

@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import { MATHS_FORMULAE } from '../data/curriculumData';
+import { regionalCopy } from '../services/l10n';
 import {
   Sigma,
   Search,
@@ -19,6 +20,9 @@ import {
 
 export const FormulaSheetsTab: React.FC = () => {
   const { student } = useApp();
+  const copy = regionalCopy(student?.country, student?.nation, student?.state);
+  const gradeRange =
+    student?.country === 'UK' ? 'Year 7 – Year 13' : student?.country === 'US' ? 'K – Grade 12' : 'Grades 7 – 12';
   const [search, setSearch] = useState('');
   const [selectedStream, setSelectedStream] = useState<'All' | 'Pure Mathematics' | 'Mathematical Literacy'>('All');
   const [selectedPaper, setSelectedPaper] = useState<'All' | 'Paper 1' | 'Paper 2'>('All');
@@ -42,7 +46,15 @@ export const FormulaSheetsTab: React.FC = () => {
   };
 
   const filteredFormulae = useMemo(() => {
+    const zaOnly = /(NSC|SARS|VAT|CAPS|DBE|South African|Revenue|Bounded|South Africa)/i;
     return MATHS_FORMULAE.filter((item) => {
+      // Non-ZA learners: hide formula candidates that are exam-board
+      // specific to South Africa (invisible even in search results).
+      if (student?.country && student.country !== 'ZA') {
+        const hay = `${item.name} ${item.description} ${(item as any).whenToUse ?? ''}`;
+        if (zaOnly.test(hay)) return false;
+      }
+
       // Stream filter
       if (selectedStream !== 'All' && item.stream !== 'Both' && item.stream !== selectedStream) {
         return false;
@@ -68,7 +80,7 @@ export const FormulaSheetsTab: React.FC = () => {
       }
       return true;
     });
-  }, [search, selectedStream, selectedPaper, selectedGrade]);
+  }, [search, selectedStream, selectedPaper, selectedGrade, student?.country]);
 
   const handleCopy = (id: string, formulaText: string) => {
     navigator.clipboard.writeText(formulaText);
@@ -91,19 +103,17 @@ export const FormulaSheetsTab: React.FC = () => {
         <div>
           <div className="flex items-center gap-2 mb-1">
             <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-slate-800 text-slate-300 border border-slate-700">
-              Department of Basic Education Standard
+              {copy.paperBannerLine1}
             </span>
             <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-              Grades 7 - 12
+              {gradeRange}
             </span>
           </div>
           <h2 className="text-xl sm:text-2xl font-black text-white flex items-center gap-2">
             <Sigma className="w-6 h-6 text-indigo-400" />
-            NSC Mathematics & Mathematical Literacy Formula Vault
+            {copy.formulaSheetTitle}
           </h2>
-          <p className="text-xs text-slate-400 mt-1 max-w-2xl">
-            Complete South African DBE formula sheets covering Pure Mathematics (P1 & P2) and Mathematical Literacy (Finance, VAT, Measurement & Maps).
-          </p>
+          <p className="text-xs text-slate-400 mt-1 max-w-2xl">{copy.formulaSheetDesc}</p>
         </div>
 
         <button
@@ -245,7 +255,7 @@ export const FormulaSheetsTab: React.FC = () => {
               {item.example && (
                 <div className="mt-3 p-3 rounded-xl bg-slate-900/80 border border-slate-800 text-xs">
                   <span className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-400 block mb-0.5">
-                    NSC Exam Application Example:
+                    {copy.formulaSheetNote}
                   </span>
                   <p className="text-slate-300 font-mono text-[11px] leading-relaxed">{item.example}</p>
                 </div>

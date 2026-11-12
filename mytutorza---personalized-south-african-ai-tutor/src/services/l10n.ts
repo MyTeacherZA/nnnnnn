@@ -156,6 +156,8 @@ const SCOTLAND: RegionalCopy = {
   ...ENGLAND,
   paperBannerLine1: 'UNITED KINGDOM · SCOTLAND',
   paperBannerLine2: 'SQA NATIONAL 5 / HIGHER EXAMINATION',
+  footerLine1: 'Aligned to Scotland’s Curriculum for Excellence (S1–S6) — National 5 · Higher · Advanced Higher',
+  footerLine2: 'Powered by The Firmament Psychological Engine • SQA · Curriculum for Excellence',
   examSimulatorSubtitle:
     'Strictly mirrors Curriculum for Excellence (CfE) and SQA National 5 / Higher unit structures with official marking instructions.',
   settingsRuleHeading: 'Curriculum for Excellence Rule:',

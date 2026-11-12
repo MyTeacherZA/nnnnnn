@@ -125,10 +125,10 @@ export const ExamAgentTab: React.FC = () => {
           <div>
             <h2 className="text-xl font-black text-white flex items-center gap-2">
               <FileCheck2 className="w-5 h-5 text-sky-400" />
-              NSC DBE Exam Simulator (90% Real Paper Accuracy)
+              {copy.examSimulatorTitle}
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">
-              Strictly mirrors South African Department of Basic Education Section A, B & C paper geometry.
+              {copy.examSimulatorSubtitle}
             </p>
           </div>
 
@@ -215,7 +215,7 @@ export const ExamAgentTab: React.FC = () => {
               ) : (
                 <Sparkles className="w-4 h-4 text-white" />
               )}
-              <span>{loading ? 'Synthesizing...' : 'Generate DBE Paper'}</span>
+              <span>{loading ? 'Synthesizing...' : copy.generatePaperLabel}</span>
             </button>
           </div>
         </div>
@@ -250,11 +250,11 @@ export const ExamAgentTab: React.FC = () => {
       {/* Exam Paper View */}
       {examPaper && (
         <div className="metallic-card rounded-2xl border border-slate-700/60 shadow-2xl overflow-hidden">
-          {/* Official DBE Exam Header Banner */}
+          {/* Regional exam banner */}
           <div className="p-6 sm:p-8 bg-slate-900/95 border-b border-slate-800 text-center relative">
             <div className="flex justify-between items-center mb-4">
               <span className="text-[11px] font-black uppercase tracking-widest text-slate-400 border border-slate-700 px-3 py-1 rounded-full bg-slate-950">
-                REPUBLIC OF SOUTH AFRICA
+                {copy.paperBannerLine1}
               </span>
               <div className="flex items-center gap-2">
                 <button
@@ -266,7 +266,7 @@ export const ExamAgentTab: React.FC = () => {
                   }`}
                 >
                   {showMemo ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  <span>{showMemo ? 'Hide Memorandum' : 'Show Official Memorandum'}</span>
+                  <span>{showMemo ? copy.hideMemorandumLabel : copy.showMemorandumLabel}</span>
                 </button>
 
                 <button
@@ -280,7 +280,7 @@ export const ExamAgentTab: React.FC = () => {
             </div>
 
             <h1 className="text-xl sm:text-2xl font-black text-white uppercase tracking-tight">
-              NATIONAL SENIOR CERTIFICATE EXAMINATION
+              {copy.paperBannerLine2}
             </h1>
             <h2 className="text-lg font-bold accent-gradient-text mt-1">
               {examPaper.subject} - {examPaper.grade}
@@ -398,7 +398,7 @@ export const ExamAgentTab: React.FC = () => {
                           <div className="p-4 rounded-xl bg-emerald-950/40 border border-emerald-500/30 text-xs">
                             <div className="flex items-center gap-2 text-emerald-400 font-bold mb-1 uppercase tracking-wider text-[10px]">
                               <CheckCircle2 className="w-3.5 h-3.5" />
-                              Official Memorandum & Mark Allocation
+                              {copy.memorandumHeading}
                             </div>
                             <p className="text-emerald-100 font-mono leading-relaxed whitespace-pre-wrap">
                               {q.solution}
