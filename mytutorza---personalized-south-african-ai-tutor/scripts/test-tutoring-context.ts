@@ -18,7 +18,7 @@ import {
 } from '../serverFirmamentRules';
 import { describeCurriculumUsUk } from '../serverUsUkCurriculum';
 import { searchCapsVault } from '../serverPdfIngestion';
-import { selectSourceChunks, selectSourceChunksWithScore, isPossiblyOffTopic } from '../serverTutoringContext';
+import { selectSourceChunks, selectSourceChunksWithScore, isPossiblyOffTopic, detectStruggleSignal } from '../serverTutoringContext';
 import { detectNeedsWeb } from '../serverWebSearch';
 
 let failures = 0;
@@ -270,6 +270,10 @@ check('Router: unrelated query yields zero coverage', noCoverage.bestScore === 0
 
 check('Router: freshness detected', detectNeedsWeb('What is the latest climate report for 2026?') === true);
 check('Router: timeless question not freshness', detectNeedsWeb('Solve x^2 - 5x + 6 = 0') === false);
+check('Extract: struggle signal detected', detectStruggleSignal("I don't understand why the quadratic has two roots here") === true);
+check('Extract: task/solve phrasing detected', detectStruggleSignal('Solve x^2 - 5x + 6 = 0 and explain each step') === true);
+check('Extract: greeting detected', detectStruggleSignal('hello') === false);
+check('Extract: pure appreciation skipped', detectStruggleSignal('thanks so much that helps a lot') === false);
 
 // ---- CAPS vault retrieval ---------------------------------------------------
 const vaultMatches = searchCapsVault('Mathematics Grade 12 Algebra', 3, {
