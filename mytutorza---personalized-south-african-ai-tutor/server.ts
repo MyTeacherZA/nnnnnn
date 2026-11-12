@@ -1147,6 +1147,10 @@ TUTOR REPLY: ${String(input.assistantReply).slice(0, 1500)}`;
           updated_at: new Date().toISOString(),
         })
         .eq('id', existing.id);
+      console.log(
+        `[learning-signals] updated derived row: subject=${input.subject} topic="${input.topic}" ` +
+          `+weak=${weakSkills.length} +miss=${misconceptions.length} +mastered=${masteredSkills.length}`,
+      );
     } else {
       await client.from('study_sessions').insert([
         {
@@ -1160,6 +1164,10 @@ TUTOR REPLY: ${String(input.assistantReply).slice(0, 1500)}`;
           quiz_progress: mergedProgress,
         },
       ]);
+      console.log(
+        `[learning-signals] created derived row: subject=${input.subject} topic="${input.topic}" ` +
+          `+weak=${weakSkills.length} +miss=${misconceptions.length} +mastered=${masteredSkills.length}`,
+      );
     }
   } catch {
     // Extraction is opportunistic and must never affect the tutoring reply.
