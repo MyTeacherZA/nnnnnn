@@ -34,6 +34,33 @@ const AppContent: React.FC = () => {
   } = useApp();
   const copy = regionalCopy(student?.country, student?.nation, student?.state);
 
+  // Stale-app watchdog: Poll /api/version every minute; if a newer build id
+  // shows up, surface a sticky "reload to apply" banner (signed-in users
+  // always see the latest app on reload).
+  const [updateReady, setUpdateReady] = React.useState(false);
+  React.useEffect(() => {
+    let initialBuildId: string | null = null;
+    const check = async () => {
+      try {
+        const r = await fetch('/api/version', { cache: 'no-store' });
+        if (!r.ok) return;
+        const j = await r.json();
+        const id = j?.buildId;
+        if (!id || id === 'dev') return;
+        if (initialBuildId === null) {
+          initialBuildId = id;
+          return;
+        }
+        if (id !== initialBuildId) setUpdateReady(true);
+      } catch {
+        // Swallow poll failures — the next tick tries again.
+      }
+    };
+    void check();
+    const timer = window.setInterval(() => void check(), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   // PayPal appends ?paypal=success&subscription_id=... on return. Confirm the
   // subscription server-side so access is granted even if a webhook is delayed.
   React.useEffect(() => {
@@ -153,6 +180,19 @@ const AppContent: React.FC = () => {
           : 'bg-slate-950 text-slate-100'
       }`}
     >
+      {/* Fresh-version banner — hidden in the initial onboarding gate */}
+      {updateReady && (
+        <div className="sticky top-0 z-50 w-full bg-sky-600 text-white text-center text-xs font-bold px-4 py-2 flex items-center justify-center gap-2 shadow-lg">
+          <span>A new version of MyTutorZA is ready.</span>
+          <button
+            onClick={() => window.location.reload()}
+            className="underline underline-offset-2 font-extrabold hover:text-sky-100"
+          >
+            Reload to apply
+          </button>
+        </div>
+      )}
+
       {/* Top Navigation */}
       <Navbar />
 

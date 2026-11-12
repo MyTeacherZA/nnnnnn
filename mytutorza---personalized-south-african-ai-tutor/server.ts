@@ -32,6 +32,27 @@ import {
 } from './serverCapsCatalog';
 
 dotenv.config();
+// In ESM, __dirname must be established before any code that depends on it.
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Build marker: used by /api/version + /api/health so clients can show a
+// "new version ready — reload" banner. Precedence: env commit sha → mtime of
+// the built index.html → 'dev'.
+function loadBuildId(): string {
+  const envId = process.env.RENDER_GIT_COMMIT || process.env.SOURCE_VERSION || process.env.GIT_SHA || '';
+  if (envId) return envId;
+  try {
+    const indexFile = path.join(__dirname, 'dist', 'index.html');
+    if (fs.existsSync(indexFile)) {
+      return String(Math.floor(fs.statSync(indexFile).mtimeMs));
+    }
+  } catch {
+    // ignore
+  }
+  return 'dev';
+}
+const BUILD_ID = loadBuildId();
 
 // Llama 3.3 is the brain for Tutoring, Study & Exam agents.
 const LLAMA_API_KEY =
@@ -51,10 +72,6 @@ const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-chat';
 // Upstash Redis REST
 const UPSTASH_URL = (process.env.UPSTASH_REDIS_REST_URL || '').replace(/\/+$/, '');
 const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || '';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
 const app = express();
 const port = parseInt(process.env.PORT || '8080', 10);
 
@@ -276,6 +293,7 @@ app.get('/api/health', (req: Request, res: Response) => {
     curriculumDb: 'US state standards / AP · UK nation curricula / ZA CAPS vault (fallback)',
     webSearchConfigured: webSearchConfigured(),
     deepseekConfigured: !!DEEPSEEK_API_KEY,
+    buildId: BUILD_ID,
   });
 });
 
@@ -4696,11 +4714,34 @@ app.post('/api/termtests/debug', async (req: Request, res: Response) => {
 
 // ---------------------------------------------------------------------
 // STATIC ASSETS (Vite build output) + SPA FALLBACK
+// Hash-named assets are safe to cache forever; everything else is fresh.
 // ---------------------------------------------------------------------
 const distDir = path.join(__dirname, 'dist');
+
+const isHashedAsset = (filePath: string): boolean => {
+  const base = path.basename(filePath);
+  return /^.+-[A-Za-z0-9_-]{8,}\.[A-Za-z0-9]+$/.test(base);
+};
+
 if (fs.existsSync(distDir)) {
-  app.use(express.static(distDir, { index: false, maxAge: '1h' }));
+  app.use(
+    express.static(distDir, {
+      index: false,
+      maxAge: 0, // browser must revalidate; hashed assets get immutable below
+      setHeaders: (res, filePath) => {
+        if (isHashedAsset(filePath)) {
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        } else {
+          res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+        }
+      },
+    }),
+  );
 }
+
+app.get('/api/version', (_req: Request, res: Response) => {
+  res.json({ buildId: BUILD_ID });
+});
 
 app.get('*', (req: Request, res: Response) => {
   // Never swallow API routes into the SPA shell.
@@ -4709,6 +4750,10 @@ app.get('*', (req: Request, res: Response) => {
   }
   const indexFile = path.join(distDir, 'index.html');
   if (fs.existsSync(indexFile)) {
+    // The HTML shell is never cached: every page load gets the fresh bundle.
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
     return res.sendFile(indexFile);
   }
   return res

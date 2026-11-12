@@ -6,6 +6,7 @@ COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 
 # Copy the rest of the app and build the Vite client into dist/.
+ENV NODE_OPTIONS=--max-old-space-size=8192
 COPY . .
 RUN bun run build
 
