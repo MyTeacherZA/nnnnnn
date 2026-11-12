@@ -377,6 +377,8 @@ export interface StudyPromptParams {
   roadmap?: any;
   /** Cross-agent quiz/session history summary. */
   learningHistory?: any;
+  /** Bounded live web snippets (router decides); rendered only when present. */
+  webSnippets?: { title: string; url: string; snippet: string }[] | null;
 }
 
 /**
@@ -515,6 +517,7 @@ export function buildStudySystemPrompt(params: StudyPromptParams): string {
     nation,
     roadmap,
     learningHistory,
+    webSnippets,
   } = params;
 
   const profile = firmamentProfile || {};
@@ -612,7 +615,23 @@ Term: ${term}
 Language of delivery: ${language}
 
 ${curriculumDirective}
-
+${
+  Array.isArray(webSnippets) && webSnippets.length
+    ? `
+-------------------------------
+CURRENT WEB SNAPSHOTS (live, fetched this minute — the ONLY permitted internet references)
+-------------------------------
+${webSnippets
+  .map(
+    (s, i) =>
+      `${i + 1}. ${String(s.title || 'Untitled').slice(0, 150)} — ${String(s.snippet || '').slice(0, 400)} (source: ${String(s.url || '').slice(0, 120)})`,
+  )
+  .join('\n')}
+- Use these ONLY to keep the quiz and examples current (latest spec clauses, mark schemes, dated real-world data).
+- If they conflict with the official curriculum content above, the curriculum wins.
+- Every quiz question traceable to this framework; use the snippets as freshness, not as the source of truth.`
+    : ''
+}
 You must stay inside the official ${curriculum.frameworkLabel} scope for ${grade} ${subject}. Do not invent syllabus content. Every definition, formula, example and quiz item must be traceable to this framework.
 
 --------------------------------------------------------------------------------
@@ -645,10 +664,12 @@ STUDY DESIGN RULES:
 - Respect tempo: fast trial-and-error learners get quick retrieval cycles; deliberate learners get verification checkpoints.
 - For low self-efficacy / high ego threat / defensive presentation / helplessness risk: use private, low-stakes retrieval, guaranteed early wins, and attribute success to strategy and effort.
 - Never shame the learner for a gap. Normalise the gap and show the exact repair.
-- Quiz items must test recall and application, not trivia. Include 5–8 items with 4 options each.
+- Quiz items must test recall and application, not trivia. Include 10–15 items with 4 options each (never fewer than 10; never more than 15).
+- When live web snippets are provided, make at least 1–2 quiz items explicitly reference current data or recent changes (dated, named source).
 - Correct answers and explanations are for the learner after they attempt the quiz; include them in the JSON.
-- MEMORY TESTS: include up to 10–15 memory tests. For type "match", provide prompt/answer pairs the learner must recall and match. For type "spot", provide the correct answer plus distractor options the learner must identify. Always include an explanation.
-- ACTIVITY / PRACTICE TESTS: include hands-on items mixing "activity" (guided practice) and "practice" (exam-style retrieval) kinds; keep each concise and actionable.
+- MEMORY TESTS: include up to 12 memory tests: at least 5 type "match" (prompt/answer pairs the learner must recall and match) AND at least 5 type "spot" (correct answer plus distractors the learner must identify). Always include an explanation.
+- ACTIVITY / PRACTICE TESTS: include ~10 activities (guided practice, hands-on) AND ~10 practice items (exam-style retrieval), each concise and actionable; label every item "activity" or "practice".
+- FLASHCARDS: include 15–20 flashcards for high-yield definitions, formulas and common traps.
 - CONTENT LENGTH (NON-NEGOTIABLE — DO NOT BOTTLE): You are NEVER forced to fit all curriculum content into a single response of roughly 1,500–2,000 words. You are ALLOWED to deliver the response in up to 3 installments. Each installment must not exceed 2,000 words (≈2,600 tokens). The maximum number of installments delivered at one time is 3. Split the response into installments as needed to remain thorough; never truncate content just to satisfy a single-installment limit.
 
 RETURN VALID JSON ONLY, matching exactly this schema:

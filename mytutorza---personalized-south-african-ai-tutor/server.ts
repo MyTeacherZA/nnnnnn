@@ -168,9 +168,9 @@ async function callLlamaChat(params: {
   const payload: any = {
     model: providerModel,
     messages: [
-      ...(system ? [{ role: 'system', content: system }] : []),
-      ...messages,
-      ...(user ? [{ role: 'user', content: user }] : []),
+      ...(params.system ? [{ role: 'system', content: params.system }] : []),
+      ...(params.messages || []),
+      ...(params.user ? [{ role: 'user', content: params.user }] : []),
     ],
     temperature: providerTemperature,
     max_tokens: providerMaxTokens,
@@ -275,6 +275,7 @@ app.get('/api/health', (req: Request, res: Response) => {
     upstashConfigured: !!(UPSTASH_URL && UPSTASH_TOKEN),
     curriculumDb: 'US state standards / AP · UK nation curricula / ZA CAPS vault (fallback)',
     webSearchConfigured: webSearchConfigured(),
+    deepseekConfigured: !!DEEPSEEK_API_KEY,
   });
 });
 
@@ -1375,7 +1376,7 @@ app.post('/api/tutoring/analyze-spark-notes', async (req: Request, res: Response
 
     let generatedNotes: any = null;
 
-    if (LLAMA_API_KEY) {
+    if (LLAMA_API_KEY || DEEPSEEK_API_KEY) {
       const basePrompt = buildFirmamentSystemPrompt({
         firmamentProfile,
         subject: sub,
@@ -1429,7 +1430,11 @@ Do not include markdown code fences if responseMimeType is json.
           user: `Analyze the following tutoring conversation and generate Personalized Spark Notes:\n\n${transcript}`,
           jsonMode: true,
           temperature: 0.4,
-          timeoutMs: 9500,
+          timeoutMs: DEEPSEEK_API_KEY ? 45000 : 9500,
+          maxTokens: 2500,
+          ...(DEEPSEEK_API_KEY
+            ? { baseUrl: DEEPSEEK_BASE_URL, apiKey: DEEPSEEK_API_KEY, model: DEEPSEEK_MODEL }
+            : {}),
         });
         let text = (textRaw || '').trim();
         if (text.startsWith('```json')) {
@@ -2043,6 +2048,7 @@ app.post('/api/study/generate', async (req: Request, res: Response) => {
       sessionId,
       learningHistory: suppliedHistory,
       title,
+      includeWeb,
     } = req.body || {};
 
     const email = String(req.body?.email || '').trim().toLowerCase();
@@ -2054,6 +2060,27 @@ app.post('/api/study/generate', async (req: Request, res: Response) => {
 
     const curriculum = describeCurriculum(country, state, nation);
     const learningHistory = suppliedHistory || (await getLearningHistory(email, subject));
+
+    // Bounded web router for the study pack: explicit toggle, or a
+    // time-sensitive topic. Only when the model would benefit from fresh data.
+    const wantsWeb = Boolean(includeWeb) || detectNeedsWeb(cleanTopic);
+    let webSnippets: { title: string; url: string; snippet: string }[] | null = null;
+    if (wantsWeb) {
+      const webCacheKey = `web:${hashForCache(`${cleanTopic}||study`)}`;
+      const cachedWeb = await getCache(webCacheKey);
+      if (Array.isArray(cachedWeb) && cachedWeb.length > 0) {
+        webSnippets = cachedWeb;
+      } else {
+        try {
+          webSnippets = await searchWeb(`${cleanTopic} ${cleanTitle}`.slice(0, 300), 3);
+          if (webSnippets?.length) {
+            await setCache(webCacheKey, webSnippets, 60 * 60 * 12); // 12h TTL
+          }
+        } catch {
+          webSnippets = null;
+        }
+      }
+    }
 
     // The pack is personalised, so the cache key must include the cognitive
     // vector and the learner's current quiz accuracy.
@@ -2068,7 +2095,7 @@ app.post('/api/study/generate', async (req: Request, res: Response) => {
     const cacheKey =
       `study:${country || 'ZA'}:${state || ''}:${grade}:${subject}:${cleanTopic}:${term}:${
         language || 'English'
-      }:${profileSignature}`
+      }:${includeWeb ? 'web' : ''}:${profileSignature}`
         .toLowerCase()
         .replace(/\s+/g, '_');
 
@@ -2114,17 +2141,21 @@ app.post('/api/study/generate', async (req: Request, res: Response) => {
       nation,
       roadmap,
       learningHistory,
+      webSnippets,
     });
 
-    if (LLAMA_API_KEY) {
+    if (LLAMA_API_KEY || DEEPSEEK_API_KEY) {
       try {
         const textRaw = await callLlamaChat({
           system: systemInstruction,
           user: `Create today's STUDY SESSION pack for ${grade} ${subject} on the topic "${cleanTopic}". Diagnose gaps first, teach directly in the learner's cognitive delivery style, then build recall and a short quiz. JSON only.`,
           jsonMode: true,
           temperature: 0.35,
-          timeoutMs: 60000,
+          timeoutMs: DEEPSEEK_API_KEY ? 90000 : 60000,
           maxTokens: 8000,
+          ...(DEEPSEEK_API_KEY
+            ? { baseUrl: DEEPSEEK_BASE_URL, apiKey: DEEPSEEK_API_KEY, model: DEEPSEEK_MODEL }
+            : {}),
         });
         let text = (textRaw || '').trim();
         if (text.startsWith('```json')) {
@@ -2135,6 +2166,10 @@ app.post('/api/study/generate', async (req: Request, res: Response) => {
 
         const parsed = JSON.parse(text);
         if (parsed && Array.isArray(parsed.sparkNotes) && parsed.sparkNotes.length > 0) {
+          if (webSnippets && webSnippets.length) {
+            parsed.webUsed = true;
+            parsed.webCount = webSnippets.length;
+          }
           await setCache(cacheKey, parsed, 3600);
           const savedSessionId = await saveStudySession({
             email,
@@ -2194,6 +2229,14 @@ app.post('/api/study/generate', async (req: Request, res: Response) => {
           front: 'What is the most common mistake in this topic?',
           back: 'Skipping the prerequisite check or the verification step.',
         },
+        {
+          front: 'How should you study wrong answers from a quiz?',
+          back: 'Review the explanation, rewrite your reasoning, then re-attempt after 24 hours.',
+        },
+        {
+          front: 'What makes a retrieval attempt successful rather than lucky?',
+          back: 'You can explain why the answer is correct, not only pick it.',
+        },
       ],
       examinerTips: [
         'Show method steps even when the final answer is uncertain.',
@@ -2235,6 +2278,32 @@ app.post('/api/study/generate', async (req: Request, res: Response) => {
           explanation: 'The core idea is the governing definition or rule, not a memorised answer.',
           skill: `${cleanTopic} core concept`,
         },
+        {
+          id: 'q2',
+          question: `Before attempting ${cleanTopic}, what should you verify first?`,
+          options: [
+            'That you understand the prerequisite rules and definitions',
+            'That you remember the final answer',
+            'That the examiner will be lenient',
+            'That the question is short',
+          ],
+          correctIndex: 0,
+          explanation: 'Basic mastery of the prerequisites determines whether the rest follows.',
+          skill: `${cleanTopic} prerequisites`,
+        },
+        {
+          id: 'q3',
+          question: `What is the strongest signal that you have actually mastered ${cleanTopic}?`,
+          options: [
+            'You can explain the reasoning aloud and re-derive the rule',
+            'You memorised the example problem',
+            'You got lucky on one multiple-choice item',
+            'You like the topic',
+          ],
+          correctIndex: 0,
+          explanation: 'Mastery is visible when you can teach the reasoning, not just repeat steps.',
+          skill: `${cleanTopic} reasoning`,
+        },
       ],
       nextSession: 'Re-test the missed items, then advance to the next roadmap checkpoint.',
     };
@@ -2258,7 +2327,7 @@ app.post('/api/study/generate', async (req: Request, res: Response) => {
       },
       studyPack: fallbackData,
     });
-    await setCache(cacheKey, fallbackData, 3600);
+    // Intentionally NOT cached: the fallback pack is deliberately minimal.
     return res.json({
       ...fallbackData,
       title: cleanTitle,
@@ -2919,7 +2988,7 @@ RETURN STRICT JSON matching this schema:
 
     const roadmapSystemInstruction = `${systemInstruction}\n\n${buildLearningHistoryBlock(learningHistory)}`;
 
-    if (LLAMA_API_KEY) {
+    if (LLAMA_API_KEY || DEEPSEEK_API_KEY) {
       try {
         const textRaw = await callLlamaChat({
           system: roadmapSystemInstruction,
@@ -2928,8 +2997,11 @@ RETURN STRICT JSON matching this schema:
           }. Focus: ${focusTopic || 'Full Curriculum'}.`,
           jsonMode: true,
           temperature: 0.4,
-          timeoutMs: 9000,
+          timeoutMs: DEEPSEEK_API_KEY ? 90000 : 9000,
           maxTokens: 3000,
+          ...(DEEPSEEK_API_KEY
+            ? { baseUrl: DEEPSEEK_BASE_URL, apiKey: DEEPSEEK_API_KEY, model: DEEPSEEK_MODEL }
+            : {}),
         });
         let text = (textRaw || '').trim();
         if (text.startsWith('```json')) {
@@ -2962,7 +3034,7 @@ RETURN STRICT JSON matching this schema:
       state,
       nation,
     );
-    await setCache(cacheKey, fallback, 7200);
+    // Intentionally NOT cached: the fallback roadmap is scaffolding, not content.
     return res.json({ ...fallback, source: 'firmament-engine-local' });
   } catch (err: any) {
     console.error('Roadmap endpoint error:', err);
@@ -2987,7 +3059,7 @@ RETURN STRICT JSON matching this schema:
 app.post('/api/exam/generate', async (req: Request, res: Response) => {
   try {
     if (await rejectWithoutAgentAccess(req, res)) return;
-    const { subject, grade, examType, durationMinutes, topic, term, state, country, nation } = req.body;
+    const { subject, grade, examType, durationMinutes, topic, term, state, country, nation, includeWeb } = req.body;
     const email = String(req.body?.email || '').trim().toLowerCase();
     const dur = Number(durationMinutes) || 60;
     const countryCode = String(country || 'US').toUpperCase();
@@ -2998,8 +3070,42 @@ app.post('/api/exam/generate', async (req: Request, res: Response) => {
       learningHistory?.overall?.correct || 0
     }`;
 
+    // Bounded web router for exam generation: explicit toggle or freshness signal.
+    const wantsWeb = Boolean(includeWeb) || detectNeedsWeb(topic || '');
+    let webSnippets: { title: string; url: string; snippet: string }[] | null = null;
+    if (wantsWeb) {
+      const webCacheKey = `web:${hashForCache(`${topic || 'general'}||exam`)}`;
+      const cachedWeb = await getCache(webCacheKey);
+      if (Array.isArray(cachedWeb) && cachedWeb.length > 0) {
+        webSnippets = cachedWeb;
+      } else {
+        try {
+          webSnippets = await searchWeb(`${topic || subject} ${subject}`.slice(0, 300), 3);
+          if (webSnippets?.length) {
+            await setCache(webCacheKey, webSnippets, 60 * 60 * 12); // 12h TTL
+          }
+        } catch {
+          webSnippets = null;
+        }
+      }
+    }
+
+    const webSnippetsBlock =
+      webSnippets && webSnippets.length
+        ? `
+CURRENT WEB SNAPSHOTS (live — the ONLY internet references; use to keep examples current):
+${webSnippets
+  .map(
+    (s, i) =>
+      `${i + 1}. ${String(s.title || '').slice(0, 150)} — ${String(s.snippet || '').slice(0, 400)} (source: ${String(s.url || '').slice(0, 120)})`,
+  )
+  .join('\n')}
+- Use these ONLY to keep examples and mark schemes current; they must never override the official syllabus above.
+- If they conflict with the curriculum framework, the curriculum wins.`
+        : '';
+
     const cacheKey =
-      `exam:${country || 'ZA'}:${state || ''}:${grade}:${subject}:${paperType}:${dur}:${topic || 'general'}:${progressSignature}`
+      `exam:${country || 'ZA'}:${state || ''}:${grade}:${subject}:${paperType}:${dur}:${topic || 'general'}:${includeWeb ? 'web' : ''}:${progressSignature}`
         .toLowerCase()
         .replace(/\s+/g, '_');
     const cached = await getCache(cacheKey);
@@ -3020,6 +3126,7 @@ Topic Focus: ${topic ? topic : curriculum.isUS ? 'Full state standards for this 
 
 CURRICULUM & EXAM SPECIFICATION (${curriculum.frameworkLabel}):
 ${getCurriculumDirective({ subject, grade, topic, state, country, nation })}
+${webSnippetsBlock}
 
 STRICT EXAM STRUCTURE MANDATE:
 1. SECTION A: Objective Questions (MCQs, matching items, or short 1-word concepts) - approx 20-25% of marks.
@@ -3072,7 +3179,7 @@ Return valid JSON conforming strictly to:
 - Do not teach, coach, scaffold or reveal answers inside the paper. Put all solutions in the memorandum only.
 - Weight question selection toward the learner's recorded weak skills and quiz failures, while remaining inside the official curriculum scope.`;
 
-    if (LLAMA_API_KEY) {
+    if (LLAMA_API_KEY || DEEPSEEK_API_KEY) {
       try {
         const textRaw = await callLlamaChat({
           system: examSystemInstruction,
@@ -3081,8 +3188,11 @@ Return valid JSON conforming strictly to:
           }.`,
           jsonMode: true,
           temperature: 0.3,
-          timeoutMs: 9000,
-          maxTokens: 5000,
+          timeoutMs: DEEPSEEK_API_KEY ? 90000 : 9000,
+          maxTokens: DEEPSEEK_API_KEY ? 6500 : 5000,
+          ...(DEEPSEEK_API_KEY
+            ? { baseUrl: DEEPSEEK_BASE_URL, apiKey: DEEPSEEK_API_KEY, model: DEEPSEEK_MODEL }
+            : {}),
         });
         let text = (textRaw || '').trim();
         if (text.startsWith('```json')) {
@@ -3093,8 +3203,12 @@ Return valid JSON conforming strictly to:
 
         const parsed = JSON.parse(text);
         if (parsed && Array.isArray(parsed.sections) && parsed.sections.length > 0) {
+          if (webSnippets && webSnippets.length) {
+            parsed.webUsed = true;
+            parsed.webCount = webSnippets.length;
+          }
           await setCache(cacheKey, parsed, 7200);
-          return res.json({ ...parsed, source: LLAMA_MODEL_ID });
+          return res.json({ ...parsed, source: DEEPSEEK_API_KEY ? DEEPSEEK_MODEL : LLAMA_MODEL_ID });
         }
       } catch (llamaErr: any) {
         console.warn(
@@ -3105,7 +3219,6 @@ Return valid JSON conforming strictly to:
     }
 
     const fallbackPaper = getAuthenticDBEPaper(subject, grade, paperType, dur, topic);
-    await setCache(cacheKey, fallbackPaper, 7200);
     return res.json({ ...fallbackPaper, source: 'curriculum-dbe-bank' });
   } catch (err: any) {
     console.error('Exam endpoint safety handler:', err);
@@ -3892,14 +4005,18 @@ Return valid JSON:
 `.trim();
 
   let paper: any = null;
-  if (LLAMA_API_KEY) {
+  if (LLAMA_API_KEY || DEEPSEEK_API_KEY) {
     try {
       const textRaw = await callLlamaChat({
         system: systemInstruction,
         user: `Generate study notes for this chapter only.`,
         jsonMode: true,
         temperature: 0.3,
-        timeoutMs: 60000,
+        timeoutMs: DEEPSEEK_API_KEY ? 90000 : 60000,
+        maxTokens: 4000,
+        ...(DEEPSEEK_API_KEY
+          ? { baseUrl: DEEPSEEK_BASE_URL, apiKey: DEEPSEEK_API_KEY, model: DEEPSEEK_MODEL }
+          : {}),
       });
       if (textRaw) {
         let cleaned = textRaw.trim();

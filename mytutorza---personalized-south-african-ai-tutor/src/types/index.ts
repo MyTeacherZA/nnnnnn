@@ -378,6 +378,14 @@ export interface StudyQuizProgress {
   wrongSkills: string[];
   completed: boolean;
   completedAt?: string;
+  /** Per-index memory-test scores, persisted for learning history. */
+  memoryTestScores?: Record<number, { score: number; total: number }>;
+  /** Per-index activity/practice test scores, persisted for learning history. */
+  activityTestScores?: Record<number, { score: number; total: number }>;
+  /** Aggregate memory score across all memory tests (best effort). */
+  memoryBest?: { score: number; total: number };
+  /** Aggregate activity score across all activity tests (best effort). */
+  activityBest?: { score: number; total: number };
 }
 
 export interface StudySessionRecord {

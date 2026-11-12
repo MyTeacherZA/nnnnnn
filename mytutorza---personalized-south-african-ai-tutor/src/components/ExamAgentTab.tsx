@@ -18,6 +18,7 @@ import {
   Pause,
   Maximize2,
   Minimize2,
+  Globe2,
 } from 'lucide-react';
 import { ExamPaper } from '../types';
 import { notifySubscriptionRequired } from '../services/subscription';
@@ -33,6 +34,8 @@ export const ExamAgentTab: React.FC = () => {
   const [userAnswers, setUserAnswers] = useState<Record<string, string>>({});
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [secondsRemaining, setSecondsRemaining] = useState<number>(3600);
+  // Toggle bounded live web examples for this paper.
+  const [includeWeb, setIncludeWeb] = useState(false);
   const [isTimerRunning, setIsTimerRunning] = useState<boolean>(false);
 
   // Timer logic
@@ -74,6 +77,7 @@ export const ExamAgentTab: React.FC = () => {
           state: student?.state,
           country: student?.country,
           nation: student?.nation,
+          includeWeb: includeWeb || undefined,
           term: examType.includes('June') ? 'Term 2' : 'Term 4',
         }),
       });
@@ -213,6 +217,32 @@ export const ExamAgentTab: React.FC = () => {
             </button>
           </div>
         </div>
+
+        {/* Live web toggle — one bounded search per generated paper */}
+        <div className="flex items-center justify-between gap-3 mt-3 rounded-xl border border-slate-800 bg-slate-900/70 px-3 py-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <Globe2 className="w-4 h-4 text-sky-400 shrink-0" />
+            <div className="min-w-0">
+              <p className="text-[11px] font-bold text-slate-200">Include live web examples</p>
+              <p className="text-[10px] text-slate-500">keeps context and data current where the paper needs it</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setIncludeWeb((v) => !v)}
+            aria-pressed={includeWeb}
+            className={`relative w-10 h-5 rounded-full transition-colors shrink-0 ${
+              includeWeb ? 'bg-sky-500' : 'bg-slate-700'
+            }`}
+            title={includeWeb ? 'Web examples ON' : 'Web examples OFF'}
+          >
+            <span
+              className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
+                includeWeb ? 'translate-x-5' : ''
+              }`}
+            />
+          </button>
+        </div>
       </div>
 
       {/* Exam Paper View */}
@@ -259,6 +289,14 @@ export const ExamAgentTab: React.FC = () => {
               <span>TIME: {examPaper.durationMinutes} MINUTES</span>
               <span>•</span>
               <span>MARKS: {examPaper.totalMarks}</span>
+              {(examPaper as any)?.webUsed && (
+                <>
+                  <span>•</span>
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-extrabold uppercase tracking-widest bg-sky-500/15 border border-sky-500/40 text-sky-300">
+                    <Globe2 className="w-3.5 h-3.5" /> Web
+                  </span>
+                </>
+              )}
             </div>
 
             {/* Official Instructions */}

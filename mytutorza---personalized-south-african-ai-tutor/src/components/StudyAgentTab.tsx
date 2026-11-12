@@ -14,6 +14,7 @@ import {
   FileText,
   Flame,
   Layers,
+  Globe2,
   Lightbulb,
   ListChecks,
   Maximize2,
@@ -83,6 +84,9 @@ export const StudyAgentTab: React.FC = () => {
   const [isStudySelectionOpen, setIsStudySelectionOpen] = useState(false);
 
   // Memory tests (match question -> answer, spot the correct answer)
+  // Live web examples toggle for this browser (persists only per session).
+  const [includeWeb, setIncludeWeb] = useState(false);
+  const [sessionWebGrounded, setSessionWebGrounded] = useState(false);
   const [memoryTests, setMemoryTests] = useState<MemoryTest[]>([]);
   const [memoryTestScores, setMemoryTestScores] = useState<Record<number, { score: number; total: number }>>({});
   const [currentMemoryTestIndex, setCurrentMemoryTestIndex] = useState(0);
@@ -139,6 +143,7 @@ export const StudyAgentTab: React.FC = () => {
     setQuizSubmitted(false);
     setQuizScore(null);
     setError(null);
+    setSessionWebGrounded(false);
     setMemoryTests([]);
     setMemoryTestScores({});
     setCurrentMemoryTestIndex(0);
@@ -150,11 +155,57 @@ export const StudyAgentTab: React.FC = () => {
     loadSessions();
   }, [activeSubject?.id]);
 
+  const persistActivityProgress = async (input?: {
+    memory?: Record<number, { score: number; total: number }>;
+    activities?: Record<number, { score: number; total: number }>;
+  }) => {
+    if (!studyNote) return;
+    const memory = input?.memory ?? memoryTestScores;
+    const activities = input?.activities ?? activityTestScores;
+    const quiz = studyNote?.quiz || [];
+    const attempted = Object.keys(quizAnswers).length;
+    let correct = 0;
+    const wrongSkills: string[] = [];
+    quiz.forEach((question) => {
+      const answer = quizAnswers[question.id];
+      if (answer === undefined) return;
+      if (answer === question.correctIndex) correct += 1;
+      else if (question.skill) wrongSkills.push(question.skill);
+    });
+    const memoryTotals = Object.values(memory).reduce(
+      (acc, r) => ({ score: acc.score + (r?.score || 0), total: acc.total + (r?.total || 0) }),
+      { score: 0, total: 0 },
+    );
+    const activityTotals = Object.values(activities).reduce(
+      (acc, r) => ({ score: acc.score + (r?.score || 0), total: acc.total + (r?.total || 0) }),
+      { score: 0, total: 0 },
+    );
+
+    await postQuizProgress({
+      email: student?.email,
+      sessionId: studyNote.sessionId,
+      quizProgress: {
+        attempted,
+        correct,
+        answers: quizAnswers,
+        wrongSkills,
+        completed: quiz.length > 0 && attempted >= quiz.length,
+        completedAt: new Date().toISOString(),
+        memoryTestScores: memory,
+        activityTestScores: activities,
+        memoryBest: memoryTotals.total > 0 ? memoryTotals : undefined,
+        activityBest: activityTotals.total > 0 ? activityTotals : undefined,
+      },
+    });
+  };
+
   const handleMemoryTestComplete = (score: number, total: number, testIndex: number) => {
-    setMemoryTestScores((prev) => ({
-      ...prev,
+    const merged: Record<number, { score: number; total: number }> = {
+      ...memoryTestScores,
       [testIndex]: { score, total },
-    }));
+    };
+    setMemoryTestScores(merged);
+    void persistActivityProgress({ memory: merged });
 
     if (testIndex < (memoryTests.length || 0) - 1) {
       setCurrentMemoryTestIndex((prev) => prev + 1);
@@ -164,10 +215,12 @@ export const StudyAgentTab: React.FC = () => {
   };
 
   const handleActivityTestComplete = (score: number, total: number, testIndex: number) => {
-    setActivityTestScores((prev) => ({
-      ...prev,
+    const merged: Record<number, { score: number; total: number }> = {
+      ...activityTestScores,
       [testIndex]: { score, total },
-    }));
+    };
+    setActivityTestScores(merged);
+    void persistActivityProgress({ activities: merged });
 
     if (testIndex < (activityTests.length || 0) - 1) {
       setCurrentActivityTestIndex((prev) => prev + 1);
@@ -268,6 +321,7 @@ export const StudyAgentTab: React.FC = () => {
           roadmap: activeRoadmap,
           sessionId: reusableSessionId,
           title: cleanTitle,
+          includeWeb: includeWeb || undefined,
         }),
       });
 
@@ -282,6 +336,7 @@ export const StudyAgentTab: React.FC = () => {
       }
 
       const data = await response.json();
+      setSessionWebGrounded(Boolean(data?.webUsed));
       const note: StudyNote = {
         id: data.sessionId || `note-${Date.now()}`,
         sessionId: data.sessionId || null,
@@ -354,6 +409,7 @@ export const StudyAgentTab: React.FC = () => {
     setError(null);
     setIsFlipped(false);
     setActiveFlashcard(0);
+    setSessionWebGrounded(false);
     setMemoryTests([]);
     setMemoryTestScores({});
     setCurrentMemoryTestIndex(0);
@@ -415,6 +471,14 @@ export const StudyAgentTab: React.FC = () => {
     });
 
     const attempted = Object.keys(quizAnswers).length;
+    const memoryTotals = Object.values(memoryTestScores).reduce(
+      (acc, r) => ({ score: acc.score + (r?.score || 0), total: acc.total + (r?.total || 0) }),
+      { score: 0, total: 0 },
+    );
+    const activityTotals = Object.values(activityTestScores).reduce(
+      (acc, r) => ({ score: acc.score + (r?.score || 0), total: acc.total + (r?.total || 0) }),
+      { score: 0, total: 0 },
+    );
     const progress: StudyQuizProgress = {
       attempted,
       correct,
@@ -422,6 +486,10 @@ export const StudyAgentTab: React.FC = () => {
       wrongSkills,
       completed: attempted >= quiz.length,
       completedAt: new Date().toISOString(),
+      memoryTestScores,
+      activityTestScores,
+      memoryBest: memoryTotals.total > 0 ? memoryTotals : undefined,
+      activityBest: activityTotals.total > 0 ? activityTotals : undefined,
     };
 
     setQuizSubmitted(true);
@@ -576,6 +644,33 @@ export const StudyAgentTab: React.FC = () => {
                 </div>
 
                 <div className="space-y-4">
+                  <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-700 bg-slate-900/60 px-3 py-2.5">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Globe2 className="w-4 h-4 text-sky-400 shrink-0" />
+                      <div className="min-w-0">
+                        <p className="text-[11px] font-bold text-slate-200">Include live web examples</p>
+                        <p className="text-[10px] text-slate-500 leading-snug">
+                          1 bounded search per pack; snippets keep examples and quizzes current
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setIncludeWeb((v) => !v)}
+                      aria-pressed={includeWeb}
+                      className={`relative w-10 h-5 rounded-full transition-colors shrink-0 ${
+                        includeWeb ? 'bg-sky-500' : 'bg-slate-700'
+                      }`}
+                      title={includeWeb ? 'Web examples ON' : 'Web examples OFF'}
+                    >
+                      <span
+                        className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
+                          includeWeb ? 'translate-x-5' : ''
+                        }`}
+                      />
+                    </button>
+                  </div>
+
                   <button
                     onClick={() => setIsStudySelectionOpen(true)}
                     className="w-full p-4 rounded-xl bg-slate-800/80 border-2 border-dashed border-slate-600 hover:border-sky-500 hover:bg-slate-700/50 text-left transition-all group flex items-center justify-between"
@@ -787,6 +882,14 @@ export const StudyAgentTab: React.FC = () => {
                       <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-900 border border-slate-700 text-slate-300">
                         {studyNote.term} • {studyNote.grade}
                       </span>
+                      {sessionWebGrounded && (
+                        <span
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-extrabold uppercase tracking-widest bg-sky-500/15 border border-sky-500/40 text-sky-300"
+                          title="This pack was grounded with live web snippets"
+                        >
+                          <Globe2 className="w-3 h-3" /> Web
+                        </span>
+                      )}
                     </div>
                     <h2 className="text-lg sm:text-2xl font-black text-white tracking-tight mt-1 break-words">
                       {studyNote.title || studyNote.topic}

@@ -14,6 +14,7 @@ import { getSelectiveCapsCurriculumContext } from '../serverCapsVault';
 import {
   buildTutoringSessionScope,
   buildFirmamentSystemPrompt,
+  buildStudySystemPrompt,
   getCurriculumDirective,
 } from '../serverFirmamentRules';
 import { describeCurriculumUsUk } from '../serverUsUkCurriculum';
@@ -274,6 +275,19 @@ check('Extract: struggle signal detected', detectStruggleSignal("I don't underst
 check('Extract: task/solve phrasing detected', detectStruggleSignal('Solve x^2 - 5x + 6 = 0 and explain each step') === true);
 check('Extract: greeting detected', detectStruggleSignal('hello') === false);
 check('Extract: pure appreciation skipped', detectStruggleSignal('thanks so much that helps a lot') === false);
+
+// ---- Study pack: spec targets are now the required sizes --------------------
+const studyPrompt = buildStudySystemPrompt({
+  firmamentProfile: {} as any,
+  subject: 'Mathematics',
+  grade: 'Grade 10',
+  topic: 'Linear Functions',
+});
+check('Study prompt: quiz 10–15 required', studyPrompt.includes('10–15'));
+check('Study prompt: never 5–8 quiz', !/5–8/.test(studyPrompt));
+check('Study prompt: flashcards 15–20', studyPrompt.includes('15–20 flashcards'));
+check('Study prompt: both memory test types enforced', /5 type "match"/.test(studyPrompt) && /at least 5 type "spot"/.test(studyPrompt));
+check('Study prompt: practice tests included', studyPrompt.includes('ACTIVITY / PRACTICE TESTS'));
 
 // ---- CAPS vault retrieval ---------------------------------------------------
 const vaultMatches = searchCapsVault('Mathematics Grade 12 Algebra', 3, {
