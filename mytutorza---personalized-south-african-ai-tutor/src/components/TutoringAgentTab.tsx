@@ -76,6 +76,8 @@ export const TutoringAgentTab: React.FC = () => {
   const [isPdfUploading, setIsPdfUploading] = useState(false);
   const [pdfError, setPdfError] = useState<string | null>(null);
   const pdfInputRef = useRef<HTMLInputElement>(null);
+  // Explicitly raise the bounded web search for this session's replies.
+  const [includeWeb, setIncludeWeb] = useState(false);
 
   // Spark Notes Analysis State
   const [activeSparkNotes, setActiveSparkNotes] = useState<PersonalizedSparkNotes | null>(() => {
@@ -265,6 +267,7 @@ export const TutoringAgentTab: React.FC = () => {
           lockedTopic: lockedTopic || undefined,
           sessionId,
           sourceId: tutoringPdf?.sourceId || undefined,
+          includeWeb: includeWeb || undefined,
           pdf: tutoringPdf
             ? {
                 name: tutoringPdf.name,
@@ -280,8 +283,6 @@ export const TutoringAgentTab: React.FC = () => {
       const data = await response.json();
       if (data?.sessionId) setSessionId(String(data.sessionId));
       if (data?.sourceMissing && tutoringPdf) {
-        // Server could not load the stored source (e.g. SQL not applied yet).
-        // Drop the id so the next turn sends the inline text as a fallback.
         setTutoringPdf({ ...tutoringPdf, sourceId: null });
       }
       const aiReplyText = data.reply || data.error || 'I am ready to help you work through this step-by-step.';
@@ -290,6 +291,7 @@ export const TutoringAgentTab: React.FC = () => {
         id: `ai-${Date.now()}`,
         sender: 'ai',
         agent: 'tutoring',
+        webGrounded: Boolean(data?.webUsed),
         text: aiReplyText,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         language: activeSubject.tutoringLanguage,
@@ -431,6 +433,24 @@ export const TutoringAgentTab: React.FC = () => {
                 className="hidden"
               />
             </div>
+
+            {/* Web toggle: one bounded search (3 snippets), grounded output */}
+            <button
+              onClick={() => setIncludeWeb((v) => !v)}
+              className={`w-8 h-8 rounded-full border flex items-center justify-center transition-colors ${
+                includeWeb
+                  ? 'bg-sky-500/25 border-sky-400/60 text-sky-300 shadow-[0_0_0_3px_rgba(56,189,248,0.15)]'
+                  : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-slate-100'
+              }`}
+              title={
+                includeWeb
+                  ? 'Web search ON — each reply may use 3 live snippets (toggle off)'
+                  : 'Include live web snippets (1 bounded search per message)'
+              }
+              aria-pressed={includeWeb}
+            >
+              <Globe2 className="w-4 h-4" />
+            </button>
 
             <button
               onClick={() => setIsFullscreen((v) => !v)}
@@ -621,6 +641,14 @@ export const TutoringAgentTab: React.FC = () => {
                     <span className="font-bold">
                       {isUser ? student?.fullName || 'You' : 'MyTutorZA Guided Discovery Guide'}
                     </span>
+                    {!isUser && m.webGrounded && (
+                      <span
+                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wide bg-sky-500/20 text-sky-300"
+                        title="This reply was grounded with live web snippets"
+                      >
+                        <Globe2 className="w-3 h-3" /> Web
+                      </span>
+                    )}
                     <span>{m.timestamp}</span>
                   </div>
                   <div className="whitespace-pre-wrap">{m.text}</div>

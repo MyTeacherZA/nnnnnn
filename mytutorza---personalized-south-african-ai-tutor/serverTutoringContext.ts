@@ -103,14 +103,29 @@ function normalise(value: string): string {
 }
 
 /**
- * Splits a source into overlapping chunks and returns only the chunks most
- * relevant to the locked topic + learner message. This is the RAG step that
- * keeps prompt tokens (and therefore cost) small on large textbooks.
+ * RAG retrieval with coverage scoring.
+ *
+ * `bestScore` is how many times the strongest chunk matches the query terms;
+ * 0 means nothing in the source covers the request — the router then knows
+ * the uploaded source cannot answer and falls back to the web (or training
+ * knowledge strictly on the locked topic).
  */
-export function selectSourceChunks(text: string, query: string, maxChars: number = 12000): string {
+export function selectSourceChunksWithScore(
+  text: string,
+  query: string,
+  maxChars: number = 12000,
+): { text: string; bestScore: number; coverageCount: number } {
   const clean = String(text || '').trim();
-  if (!clean) return '';
-  if (clean.length <= maxChars) return clean;
+  if (!clean) return { text: '', bestScore: 0, coverageCount: 0 };
+  if (clean.length <= maxChars) {
+    const lower = clean.toLowerCase();
+    const terms = String(query || '')
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((term) => term.length > 2);
+    const hits = terms.length ? terms.reduce((sum, t) => sum + (lower.includes(t) ? 1 : 0), 0) : 1;
+    return { text: clean, bestScore: hits, coverageCount: hits > 0 ? 1 : 0 };
+  }
 
   const chunkSize = 1800;
   const overlap = 200;
@@ -132,17 +147,28 @@ export function selectSourceChunks(text: string, query: string, maxChars: number
   });
   scored.sort((a, b) => b.score - a.score || a.index - b.index);
 
+  const bestScore = scored[0]?.score ?? 0;
   const picked: { index: number; content: string }[] = [];
   let total = 0;
   for (const chunk of scored) {
+    if (chunk.score === 0) break;
     if (total + chunk.content.length > maxChars) continue;
     picked.push(chunk);
     total += chunk.content.length;
     if (total >= maxChars - chunkSize) break;
   }
-  if (picked.length === 0) return clean.slice(0, maxChars);
+  if (picked.length === 0) {
+    // Nothing matched: return the head of the source so the prompt still
+    // references it, but report zero coverage for the router.
+    return { text: clean.slice(0, maxChars), bestScore, coverageCount: 0 };
+  }
   picked.sort((a, b) => a.index - b.index);
-  return picked.map((chunk) => chunk.content).join('\n\n[...]\n\n');
+  return { text: picked.map((chunk) => chunk.content).join('\n\n[...]\n\n'), bestScore, coverageCount: picked.length };
+}
+
+/** Backwards-compatible wrapper: returns the chunk string only. */
+export function selectSourceChunks(text: string, query: string, maxChars: number = 12000): string {
+  return selectSourceChunksWithScore(text, query, maxChars).text;
 }
 
 /**

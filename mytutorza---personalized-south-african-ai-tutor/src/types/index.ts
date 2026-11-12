@@ -243,6 +243,8 @@ export interface ChatMessage {
   timestamp: string;
   language?: OfficialLanguage;
   firmamentRef?: string;
+  /** True when the server grounded this reply with live web snippets. */
+  webGrounded?: boolean;
 }
 
 export interface FormulaItem {

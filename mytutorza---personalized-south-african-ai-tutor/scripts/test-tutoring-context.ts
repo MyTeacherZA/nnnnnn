@@ -18,7 +18,8 @@ import {
 } from '../serverFirmamentRules';
 import { describeCurriculumUsUk } from '../serverUsUkCurriculum';
 import { searchCapsVault } from '../serverPdfIngestion';
-import { selectSourceChunks, isPossiblyOffTopic } from '../serverTutoringContext';
+import { selectSourceChunks, selectSourceChunksWithScore, isPossiblyOffTopic } from '../serverTutoringContext';
+import { detectNeedsWeb } from '../serverWebSearch';
 
 let failures = 0;
 function check(label: string, condition: boolean, detail?: string) {
@@ -253,6 +254,22 @@ const zaStillWorks = getCurriculumDirective({
   country: 'ZA',
 });
 check('ZA still returns CAPS vault', zaStillWorks.includes('DBE-CAPS-MATH-GR12'));
+
+// ---- Knowledge router: coverage scoring + freshness -----------------------
+const fullCoverage = selectSourceChunksWithScore(
+  'Chapter 1: Kinematics. Velocity is displacement per unit time. Acceleration is velocity per unit time.',
+  'velocity acceleration',
+);
+check('Router: matching text has coverage > 0', fullCoverage.bestScore > 0);
+
+const noCoverage = selectSourceChunksWithScore(
+  'Chapter 1: Kinematics. Velocity is displacement per unit time.',
+  'photosynthesis chlorophyll',
+);
+check('Router: unrelated query yields zero coverage', noCoverage.bestScore === 0);
+
+check('Router: freshness detected', detectNeedsWeb('What is the latest climate report for 2026?') === true);
+check('Router: timeless question not freshness', detectNeedsWeb('Solve x^2 - 5x + 6 = 0') === false);
 
 // ---- CAPS vault retrieval ---------------------------------------------------
 const vaultMatches = searchCapsVault('Mathematics Grade 12 Algebra', 3, {

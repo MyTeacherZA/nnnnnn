@@ -22,7 +22,8 @@ import {
   splitByTOC,
   extractPdfTextFromBuffer,
 } from './serverPdfIngestion';
-import { selectSourceChunks, isPossiblyOffTopic } from './serverTutoringContext';
+import { selectSourceChunksWithScore, isPossiblyOffTopic } from './serverTutoringContext';
+import { searchWeb, detectNeedsWeb, webSearchConfigured } from './serverWebSearch';
 import { createHash } from 'crypto';
 import {
   pickFiles as pickCapsFiles,
@@ -273,6 +274,7 @@ app.get('/api/health', (req: Request, res: Response) => {
     supabaseConfigured: !!(supabaseServerUrl && supabaseServerAnonKey),
     upstashConfigured: !!(UPSTASH_URL && UPSTASH_TOKEN),
     curriculumDb: 'US state standards / AP · UK nation curricula / ZA CAPS vault (fallback)',
+    webSearchConfigured: webSearchConfigured(),
   });
 });
 
@@ -561,6 +563,7 @@ app.post('/api/tutoring/chat', async (req: Request, res: Response) => {
       state,
       country,
       nation,
+      includeWeb,
       email: bodyEmail,
     } = req.body || {};
 
@@ -584,9 +587,33 @@ app.post('/api/tutoring/chat', async (req: Request, res: Response) => {
     const cleanGrade = String(grade || 'Grade 12');
 
     // -----------------------------------------------------------------
-    // 1. CONTEXT HOLDING: rebuild history from the database when the
-    //    client has none (page reload / resumed session).
+    // 1. CONTEXT + SOURCE + HISTORY IN PARALLEL (single round-trip).
+    //    History is rebuilt from the database only when the client has
+    //    none (page reload / resumed session).
     // -----------------------------------------------------------------
+    const resolveSource = async () => {
+      if (requestedSourceId) {
+        const stored = await getTutoringSource(email, requestedSourceId);
+        if (stored) return stored;
+      }
+      if (pdf && String(pdf.text || '').trim()) {
+        return {
+          name: String(pdf.name || 'uploaded source').trim(),
+          text: String(pdf.text).slice(0, 400000),
+          tableOfContents: Array.isArray(pdf.tableOfContents) ? pdf.tableOfContents : [],
+        };
+      }
+      return null;
+    };
+
+    const [learningHistory, resolvedSource] = await Promise.all([
+      getLearningHistory(email, cleanSubject),
+      resolveSource(),
+    ]);
+
+    let sessionSource: { id?: string; name: string; text: string; tableOfContents?: any[] } | null =
+      resolvedSource;
+
     let historyMessages: { role: string; content: string }[] = Array.isArray(history)
       ? history
           .slice(-8)
@@ -601,22 +628,6 @@ app.post('/api/tutoring/chat', async (req: Request, res: Response) => {
       historyMessages = await loadTutoringHistory(email, requestedSessionId, 8);
     }
 
-    // -----------------------------------------------------------------
-    // 2. RAG SOURCE RESOLUTION: Supabase/cache first, inline payload second.
-    //    Requests stay small when the source is already ingested.
-    // -----------------------------------------------------------------
-    let sessionSource: { id?: string; name: string; text: string; tableOfContents?: any[] } | null = null;
-    if (requestedSourceId) {
-      sessionSource = await getTutoringSource(email, requestedSourceId);
-    }
-    if (!sessionSource && pdf && String(pdf.text || '').trim()) {
-      sessionSource = {
-        name: String(pdf.name || 'uploaded source').trim(),
-        text: String(pdf.text).slice(0, 400000),
-        tableOfContents: Array.isArray(pdf.tableOfContents) ? pdf.tableOfContents : [],
-      };
-    }
-
     const tocTitles = Array.isArray(sessionSource?.tableOfContents)
       ? (sessionSource!.tableOfContents as any[])
           .map((entry) => (typeof entry === 'string' ? entry : String(entry?.title || '')))
@@ -624,11 +635,48 @@ app.post('/api/tutoring/chat', async (req: Request, res: Response) => {
       : [];
 
     // -----------------------------------------------------------------
-    // 3. SYSTEM PROMPT: stable base → progress → role → modes → source →
+    // 2. KNOWLEDGE ROUTER (deterministic, zero extra LLM calls)
+    //    A. uploaded PDF RAG — measure topic coverage (lexical)
+    //    B. bounded web fallback — only when:
+    //         (a) the learner explicitly asked for web examples, OR
+    //         (b) the message is time-sensitive, OR
+    //         (c) the uploaded source covers NOTHING of this request
+    //    C. otherwise: the locked topic + curriculum + training data only
+    // -----------------------------------------------------------------
+    const sourceQuery = `${cleanTopic} ${cleanMessage}`;
+    const sourceChunks = sessionSource
+      ? selectSourceChunksWithScore(String(sessionSource.text || ''), sourceQuery)
+      : { text: '', bestScore: 0, coverageCount: 0 };
+    const sourceCoverage = sessionSource ? sourceChunks.bestScore : 0;
+    const sourceText = sourceChunks.text;
+
+    let webSnippets: { title: string; url: string; snippet: string }[] | null = null;
+    const wantsWeb =
+      Boolean(includeWeb) ||
+      detectNeedsWeb(cleanMessage) ||
+      Boolean(sessionSource && sourceCoverage === 0);
+
+    if (wantsWeb) {
+      const webCacheKey = `web:${hashForCache(`${cleanTopic}||${cleanMessage}`)}`;
+      const cachedWeb = await getCache(webCacheKey);
+      if (Array.isArray(cachedWeb) && cachedWeb.length > 0) {
+        webSnippets = cachedWeb;
+      } else {
+        try {
+          webSnippets = await searchWeb(`${cleanTopic} ${cleanMessage}`.slice(0, 300), 3);
+          if (webSnippets?.length) {
+            await setCache(webCacheKey, webSnippets, 60 * 60 * 12); // 12h TTL: reuse is free
+          }
+        } catch {
+          webSnippets = null;
+        }
+      }
+    }
+
+    // -----------------------------------------------------------------
+    // 3. SYSTEM PROMPT: stable base → progress → role → modes → knowledge →
     //    session contract LAST (highest recency / priority).
     // -----------------------------------------------------------------
-    const learningHistory = await getLearningHistory(email, cleanSubject);
-
     let systemInstruction = buildFirmamentSystemPrompt({
       firmamentProfile,
       subject: cleanSubject,
@@ -665,10 +713,6 @@ TUTORING AGENT ROLE LOCK (NON-NEGOTIABLE):
     if (extraModeInstruction) systemInstruction += extraModeInstruction;
 
     if (sessionSource) {
-      const retrievedSource = selectSourceChunks(
-        String(sessionSource.text || ''),
-        `${cleanTopic} ${cleanMessage}`,
-      );
       const tocList = tocTitles.slice(0, 24).join(' | ');
 
       systemInstruction += `
@@ -677,11 +721,30 @@ UPLOADED SOURCE / RAG CONTEXT (FIRST CONTEXT — "THE HOLY GRAIL"):
 - An uploaded source was provided for this session: "${String(sessionSource.name || 'uploaded source').trim()}".
 - Source table of contents: ${tocList || '(not detected)'}.
 - Retrieved source content (most relevant to the locked topic): ${
-        retrievedSource || '(no extractable text content was provided).'
+        sourceText || '(no extractable text content was provided).'
       }
+- Source coverage for this request: ${sourceCoverage} matching chunk(s).
 - THE UPLOADED SOURCE IS THE FIRST CONTEXT AND THE HOLY GRAIL FOR THIS TUTORING SESSION. Tutor the student on the locked topic using this uploaded source as the primary grounding.
 - Use internet knowledge only to provide further clarity and emphasis on what the uploaded source says about the topic.
 - If the uploaded source has no content relevant to the locked topic, say so briefly and fall back to internet-based knowledge strictly specific to the locked topic.`;
+    }
+
+    if (webSnippets && webSnippets.length > 0) {
+      const snippetBlock = webSnippets
+        .map(
+          (s, i) =>
+            `${i + 1}. ${String(s.title || 'Untitled').slice(0, 150)} — ${String(s.snippet || '').slice(0, 400)} (source: ${String(s.url || '').slice(0, 120)})`,
+        )
+        .join('\n');
+
+      systemInstruction += `
+
+WEB SNIPPETS (bounded search, fetched live — the ONLY permitted internet references):
+${snippetBlock}
+- Use these snippets ONLY to clarify or ground the locked topic "${cleanTopic}".
+- If snippets conflict with the uploaded source, the uploaded source wins.
+- If they add anything beyond the topic, ignore it.
+- Never present snippet text verbatim at length; paraphrase, then attribute to the source briefly.`;
     }
 
     const offTopicHint = isPossiblyOffTopic(cleanMessage, cleanTopic, tocTitles, cleanSubject);
@@ -702,6 +765,10 @@ UPLOADED SOURCE / RAG CONTEXT (FIRST CONTEXT — "THE HOLY GRAIL"):
     // -----------------------------------------------------------------
     const cacheKey = `tutoring:reply:${hashForCache(
       [
+        // Per-user + per-session cache isolation (shared-machine safe).
+        hashForCache(email),
+        requestedSessionId || 'anon',
+        includeWeb ? 'web' : '',
         DEEPSEEK_MODEL,
         cleanSubject,
         cleanGrade,
@@ -795,6 +862,9 @@ UPLOADED SOURCE / RAG CONTEXT (FIRST CONTEXT — "THE HOLY GRAIL"):
       // server could not load a previously ingested source (e.g. DDL missing).
       sourceMissing: Boolean(requestedSourceId) && !sessionSource,
       offTopicFlagged: offTopicHint,
+      webUsed: Boolean(webSnippets && webSnippets.length > 0),
+      webCount: webSnippets?.length || 0,
+      webConfigured: webSearchConfigured(),
     });
   } catch (err: any) {
     console.error('Tutoring API error:', err);
