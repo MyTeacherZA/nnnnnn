@@ -39,6 +39,7 @@ export const ExamAgentTab: React.FC = () => {
   // Toggle bounded live web examples for this paper.
   const [includeWeb, setIncludeWeb] = useState(false);
   const [isTimerRunning, setIsTimerRunning] = useState<boolean>(false);
+  const [submitted, setSubmitted] = useState<boolean>(false);
 
   // Timer logic
   useEffect(() => {
@@ -51,6 +52,22 @@ export const ExamAgentTab: React.FC = () => {
     return () => clearInterval(interval);
   }, [isTimerRunning, secondsRemaining]);
 
+  // Timer expires → exam auto-submits: memorandum is revealed and inputs
+  // lock. A learner can never see answers while the clock is still running.
+  useEffect(() => {
+    if (secondsRemaining === 0 && isTimerRunning) {
+      setIsTimerRunning(false);
+      setSubmitted(true);
+      setShowMemo(true);
+    }
+  }, [secondsRemaining, isTimerRunning]);
+
+  const submitExam = () => {
+    setIsTimerRunning(false);
+    setSubmitted(true);
+    setShowMemo(true);
+  };
+
   const formatTimer = (totalSecs: number) => {
     const mins = Math.floor(totalSecs / 60);
     const secs = totalSecs % 60;
@@ -62,8 +79,9 @@ export const ExamAgentTab: React.FC = () => {
     setLoading(true);
     setShowMemo(false);
     setUserAnswers({});
+    setSubmitted(false);
     setSecondsRemaining(duration * 60);
-    setIsTimerRunning(false);
+    setIsTimerRunning(true);
 
     try {
       const response = await fetch('/api/exam/generate', {
@@ -134,23 +152,35 @@ export const ExamAgentTab: React.FC = () => {
 
           {/* Timer display if paper is ready */}
           {examPaper && (
-            <div className="flex items-center gap-3 bg-slate-900 border border-slate-700 px-4 py-2 rounded-xl">
-              <Timer className="w-5 h-5 text-amber-400" />
+            <div
+              className={`flex items-center gap-3 border px-4 py-2 rounded-xl ${
+                submitted
+                  ? 'bg-emerald-950/40 border-emerald-500/50'
+                  : 'bg-slate-900 border-slate-700'
+              }`}
+            >
+              <Timer className={`w-5 h-5 ${submitted ? 'text-emerald-400' : 'text-amber-400'}`} />
               <div className="text-right">
                 <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block leading-none">
-                  Exam Timer
+                  {submitted ? 'Exam' : 'Exam Timer'}
                 </span>
-                <span className="font-mono text-base font-extrabold text-white">
-                  {formatTimer(secondsRemaining)}
+                <span
+                  className={`font-mono text-base font-extrabold ${
+                    submitted ? 'text-emerald-300' : secondsRemaining === 0 ? 'text-red-400' : 'text-white'
+                  }`}
+                >
+                  {submitted ? 'SUBMITTED' : formatTimer(secondsRemaining)}
                 </span>
               </div>
-              <button
-                onClick={() => setIsTimerRunning(!isTimerRunning)}
-                className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 transition-colors"
-                title={isTimerRunning ? 'Pause Timer' : 'Start Timer'}
-              >
-                {isTimerRunning ? <Pause className="w-4 h-4 text-amber-400" /> : <Play className="w-4 h-4 text-emerald-400" />}
-              </button>
+              {!submitted && (
+                <button
+                  onClick={() => setIsTimerRunning(!isTimerRunning)}
+                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 transition-colors"
+                  title={isTimerRunning ? 'Pause Timer' : 'Start Timer'}
+                >
+                  {isTimerRunning ? <Pause className="w-4 h-4 text-amber-400" /> : <Play className="w-4 h-4 text-emerald-400" />}
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -257,17 +287,28 @@ export const ExamAgentTab: React.FC = () => {
                 {copy.paperBannerLine1}
               </span>
               <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setShowMemo(!showMemo)}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all ${
-                    showMemo
-                      ? 'bg-emerald-500 text-slate-950 shadow-lg'
-                      : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700'
-                  }`}
-                >
-                  {showMemo ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  <span>{showMemo ? copy.hideMemorandumLabel : copy.showMemorandumLabel}</span>
-                </button>
+                {!submitted ? (
+                  <button
+                    onClick={submitExam}
+                    className="px-3 py-1.5 rounded-xl text-xs font-bold bg-emerald-500 text-slate-950 shadow-lg flex items-center gap-1.5 hover:bg-emerald-400 transition-colors"
+                    title="Submit exam and reveal the mark scheme"
+                  >
+                    <CheckCircle2 className="w-4 h-4" />
+                    Submit Exam
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => setShowMemo(!showMemo)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all ${
+                      showMemo
+                        ? 'bg-emerald-500 text-slate-950 shadow-lg'
+                        : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700'
+                    }`}
+                  >
+                    {showMemo ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    <span>{showMemo ? copy.hideMemorandumLabel : copy.showMemorandumLabel}</span>
+                  </button>
+                )}
 
                 <button
                   onClick={handlePrint}
@@ -300,6 +341,12 @@ export const ExamAgentTab: React.FC = () => {
                 </>
               )}
             </div>
+
+            {submitted && (
+              <div className="mt-4 mx-auto max-w-2xl px-4 py-2 rounded-xl bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-center text-xs font-bold uppercase tracking-widest">
+                ✓ Exam submitted — the mark scheme is revealed
+              </div>
+            )}
 
             {/* Official Instructions */}
             {examPaper.instructions && (
@@ -364,10 +411,12 @@ export const ExamAgentTab: React.FC = () => {
                                 type="radio"
                                 name={q.number}
                                 value={opt}
+                                disabled={submitted}
                                 checked={userAnswers[q.number] === opt}
-                                onChange={() =>
-                                  setUserAnswers((prev) => ({ ...prev, [q.number]: opt }))
-                                }
+                                onChange={() => {
+                                  if (submitted) return;
+                                  setUserAnswers((prev) => ({ ...prev, [q.number]: opt }));
+                                }}
                                 className="accent-sky-500"
                               />
                               <span>{opt}</span>
@@ -381,10 +430,12 @@ export const ExamAgentTab: React.FC = () => {
                         <div className="pl-4 sm:pl-10">
                           <textarea
                             rows={3}
+                            readOnly={submitted}
                             value={userAnswers[q.number] || ''}
-                            onChange={(e) =>
-                              setUserAnswers((prev) => ({ ...prev, [q.number]: e.target.value }))
-                            }
+                            onChange={(e) => {
+                              if (submitted) return;
+                              setUserAnswers((prev) => ({ ...prev, [q.number]: e.target.value }));
+                            }}
                             placeholder="Type your working, calculations or answer here..."
                             className="w-full bg-slate-950/80 border border-slate-800 rounded-xl p-3 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-sky-500 font-mono"
                           />

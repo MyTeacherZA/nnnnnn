@@ -360,6 +360,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       onboardingComplete: true,
       createdAt: student?.createdAt || new Date().toISOString(),
     };
+    try {
+      localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
+    } catch {
+      /* non-fatal */
+    }
     setStudent(profile);
     setActiveSubjectId(profile.subjects[0]?.id || '');
     setIsOnboardingOpen(false);
@@ -372,8 +377,43 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const updateStudentProfile = (updates: Partial<StudentProfile>) => {
     setStudent((prev) => {
-      if (!prev) return prev;
-      const next = { ...prev, ...updates };
+      // Brand-new signups have no student yet: materialize one so the UI can
+      // flip to their country/language immediately (and callers downstream see
+      // a consistent object). Partially-built profiles are never re-read from
+      // storage unless onboarding finishes, so this is safe.
+      const base: StudentProfile = prev || {
+        id: account?.id || `usr-${Date.now()}`,
+        fullName: updates.fullName || account?.fullName || 'Learner',
+        email: updates.email || account?.email || '',
+        phone: '',
+        dateOfBirth: updates.dateOfBirth || '',
+        grade: updates.grade || '',
+        country: updates.country || 'US',
+        nation: updates.nation,
+        state: updates.state || '',
+        avatar: DEFAULT_AVATAR,
+        firmament: {} as any,
+        subjects: [],
+        subscription:
+          subscription ||
+          deriveSubscriptionAccess({
+            status: 'trial',
+            trialExpiresAt: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
+            enforced: false,
+          }),
+        onboardingComplete: false,
+        createdAt: new Date().toISOString(),
+      };
+      const next = { ...base, ...updates };
+      try {
+        // Persist completed profiles only — partial ones rehydrate from the
+        // server on the next login/visit instead.
+        if (next.onboardingComplete) {
+          localStorage.setItem(PROFILE_KEY, JSON.stringify(next));
+        }
+      } catch {
+        /* non-fatal: in-memory state is authoritative */
+      }
       return next;
     });
   };

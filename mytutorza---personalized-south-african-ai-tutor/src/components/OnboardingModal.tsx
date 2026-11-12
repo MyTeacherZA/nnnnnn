@@ -46,6 +46,7 @@ export const OnboardingModal: React.FC = () => {
     signUpAccount,
     signInAccount,
     completeOnboarding,
+    updateStudentProfile,
   } = useApp();
 
   const isGate = !hasCompletedOnboarding;
@@ -192,7 +193,16 @@ export const OnboardingModal: React.FC = () => {
     // Store DOB + grade + country/region immediately, before the quiz.
     setBusy(true);
     try {
-      await saveProfileBasics();
+      await saveProfileBasics().catch(() => {});
+      // Flip the running UI to the learner's country right now, instead of
+      // waiting until after the Firmament quiz completes.
+      updateStudentProfile({
+        dateOfBirth: dob,
+        grade,
+        country,
+        nation: country === 'UK' ? nation : undefined,
+        state: region,
+      });
     } finally {
       setBusy(false);
     }
@@ -209,7 +219,15 @@ export const OnboardingModal: React.FC = () => {
     // learner row exists in the database even if they pause the quiz.
     setBusy(true);
     try {
-      await saveProfileBasics();
+      await saveProfileBasics().catch(() => {});
+      updateStudentProfile({
+        dateOfBirth: dob,
+        grade,
+        country,
+        nation: country === 'UK' ? nation : undefined,
+        state: region,
+        subjects: buildSubjectSlots(),
+      });
     } finally {
       setBusy(false);
     }
