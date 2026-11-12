@@ -27,6 +27,16 @@ import {
 } from '../services/auth';
 
 const PROFILE_KEY = 'mytutorza_profile';
+const APP_TABS: ReadonlyArray<AgentTab> = ['tutoring', 'study', 'roadmap', 'exam', 'formulas'];
+
+function tabFromHash(): AgentTab {
+  const slug = (window.location.hash || '').replace(/^#\/?/, '').split('?')[0].split('/')[0];
+  return (APP_TABS as ReadonlyArray<string>).includes(slug) ? (slug as AgentTab) : 'tutoring';
+}
+
+function currentHashForTab(tab: AgentTab): string {
+  return `#/${tab}`;
+}
 
 export interface OnboardingPayload {
   fullName: string;
@@ -150,6 +160,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const stored = readStoredProfile();
     return stored?.subscription || null;
   });
+
+  // Hash routing: browser back/forward navigates BETWEEN APP VIEWS instead of
+  // leaving the app, and every tab view is restorable from the URL.
+  useEffect(() => {
+    const mountTab = tabFromHash();
+    if (!window.history.state?.tab) {
+      window.history.replaceState({ tab: mountTab }, '', currentHashForTab(mountTab));
+    }
+    setActiveTab(mountTab);
+
+    const onPop = () => setActiveTab(tabFromHash());
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const hash = currentHashForTab(activeTab);
+    if (window.location.hash !== hash) {
+      window.history.pushState({ tab: activeTab }, '', hash);
+    }
+  }, [activeTab]);
 
   // The server is the source of truth for trial/payment status. Refresh when a
   // learner signs in or their email changes, and keep the local profile in sync.

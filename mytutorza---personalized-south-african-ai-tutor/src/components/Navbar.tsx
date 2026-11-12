@@ -16,6 +16,8 @@ import {
   LogOut,
   CreditCard,
   ShieldCheck,
+  ArrowLeft,
+  ArrowRight,
 } from 'lucide-react';
 import { OfficialLanguage } from '../types';
 import { subscriptionBadgeLabel } from '../services/subscription';
@@ -75,6 +77,26 @@ export const Navbar: React.FC = () => {
     <header className={`sticky top-0 z-40 border-b backdrop-blur-xl transition-colors duration-200 ${navContainerClass}`}>
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-16 sm:h-20 gap-2 sm:gap-4">
+          {/* In-app back / forward navigation */}
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              onClick={() => window.history.back()}
+              className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+              title="Back"
+              aria-label="Back"
+            >
+              <ArrowLeft className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => window.history.forward()}
+              className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+              title="Forward"
+              aria-label="Forward"
+            >
+              <ArrowRight className="w-4 h-4" />
+            </button>
+          </div>
+
           {/* Logo & Brand */}
           <div className="flex items-center gap-3 cursor-pointer shrink-0" onClick={() => setActiveTab('tutoring')}>
             <div className="relative">
