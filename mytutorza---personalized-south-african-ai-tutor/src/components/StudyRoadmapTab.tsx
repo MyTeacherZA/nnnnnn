@@ -33,6 +33,8 @@ export const StudyRoadmapTab: React.FC = () => {
   const isLight = displayMode === 'light';
   const isSilver = displayMode === 'normal';
 
+  /** 1, 2 or 4 week plan length (user choice). */
+  const [planLength, setPlanLength] = useState<1 | 2 | 4>(4);
   const [targetExam, setTargetExam] = useState<string>('Term 2 Mid-Year Exam');
   const [focusTopic, setFocusTopic] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
@@ -55,10 +57,11 @@ export const StudyRoadmapTab: React.FC = () => {
     }
   });
 
-  const fetchRoadmap = async () => {
+  const fetchRoadmap = async (weeks?: 1 | 2 | 4) => {
     if (!activeSubject) return;
     setLoading(true);
 
+    const targetWeeks = weeks ?? planLength;
     try {
       const response = await fetch('/api/roadmap/generate', {
         method: 'POST',
@@ -75,6 +78,7 @@ export const StudyRoadmapTab: React.FC = () => {
           state: student?.state,
           country: student?.country,
           nation: student?.nation,
+          planLength: targetWeeks,
         }),
       });
 
@@ -135,11 +139,15 @@ export const StudyRoadmapTab: React.FC = () => {
     }));
   };
 
-  // Progress metrics
-  const totalTasks = roadmap?.weeks.reduce((acc, w) => acc + w.tasks.length, 0) || 0;
-  const finishedTasksCount = roadmap?.weeks.reduce((acc, w) => {
-    return acc + w.tasks.filter((t) => completedTasks[t.id]).length;
-  }, 0) || 0;
+  // Progress metrics: checkpoints (tasks) + mastered topics (subtopics)
+  const totalTasks =
+    roadmap?.weeks.reduce((acc, w) => acc + w.tasks.length + w.topics.length, 0) || 0;
+  const finishedTasksCount =
+    roadmap?.weeks.reduce((acc, w) => {
+      const taskDone = w.tasks.filter((t) => completedTasks[t.id]).length;
+      const topicDone = w.topics.filter((_, i) => completedTasks[`topic-${w.weekNumber}-${i}`]).length;
+      return acc + taskDone + topicDone;
+    }, 0) || 0;
   const progressPercent = totalTasks > 0 ? Math.round((finishedTasksCount / totalTasks) * 100) : 0;
 
   const handlePrint = () => {
@@ -177,7 +185,7 @@ export const StudyRoadmapTab: React.FC = () => {
             </div>
 
             <h1 className={`text-2xl sm:text-3xl font-black tracking-tight ${isLight || isSilver ? 'text-slate-900' : 'text-white'}`}>
-              Personalized 4-Week Study Roadmap
+              Personalized {planLength}-Week Study Plan
             </h1>
             <p className={`text-xs sm:text-sm mt-1 max-w-2xl ${isLight || isSilver ? 'text-slate-600' : 'text-slate-400'}`}>
               Psychometrically tailored to your{' '}
@@ -188,7 +196,7 @@ export const StudyRoadmapTab: React.FC = () => {
               <strong className={isLight || isSilver ? 'text-slate-900' : 'text-white'}>
                 {student?.firmament?.mercury?.element || 'Air'} Engine
               </strong>{' '}
-              pacing cadence, and DBE CAPS ATP milestone timelines.
+              pacing cadence and official curriculum scope for the semester chapter or topic you choose.
             </p>
           </div>
 
@@ -218,6 +226,39 @@ export const StudyRoadmapTab: React.FC = () => {
               <span>{loading ? 'Recalibrating...' : 'Regenerate Plan'}</span>
             </button>
           </div>
+        </div>
+
+        {/* Duration + regenerate controls */}
+        <div className={`mt-4 flex flex-col sm:flex-row sm:items-center gap-3 ${
+          isLight ? 'border-slate-200' : isSilver ? 'border-slate-200' : 'border-slate-800'
+        }`}>
+          <div className="flex items-center gap-2 shrink-0">
+            <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Plan length</span>
+            <div className="flex rounded-lg overflow-hidden border border-slate-700">
+              {[1, 2, 4].map((weeks) => (
+                <button
+                  key={weeks}
+                  onClick={() => {
+                    setPlanLength(weeks as 1 | 2 | 4);
+                    void fetchRoadmap(weeks as 1 | 2 | 4);
+                  }}
+                  className={`px-3 py-1.5 text-xs font-bold transition-colors ${
+                    planLength === weeks
+                      ? 'btn-accent text-white'
+                      : isLight || isSilver
+                        ? 'bg-white text-slate-700 hover:bg-slate-100'
+                        : 'bg-slate-800 text-slate-200 hover:bg-slate-700'
+                  }`}
+                  aria-pressed={planLength === weeks}
+                >
+                  {weeks}w
+                </button>
+              ))}
+            </div>
+          </div>
+          <p className={`text-[11px] ${isLight || isSilver ? 'text-slate-500' : 'text-slate-500'}`}>
+            Each plan targets the semester chapter or topic you enter below.
+          </p>
         </div>
 
         {/* Filter / Focus Customizer Bar */}
@@ -252,7 +293,7 @@ export const StudyRoadmapTab: React.FC = () => {
             <div className="w-full flex-1 flex items-center gap-2">
               <input
                 type="text"
-                placeholder="Optional topic focus (e.g. Calculus & Functions, Organic Chemistry, Trigonometry)..."
+                placeholder="Semester unit, chapter or topic (e.g. Rationale & Trigonometry, Organic Chemistry, Management & Control)..."
                 value={focusTopic}
                 onChange={(e) => setFocusTopic(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && fetchRoadmap()}
@@ -421,8 +462,11 @@ export const StudyRoadmapTab: React.FC = () => {
           {roadmap.weeks.map((week) => {
             const isExpanded = !!expandedWeeks[week.weekNumber];
             const weekTasks = week.tasks || [];
-            const completedInWeek = weekTasks.filter((t) => completedTasks[t.id]).length;
-            const isWeekDone = weekTasks.length > 0 && completedInWeek === weekTasks.length;
+            const completedTasksInWeek = weekTasks.filter((t) => completedTasks[t.id]).length;
+            const topicDoneInWeek = week.topics.filter((_, i) => completedTasks[`topic-${week.weekNumber}-${i}`]).length;
+            const completedInWeek = completedTasksInWeek + topicDoneInWeek;
+            const totalInWeek = weekTasks.length + week.topics.length;
+            const isWeekDone = totalInWeek > 0 && completedInWeek === totalInWeek;
 
             return (
               <div
@@ -477,7 +521,7 @@ export const StudyRoadmapTab: React.FC = () => {
                   <div className="flex items-center justify-between md:justify-end gap-3 self-stretch md:self-auto pt-2 md:pt-0 border-t md:border-t-0 border-slate-700/40">
                     <div className="text-right">
                       <span className={`text-xs font-bold ${isWeekDone ? 'text-emerald-500' : 'text-slate-400'}`}>
-                        {completedInWeek} / {weekTasks.length} Milestones
+                        {completedInWeek} / {totalInWeek} Checkpoints
                       </span>
                     </div>
 
@@ -496,22 +540,29 @@ export const StudyRoadmapTab: React.FC = () => {
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="flex flex-wrap items-center gap-1.5">
                         <span className="text-xs font-bold text-slate-400 uppercase tracking-wider mr-1">
-                          Key CAPS Topics:
+                          Key Topics & Subtopics:
                         </span>
-                        {week.topics.map((t, idx) => (
-                          <span
-                            key={idx}
-                            className={`px-2.5 py-1 rounded-lg text-xs font-bold border ${
-                              isLight
-                                ? 'bg-white text-slate-800 border-slate-300'
-                                : isSilver
-                                ? 'bg-white text-slate-800 border-slate-300'
-                                : 'bg-slate-800 text-slate-200 border-slate-700'
-                            }`}
-                          >
-                            {t}
-                          </span>
-                        ))}
+                        {week.topics.map((t, idx) => {
+                          const topicKey = `topic-${week.weekNumber}-${idx}`;
+                          const done = !!completedTasks[topicKey];
+                          return (
+                            <button
+                              key={idx}
+                              onClick={() => toggleTask(topicKey)}
+                              className={`px-2.5 py-1 rounded-lg text-xs font-bold border flex items-center gap-1.5 transition-all ${
+                                done
+                                  ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-500 line-through'
+                                  : isLight || isSilver
+                                    ? 'bg-white text-slate-800 border-slate-300 hover:border-slate-400'
+                                    : 'bg-slate-800 text-slate-200 border-slate-700 hover:border-slate-600'
+                              }`}
+                              title={done ? 'Mark as not mastered' : 'Mark as mastered'}
+                            >
+                              {done ? <CheckCircle2 className="w-3.5 h-3.5" /> : <Circle className="w-3.5 h-3.5 text-slate-500" />}
+                              {t}
+                            </button>
+                          );
+                        })}
                       </div>
 
                       <div className={`text-xs px-3 py-1.5 rounded-lg border flex items-center gap-2 ${

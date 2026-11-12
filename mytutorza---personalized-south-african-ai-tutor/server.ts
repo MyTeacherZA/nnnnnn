@@ -2453,7 +2453,7 @@ app.post('/api/study/sessions/:id/progress', async (req: Request, res: Response)
 });
 
 // ---------------------------------------------------------------------
-// 2B. STUDY ROADMAP API (Firmament 4-Week Personalized Study Engine)
+// 2B. STUDY ROADMAP API (Firmament 1 / 2 / 4-Week Personalized Study Engine)
 // ---------------------------------------------------------------------
 function getFirmamentRoadmapFallback(
   subject: string,
@@ -2465,6 +2465,7 @@ function getFirmamentRoadmapFallback(
   country?: string,
   state?: string,
   nation?: string,
+  planLength?: number,
 ) {
   const countryCode = String(country || 'US').toUpperCase();
   const planWord =
@@ -2472,6 +2473,8 @@ function getFirmamentRoadmapFallback(
   const paperWord =
     countryCode === 'US' ? 'state/AP past papers' : countryCode === 'UK' ? 'exam-board past papers' : 'past DBE trial papers';
   const examinerWord = countryCode === 'US' ? 'state/AP' : countryCode === 'UK' ? 'UK exam-board' : 'DBE';
+  const requestedWeeks = Number(planLength);
+  const weeksWanted = requestedWeeks === 1 ? 1 : requestedWeeks === 2 ? 2 : 4;
   const mark = Number(previousMark) || 50;
   const isRemedial = mark < 60;
   const archetype = firmamentProfile?.lifePath?.archetype || 'The Architect';
@@ -2815,7 +2818,7 @@ function getFirmamentRoadmapFallback(
     subject,
     grade,
     createdAt: new Date().toISOString(),
-    overallGoal: `4-Week ${planWord} Mastery for ${grade} ${subject} targeting ${
+    overallGoal: `${weeksWanted}-Week ${planWord} Mastery for ${grade} ${subject} targeting ${
       isRemedial ? '70%+ Achievement Level' : '85%+ Distinction Level'
     }`,
     targetExam: targetExam || (countryCode === 'ZA' ? 'Term 2 / NSC Examination' : 'Final Examination'),
@@ -2837,6 +2840,7 @@ function getFirmamentRoadmapFallback(
       }).`,
       `Never leave blank questions in formal examinations; partial method marks can elevate your result.`,
     ],
+    // The learner picks how long their plan is: 1, 2 or 4 weeks.
     weeks: [
       {
         weekNumber: 1,
@@ -2882,18 +2886,20 @@ function getFirmamentRoadmapFallback(
         examinerTraps: week4Traps,
         tasks: makeTasks(4, 'w4', week4Topics),
       },
-    ],
+    ].slice(0, weeksWanted),
   };
 }
 
 app.post('/api/roadmap/generate', async (req: Request, res: Response) => {
   try {
     if (await rejectWithoutAgentAccess(req, res)) return;
-    const { subject, grade, firmamentProfile, previousMark, targetExam, focusTopic, language, state, country, nation } =
+    const { subject, grade, firmamentProfile, previousMark, targetExam, focusTopic, language, state, country, nation, planLength } =
       req.body;
     const email = String(req.body?.email || '').trim().toLowerCase();
     const targetSubject = subject || 'Mathematics';
     const targetGrade = grade || 'Grade 12';
+    const requestedWeeks = Number(planLength);
+    const weeksWanted = requestedWeeks === 1 ? 1 : requestedWeeks === 2 ? 2 : 4;
     const mark = previousMark !== undefined ? Number(previousMark) : 50;
     const isRemedial = mark < 60;
     const targetLang = language || 'English';
@@ -2904,7 +2910,7 @@ app.post('/api/roadmap/generate', async (req: Request, res: Response) => {
     }`;
 
     const cacheKey =
-      `roadmap:${country || 'ZA'}:${state || ''}:${targetGrade}:${targetSubject}:${mark}:${targetExam || 'general'}:${
+      `roadmap:${weeksWanted}w:${country || 'ZA'}:${state || ''}:${targetGrade}:${targetSubject}:${mark}:${targetExam || 'general'}:${
         focusTopic || 'all'
       }:${targetLang}:${progressSignature}`
         .toLowerCase()
@@ -2915,8 +2921,10 @@ app.post('/api/roadmap/generate', async (req: Request, res: Response) => {
     }
 
     const systemInstruction = `
-You are MyTutorZA's Master Academic Director and Chief Strategist for ${curriculum.curriculumName} (Grades 4-12).
-Your task is to build a bespoke, highly motivating, structured 4-WEEK STUDY ROADMAP tailored specifically to the student's psychological profile under THE FIRMAMENT ENGINE:
+You are MyTutorZA's Master Academic Director and Chief Strategist for ${curriculum.curriculumName} (Grades 4-13).
+Your task is to build a bespoke, highly motivating, structured ${weeksWanted}-WEEK STUDY ROADMAP tailored specifically to the student's psychological profile under THE FIRMAMENT ENGINE.
+CRITICAL CONSTRAINT: output EXACTLY ${weeksWanted} week${weeksWanted === 1 ? '' : 's'}, no more and no less.
+The plan covers the semester chapter or topic named below — not the whole syllabus.
 
 STUDENT'S FIRMAMENT PSYCHOMETRIC PROFILE:
 - Student: ${firmamentProfile?.studentName || 'Student'}
@@ -2992,9 +3000,9 @@ RETURN STRICT JSON matching this schema:
       try {
         const textRaw = await callLlamaChat({
           system: roadmapSystemInstruction,
-          user: `Generate a personalized 4-week ${curriculum.frameworkLabel} study roadmap for ${targetGrade} ${targetSubject} for a student with previous mark ${mark}% and archetype ${
+          user: `Generate a personalized ${weeksWanted}-week ${curriculum.frameworkLabel} study roadmap for ${targetGrade} ${targetSubject} for a student with previous mark ${mark}% and archetype ${
             firmamentProfile?.lifePath?.archetype || 'The Architect'
-          }. Focus: ${focusTopic || 'Full Curriculum'}.`,
+          }. Focus: ${focusTopic || 'the semester chapter or topic chosen by the learner'}.`,
           jsonMode: true,
           temperature: 0.4,
           timeoutMs: DEEPSEEK_API_KEY ? 90000 : 9000,
@@ -3011,7 +3019,7 @@ RETURN STRICT JSON matching this schema:
         }
 
         const parsed = JSON.parse(text);
-        if (parsed && Array.isArray(parsed.weeks) && parsed.weeks.length === 4) {
+        if (parsed && Array.isArray(parsed.weeks) && parsed.weeks.length === weeksWanted) {
           await setCache(cacheKey, parsed, 7200);
           return res.json({ ...parsed, source: LLAMA_MODEL_ID });
         }
@@ -3033,6 +3041,7 @@ RETURN STRICT JSON matching this schema:
       country,
       state,
       nation,
+      weeksWanted,
     );
     // Intentionally NOT cached: the fallback roadmap is scaffolding, not content.
     return res.json({ ...fallback, source: 'firmament-engine-local' });
@@ -3048,6 +3057,7 @@ RETURN STRICT JSON matching this schema:
       req.body?.country,
       req.body?.state,
       req.body?.nation,
+      Number(req.body?.planLength) || 4,
     );
     return res.json({ ...safeFallback, source: 'emergency-safe-fallback' });
   }
