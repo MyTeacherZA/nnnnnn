@@ -102,10 +102,26 @@ function readStoredProfile(): StudentProfile | null {
     const raw = localStorage.getItem(PROFILE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as StudentProfile;
-    // Profiles written by the legacy demo build have no onboardingComplete flag
-    // and are treated as "new user" so nobody inherits the demo learner.
-    if (!parsed || !parsed.onboardingComplete) return null;
-    return parsed;
+    if (!parsed) return null;
+
+    // Complete profiles are always trusted.
+    if (parsed.onboardingComplete) return parsed;
+
+    // Partial profile from an unfinished onboarding: only surface it when the
+    // local session account matches, so demo/legacy leaks stay impossible.
+    try {
+      const session = getCurrentAccount();
+      if (
+        session?.email &&
+        typeof parsed.email === 'string' &&
+        parsed.email.toLowerCase() === session.email.toLowerCase()
+      ) {
+        return parsed;
+      }
+    } catch {
+      // ignore
+    }
+    return null;
   } catch {
     return null;
   }
@@ -151,7 +167,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   });
 
   const hasCompletedOnboarding = !!student?.onboardingComplete;
-  const [isOnboardingOpen, setIsOnboardingOpen] = useState<boolean>(() => !readStoredProfile());
+  const [isOnboardingOpen, setIsOnboardingOpen] = useState<boolean>(() => {
+    const stored = readStoredProfile();
+    return stored === null || !stored.onboardingComplete;
+  });
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isTextbookModalOpen, setIsTextbookModalOpen] = useState(false);
   const [isContactModalOpen, setIsContactModalOpen] = useState(false);
@@ -330,7 +349,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
       if (stored && stored.email.toLowerCase() === result.account.email.toLowerCase()) {
         setStudent(stored);
-        setIsOnboardingOpen(false);
+        // If onboarding is incomplete, keep the wizard open so the learner
+        // resumes instead of stranding on the landing screen.
+        setIsOnboardingOpen(!stored.onboardingComplete);
       }
     }
     return result;

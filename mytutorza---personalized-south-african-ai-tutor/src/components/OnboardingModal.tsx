@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import {
   getPsychometricQuestions,
@@ -50,7 +50,20 @@ export const OnboardingModal: React.FC = () => {
   } = useApp();
 
   const isGate = !hasCompletedOnboarding;
-  const [step, setStep] = useState<Step>('account');
+
+  // Furthest step supported by a saved (partially-complete) profile.
+  // Used both for the "welcome back" resume panel and the auto-jump.
+  const furthestStep = (p: typeof student): Step => {
+    if (!p) return 'details';
+    const hasDetails = Boolean(p.dateOfBirth && p.grade && (p.state || p.nation));
+    const hasSubjects = Array.isArray(p.subjects) && p.subjects.length > 0;
+    if (hasDetails && hasSubjects) return 'quiz';
+    if (hasDetails) return 'subjects';
+    return 'details';
+  };
+
+  const [step, setStep] = useState<Step>(() => furthestStep(student));
+  const [resumeSeen, setResumeSeen] = useState(false);
   const [isLoginMode, setIsLoginMode] = useState(false);
   const [busy, setBusy] = useState(false);
   const [resetBusy, setResetBusy] = useState(false);
@@ -80,6 +93,43 @@ export const OnboardingModal: React.FC = () => {
     (student?.firmament?.rawAnswers as AnswerMap) || {}
   );
   const [calculatedResult, setCalculatedResult] = useState<any>(student?.firmament || null);
+
+  // Hydration: when the server-side profile arrives AFTER this modal mounted,
+  // populate every field from it so the learner resumes, never re-enters.
+  useEffect(() => {
+    if (!student) return;
+    setFullName(student.fullName || '');
+    setEmail(student.email || '');
+    setPhone(student.phone || '');
+    if (student.dateOfBirth) setDob(student.dateOfBirth);
+    if (student.grade) setGrade(student.grade);
+    if (student.country) setCountry(student.country as CountryCode);
+    if (student.nation) setNation(student.nation);
+    if (student.state) setRegion(student.state);
+    if (Array.isArray(student.subjects) && student.subjects.length) {
+      setSelectedSubjects(student.subjects.map((s) => s.name));
+    }
+    if (student.firmament?.rawAnswers) setAnswers(student.firmament.rawAnswers as AnswerMap);
+    if (student.firmament) setCalculatedResult(student.firmament);
+  }, [student?.id, student?.email]);
+
+  // Auto-jump: when a hydrated but incomplete profile shows up while the user
+  // is on the account step, slide them to the furthest completed step instead
+  // of leaving them staring at the sign-in form.
+  useEffect(() => {
+    if (step !== 'account') return;
+    if (!student || !account) return;
+    if (resumeSeen) return;
+    const target = furthestStep(student);
+    if (target !== 'account') {
+      setStep(target);
+      setNotice(`Welcome back, ${student.fullName || student.email} — you left off at ${
+        target === 'subjects' ? 'choosing your subjects' : target === 'quiz' ? 'the diagnostic' : 'your profile'
+      }.`);
+      setResumeSeen(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [student, account, step, resumeSeen]);
 
   if (!isOnboardingOpen) return null;
 
@@ -118,15 +168,31 @@ export const OnboardingModal: React.FC = () => {
           setError(result.error || 'Sign in failed.');
           return;
         }
-        // Returning learner with a saved profile is handled by the context,
-        // which closes onboarding. Otherwise continue into the wizard.
+        // If the gate is still open after sign-in, slide the learner to the
+        // furthest step their saved profile supports (never dump them
+        // back at the top of the wizard).
         setFullName(result.account?.fullName || fullName);
         setPhone(result.account?.phone || phone);
-        setStep(hasCompletedOnboarding ? 'result' : 'details');
+        setStep(
+          !result.account
+            ? 'account'
+            : hasCompletedOnboarding
+              ? 'result'
+              : furthestStep(student),
+        );
       } else {
         const result = await signUpAccount({ fullName, email, phone, password });
         if (!result.ok) {
-          setError(result.error || 'Could not create your account.');
+          const msg = result.error || 'Could not create your account.';
+          setError(msg);
+          // Auto-switch to sign-in mode so a re-signup with an existing email
+          // lands the learner on the login form instead of a dead error.
+          if (/already exists|already registered/i.test(msg)) {
+            setIsLoginMode(true);
+            setNotice('That email is already registered — sign in to continue where you left off.');
+            setPassword('');
+            setConfirmPassword('');
+          }
           return;
         }
         if (result.needsEmailConfirmation) {
@@ -479,6 +545,26 @@ export const OnboardingModal: React.FC = () => {
         {/* STEP 1: ACCOUNT */}
         {step === 'account' && (
           <div>
+            {account && student && student.dateOfBirth && (
+              <div className="mb-4 rounded-2xl border border-sky-500/40 bg-sky-950/40 p-4 text-left">
+                <p className="text-[11px] uppercase font-bold text-sky-300 tracking-wider">
+                  You've already started
+                </p>
+                <p className="text-xs text-slate-300 mt-1">
+                  Welcome back, <strong className="text-white">{student.fullName || account.email}</strong>. Your
+                  account exists but onboarding isn't finished yet — pick up right where you left off.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setStep(furthestStep(student))}
+                  className="w-full mt-3 btn-accent py-2.5 rounded-xl font-bold text-xs flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <ArrowRight className="w-4 h-4" />
+                  Resume where you left off
+                </button>
+              </div>
+            )}
+
             <div className="text-center mb-5">
               <h2 className="text-2xl font-black text-white">
                 {isLoginMode ? 'Welcome back' : 'Create your learner account'}
