@@ -3370,6 +3370,20 @@ app.post('/api/billing/checkout', (req: Request, res: Response) => {
 });
 
 // ---------------------------------------------------------------------
+// REFERRALS (30 paid first-month signups = 1 free month for the referrer)
+// ---------------------------------------------------------------------
+app.post('/api/referrals/me', async (req: Request, res: Response) => {
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  if (!email) return res.status(400).json({ error: 'email required' });
+  const client = getServiceSupabaseClient();
+  if (!client) return res.json({ code: null, uses: 0, threshold: 30, granted: false, configured: false });
+  const profile = await findProfileByEmail(client, email);
+  if (!profile?.id) return res.status(404).json({ error: 'profile not found' });
+  const stats = await getReferralStats(client, profile.id);
+  return res.json({ ...stats, configured: true });
+});
+
+// ---------------------------------------------------------------------
 // PAYPAL SUBSCRIPTIONS
 // ---------------------------------------------------------------------
 const PAYPAL_MODE = (process.env.PAYPAL_MODE || 'sandbox').toLowerCase();
@@ -3391,10 +3405,14 @@ async function paypalAccessToken(): Promise<string> {
 
 const PAYPAL_PLANS: Record<string, { planId: string; label: string; price: string; currency: string; cycle: string }> = {
   weekly_usd: { planId: process.env.PAYPAL_PLAN_WEEKLY_USD || '', label: '7 days', price: '2.99', currency: 'USD', cycle: 'weekly' },
-  monthly_usd: { planId: process.env.PAYPAL_PLAN_MONTHLY_USD || '', label: '1 month', price: '10.99', currency: 'USD', cycle: 'monthly' },
+  monthly_usd: { planId: process.env.PAYPAL_PLAN_MONTHLY_USD || '', label: '1 month', price: '19.99', currency: 'USD', cycle: 'monthly' },
   weekly_gbp: { planId: process.env.PAYPAL_PLAN_WEEKLY_GBP || '', label: '7 days', price: '2.50', currency: 'GBP', cycle: 'weekly' },
-  monthly_gbp: { planId: process.env.PAYPAL_PLAN_MONTHLY_GBP || '', label: '1 month', price: '10.50', currency: 'GBP', cycle: 'monthly' },
+  monthly_gbp: { planId: process.env.PAYPAL_PLAN_MONTHLY_GBP || '', label: '1 month', price: '19.99', currency: 'GBP', cycle: 'monthly' },
 };
+
+const PAYPAL_PUBLIC_PLANS: Record<string, { planId: string; label: string; price: string; currency: string; cycle: string }> = Object.fromEntries(
+  Object.entries(PAYPAL_PLANS).filter(([, v]) => v.cycle === 'monthly'),
+);
 
 /** Billing is enforced only once PayPal credentials + at least one plan exist. */
 function subscriptionsConfigured(): boolean {
@@ -3416,8 +3434,136 @@ interface BillingAccess {
   daysLeft?: number;
 }
 
+function randomReferralCode(): string {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code = '';
+  for (let i = 0; i < 8; i += 1) {
+    code += alphabet[Math.floor(Math.random() * alphabet.length)];
+  }
+  return code;
+}
+
+async function getOrCreateReferralCode(client: any, profileId: string): Promise<string | null> {
+  if (!client || !profileId) return null;
+  const { data: existing } = await client
+    .from('referral_codes')
+    .select('code')
+    .eq('user_id', profileId)
+    .maybeSingle();
+  if (existing?.code) return String(existing.code);
+
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const code = randomReferralCode();
+    const { error } = await client.from('referral_codes').insert([{ user_id: profileId, code }]);
+    if (!error) return code;
+  }
+  return null;
+}
+
+async function getReferralStats(client: any, profileId: string): Promise<{
+  code: string | null;
+  uses: number;
+  threshold: number;
+  granted: boolean;
+}> {
+  const empty = { code: null, uses: 0, threshold: 30, granted: false };
+  if (!client || !profileId) return empty;
+  const code = await getOrCreateReferralCode(client, profileId);
+  const { count } = await client
+    .from('referral_uses')
+    .select('id', { count: 'exact', head: true })
+    .eq('referrer_user_id', profileId);
+  const { data: grants } = await client
+    .from('referral_grants')
+    .select('id')
+    .eq('user_id', profileId)
+    .eq('reason', 'referral-30')
+    .limit(1);
+  return {
+    code,
+    uses: typeof count === 'number' ? count : 0,
+    threshold: 30,
+    granted: Array.isArray(grants) && grants.length > 0,
+  };
+}
+
+/**
+ * Credit a referrer when a referred learner becomes an active paying
+ * subscriber for the first time. Idempotent per (referrer, referred) pair.
+ */
+async function maybeCreditReferral(client: any, usedByProfileId: string | null | undefined): Promise<void> {
+  if (!client || !usedByProfileId) return;
+  try {
+    const { data: profile } = await client
+      .from('student_profiles')
+      .select('id, referral_code, email, full_name')
+      .eq('id', usedByProfileId)
+      .maybeSingle();
+    const code = (profile?.referral_code || '').trim().toUpperCase();
+    if (!code) return;
+
+    const { data: owner } = await client
+      .from('referral_codes')
+      .select('user_id')
+      .eq('code', code)
+      .maybeSingle();
+    if (!owner?.user_id || owner.user_id === usedByProfileId) return;
+
+    const { data: awarded, error: rpcError } = await client.rpc('credit_referral_bonus', {
+      _referrer: owner.user_id,
+      _referred: usedByProfileId,
+      _code: code,
+    });
+    if (rpcError) {
+      console.warn('Referral credit RPC failed:', rpcError.message);
+      return;
+    }
+
+    if (!awarded) return;
+
+    // Grant the free month as an extra row in `subscriptions`.
+    const bonusEnd = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+    await client.from('subscriptions').insert([
+      {
+        user_id: owner.user_id,
+        provider: 'referral_bonus',
+        provider_subscription_id: `referral-bonus-${owner.user_id}-${Date.now()}`,
+        plan_id: 'free-month',
+        status: 'active',
+        current_period_end: bonusEnd,
+        raw_event: { reason: 'referral-30' },
+      },
+    ]);
+    await client
+      .from('student_profiles')
+      .update({ subscription_status: 'active' })
+      .eq('id', owner.user_id);
+
+    // Best-effort email to the referrer.
+    try {
+      const { data: ownerProfile } = await client
+        .from('student_profiles')
+        .select('email, full_name')
+        .eq('id', owner.user_id)
+        .maybeSingle();
+      if (ownerProfile?.email) {
+        await sendMail({
+          to: ownerProfile.email,
+          subject: 'Congratulations — 30 people subscribed using your code!',
+          text: `Hi ${ownerProfile.full_name || 'there'},\n\nCongratulations — 30 learners have subscribed to MyTutorZA using your referral code. Your next month is on us.\n\n— The MyTutorZA team`,
+          html: `<p>Hi ${ownerProfile.full_name || 'there'},</p><p><strong>Congratulations — 30 learners have subscribed using your code. Your next month is on us.</strong></p><p>Talk soon,<br/>The MyTutorZA team</p>`,
+        });
+      }
+    } catch (mailErr: any) {
+      console.warn('Referral congrats email failed:', mailErr?.message || mailErr);
+    }
+  } catch (err: any) {
+    console.warn('maybeCreditReferral error:', err?.message || err);
+  }
+}
+
 function computeBillingAccess(row: any, enforced: boolean): BillingAccess {
-  const status = String(row?.subscription_status || 'trial').toLowerCase();
+  const status = String(row?.subscription_status || 'none').toLowerCase();
   const trialMs = row?.trial_expires_at ? new Date(row.trial_expires_at).getTime() : 0;
   const trialActive = status === 'trial' && (!trialMs || trialMs > Date.now());
   const paidActive = status === 'active' || status === 'past_due';
@@ -3541,7 +3687,7 @@ app.get('/api/billing/status', async (req: Request, res: Response) => {
 });
 
 app.get('/api/billing/paypal/plans', (_req: Request, res: Response) => {
-  return res.json({ configured: subscriptionsConfigured(), plans: PAYPAL_PLANS });
+  return res.json({ configured: subscriptionsConfigured(), plans: PAYPAL_PUBLIC_PLANS });
 });
 
 app.post('/api/billing/paypal/create-subscription', async (req: Request, res: Response) => {
@@ -3622,6 +3768,14 @@ app.post('/api/billing/paypal/confirm', async (req: Request, res: Response) => {
         profile = data || null;
       }
 
+      // Detect first-time-active transition to credit the referrer.
+      const { data: prior } = await client
+        .from('subscriptions')
+        .select('status')
+        .eq('provider_subscription_id', subscriptionId)
+        .maybeSingle();
+      const wasActive = String(prior?.status || '').toLowerCase() === 'active';
+
       await client.from('subscriptions').upsert(
         {
           user_id: profile?.id || j.custom_id || null,
@@ -3640,6 +3794,10 @@ app.post('/api/billing/paypal/confirm', async (req: Request, res: Response) => {
           .from('student_profiles')
           .update({ subscription_status: status })
           .eq('id', profile.id);
+      }
+
+      if ((profile?.id || j.custom_id) && String(status).toLowerCase() === 'active' && !wasActive) {
+        await maybeCreditReferral(client, profile?.id || j.custom_id);
       }
     }
 
@@ -3697,6 +3855,14 @@ app.post('/api/billing/paypal/webhook', async (req: Request, res: Response) => {
   const supa = getServiceSupabaseClient();
   if (supa && subId) {
     try {
+      // Detect first-time-active transition to credit the referrer.
+      const { data: prior } = await supa
+        .from('subscriptions')
+        .select('status')
+        .eq('provider_subscription_id', subId)
+        .maybeSingle();
+      const wasActive = String(prior?.status || '').toLowerCase() === 'active';
+
       await supa.from('subscriptions').upsert(
         {
           user_id: uid || null,
@@ -3714,6 +3880,11 @@ app.post('/api/billing/paypal/webhook', async (req: Request, res: Response) => {
           .from('student_profiles')
           .update({ subscription_status: status })
           .eq('id', uid);
+      }
+
+      const statusNow = String(status).toLowerCase();
+      if (uid && statusNow === 'active' && !wasActive) {
+        await maybeCreditReferral(supa, uid);
       }
     } catch (e: any) {
       console.error('Webhook DB upsert failed:', e?.message || e);
@@ -4153,6 +4324,12 @@ async function persistProfileBundle(
   const safeProfile = profileInput || {};
   const email = String(safeProfile.email || '').trim().toLowerCase();
 
+  const referralCode = typeof safeProfile.referralCode === 'string'
+    ? safeProfile.referralCode.trim().toUpperCase()
+    : typeof safeProfile.referral_code === 'string'
+      ? safeProfile.referral_code.trim().toUpperCase()
+      : undefined;
+
   // Only the profile fields we own are written; trial fields are preserved on
   // update so re-saving a profile never restarts a learner's trial.
   const profileFields: Record<string, any> = {
@@ -4166,6 +4343,10 @@ async function persistProfileBundle(
     state: safeProfile.state || null,
     subjects: safeProfile.subjects || [],
   };
+
+  if (referralCode) {
+    profileFields.referral_code = referralCode;
+  }
 
   let profileId: string | null = null;
   let profileError: string | undefined;
@@ -4196,7 +4377,7 @@ async function persistProfileBundle(
           ...profileFields,
           trial_started_at: new Date().toISOString(),
           trial_expires_at: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
-          subscription_status: 'trial',
+          subscription_status: 'none',
         },
       ])
       .select('id')

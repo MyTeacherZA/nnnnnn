@@ -93,6 +93,7 @@ export const OnboardingModal: React.FC = () => {
     (student?.firmament?.rawAnswers as AnswerMap) || {}
   );
   const [calculatedResult, setCalculatedResult] = useState<any>(student?.firmament || null);
+  const [referralCode, setReferralCode] = useState('');
 
   // Hydration: when the server-side profile arrives AFTER this modal mounted,
   // populate every field from it so the learner resumes, never re-enters.
@@ -329,6 +330,7 @@ export const OnboardingModal: React.FC = () => {
     nation: country === 'UK' ? nation : undefined,
     state: region,
     subjects: buildSubjectSlots(),
+    referralCode: referralCode.trim().toUpperCase() || undefined,
   });
 
   /** POST the learner basics (no Firmament yet) as soon as subjects are chosen. */
@@ -662,6 +664,24 @@ export const OnboardingModal: React.FC = () => {
                   </div>
                 )}
               </div>
+
+              {!isLoginMode && (
+                <div>
+                  <label className={labelClass}>Referral code <span className="text-slate-500 font-normal normal-case">(optional)</span></label>
+                  <input
+                    type="text"
+                    autoComplete="off"
+                    value={referralCode}
+                    onChange={(e) => setReferralCode(e.target.value.toUpperCase())}
+                    placeholder="e.g. AB1234CD"
+                    maxLength={16}
+                    className={`${inputClass} uppercase tracking-wider`}
+                  />
+                  <p className="text-[10px] text-slate-500 mt-1">
+                    Have a friend&apos;s code? Use it to unlock MyTutorZA together.
+                  </p>
+                </div>
+              )}
 
               <button
                 type="submit"

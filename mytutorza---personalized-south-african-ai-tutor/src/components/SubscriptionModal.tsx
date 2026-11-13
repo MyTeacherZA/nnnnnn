@@ -3,11 +3,11 @@ import {
   X,
   CreditCard,
   ShieldCheck,
-  Clock,
   Check,
   AlertTriangle,
   MessageSquareHeart,
   Loader2,
+  Gift,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { subscriptionBadgeLabel } from '../services/subscription';
@@ -47,6 +47,7 @@ export const SubscriptionModal: React.FC<{ open: boolean; onClose: () => void }>
   const [plans, setPlans] = useState<PlansResponse | null>(null);
   const [busyPlan, setBusyPlan] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [referral, setReferral] = useState<{ code: string | null; uses: number; threshold: number; granted: boolean } | null>(null);
 
   const email = student?.email || account?.email || '';
   const preferred = preferredCurrency(student?.country);
@@ -58,6 +59,23 @@ export const SubscriptionModal: React.FC<{ open: boolean; onClose: () => void }>
       .then((r) => r.json())
       .then(setPlans)
       .catch(() => setError('Could not load subscription plans. Please try again.'));
+
+    // Pull referral stats for the 30-users-free promotion.
+    if (email) {
+      fetch('/api/referrals/me', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      })
+        .then((r) => r.json())
+        .then((data) => setReferral({
+          code: data?.code ?? null,
+          uses: Number(data?.uses ?? 0),
+          threshold: Number(data?.threshold ?? 30),
+          granted: Boolean(data?.granted),
+        }))
+        .catch(() => {});
+    }
     void refreshSubscription();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -253,6 +271,43 @@ export const SubscriptionModal: React.FC<{ open: boolean; onClose: () => void }>
             </div>
           )}
         </div>
+
+        {/* Referral promotion: 30-paying-referrals-free-month */}
+        {referral && (
+          <div className="mt-6 rounded-2xl border border-emerald-500/30 bg-emerald-500/5 p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-emerald-500/20 flex items-center justify-center shrink-0">
+                <Gift className="w-5 h-5 text-emerald-400" />
+              </div>
+              <div>
+                <p className="text-xs font-bold text-emerald-300 uppercase tracking-wider">Refer a friend</p>
+                <p className="text-[11px] text-slate-300 mt-0.5 leading-snug">
+                  30 paying friends on your code → <strong className="text-emerald-300">1 month free</strong>.
+                </p>
+                <p className="text-[11px] text-slate-400 mt-1.5">
+                  {referral.granted
+                    ? '🎉 Bonus unlocked — your next month is on us.'
+                    : `${referral.uses} / ${referral.threshold} paid friends using your code.`}
+                </p>
+              </div>
+            </div>
+            {referral.code && (
+              <div className="flex flex-col items-start sm:items-end gap-1.5 shrink-0">
+                <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Your code</span>
+                <code className="text-sm font-black tracking-widest text-emerald-200 bg-slate-950 border border-emerald-600/40 rounded-lg px-3 py-1.5">
+                  {referral.code}
+                </code>
+                <button
+                  type="button"
+                  onClick={() => navigator.clipboard?.writeText(referral.code || '').catch(() => {})}
+                  className="text-[10px] font-bold text-emerald-400 hover:text-emerald-300 underline"
+                >
+                  Copy
+                </button>
+              </div>
+            )}
+          </div>
+        )}
 
         <p className="text-[10px] text-slate-500 mt-5 text-center">
           Payments are processed securely by PayPal. Your learner profile and progress stay saved
