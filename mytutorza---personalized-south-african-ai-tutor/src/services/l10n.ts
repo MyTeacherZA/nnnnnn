@@ -240,7 +240,7 @@ function usCopy(state: string): RegionalCopy {
       term2: 'Mid-Year Benchmark Exam',
       term3: 'Benchmark Exam',
       final: 'State End-of-Course Exam (or AP)',
-      controlTest: 'Unit Test',
+      controlTest: 'Semester Unit Test',
       catchUp: 'General Standards Plan',
     },
     catchUpPlan: 'General Standards Plan',

@@ -414,7 +414,7 @@ export const OnboardingModal: React.FC = () => {
     }
     setNotice(
       saved
-        ? 'Firmament profile saved — your life path, Mercury engine and cognitive vector are now stored.'
+        ? 'Firmament profile saved — your learner profile is now stored.'
         : 'Firmament calculated. We will retry saving your profile when you enter your workspace.'
     );
 
@@ -953,8 +953,7 @@ export const OnboardingModal: React.FC = () => {
                 <div className="h-full accent-gradient-bg transition-all duration-300" style={{ width: `${progressPercent}%` }} />
               </div>
               <p className="text-[10px] text-slate-500 mt-2 leading-snug">
-                {questions.length} questions for {normalizeGrade(grade)} → Life Path, Mercury element and
-                cognitive vector. There are no right answers; pick the statement that fits you better.
+                {questions.length} questions for {normalizeGrade(grade)}. There are no right answers; pick the statement that fits you better.
               </p>
             </div>
 
@@ -1026,23 +1025,20 @@ export const OnboardingModal: React.FC = () => {
               </p>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-left">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-left">
               <div className="bg-slate-900/90 p-4 rounded-2xl border border-slate-800">
-                <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1">Life Path</span>
+                <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1">Learner Type</span>
                 <p className="text-sm font-extrabold text-white">{calculatedResult.lifePath?.profile}</p>
-                <p className="text-[10px] text-slate-400 mt-0.5">Path {calculatedResult.lifePath?.number}</p>
               </div>
               <div className="bg-slate-900/90 p-4 rounded-2xl border border-slate-800">
-                <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1">Mercury Engine</span>
-                <p className="text-sm font-extrabold text-amber-300">{calculatedResult.mercury?.element} element</p>
-                <p className="text-[10px] text-slate-400 mt-0.5">{calculatedResult.mercury?.pacingStyle}</p>
+                <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1">Study Pace</span>
+                <p className="text-sm font-extrabold text-amber-300">{calculatedResult.mercury?.element}</p>
               </div>
               <div className="bg-slate-900/90 p-4 rounded-2xl border border-slate-800">
-                <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1">Cognitive Vector</span>
+                <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1">Learning Modality</span>
                 <p className="text-sm font-extrabold text-cyan-300">
                   {calculatedResult.cognitiveVector?.primaryModality}
                 </p>
-                <p className="text-[10px] text-slate-400 mt-0.5">{calculatedResult.processingSpeed}</p>
               </div>
             </div>
 

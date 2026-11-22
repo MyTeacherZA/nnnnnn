@@ -297,7 +297,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               name: s.name,
               category: s.category || 'Mathematics',
               previousTermMark: s.previousTermMark ?? 50,
-              previousTermName: s.previousTermName || 'Term 1',
+              previousTermName: s.previousTermName || 'Previous Term',
               tutoringLanguage: s.tutoringLanguage || 'English',
               textbook: s.textbook,
             })) : [];
