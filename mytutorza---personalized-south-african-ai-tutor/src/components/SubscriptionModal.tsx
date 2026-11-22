@@ -82,7 +82,10 @@ export const SubscriptionModal: React.FC<{ open: boolean; onClose: () => void }>
 
   const orderedPlans = useMemo(() => {
     if (!plans?.plans) return [];
-    return Object.entries(plans.plans).sort(([a], [b]) => {
+    // STRICT country pricing: only ever surface the plan matching the learner's
+    // country currency (USD for US, GBP for UK). Never show both to one learner.
+    const entries = Object.entries(plans.plans).filter(([key]) => key.endsWith(preferred.toLowerCase()));
+    return entries.sort(([a], [b]) => {
       const aPreferred = a.endsWith(preferred.toLowerCase()) ? -1 : 1;
       const bPreferred = b.endsWith(preferred.toLowerCase()) ? -1 : 1;
       if (aPreferred !== bPreferred) return aPreferred - bPreferred;
