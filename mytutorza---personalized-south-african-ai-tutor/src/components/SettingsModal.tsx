@@ -43,14 +43,6 @@ export const SettingsModal: React.FC = () => {
   const [newSubjectTerm, setNewSubjectTerm] = useState('Term 2');
   const [newSubjectLang, setNewSubjectLang] = useState<OfficialLanguage>('English');
 
-  const avatarOptions = [
-    'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
-    'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80',
-    'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150&auto=format&fit=crop&q=80',
-    'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150&auto=format&fit=crop&q=80',
-    'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150&auto=format&fit=crop&q=80',
-  ];
-
   if (!isSettingsOpen || !student) return null;
 
   const handleAddSubject = () => {
@@ -379,29 +371,9 @@ export const SettingsModal: React.FC = () => {
           </div>
         )}
 
-        {/* Tab 3: PROFILE & AVATAR */}
+        {/* Tab 3: PROFILE */}
         {activeSettingsTab === 'profile' && (
           <div className="flex-1 overflow-y-auto space-y-6 pr-1">
-            {/* Avatar picker */}
-            <div>
-              <label className="text-xs font-bold text-slate-400 uppercase tracking-wider block mb-2">
-                Choose Profile Avatar
-              </label>
-              <div className="flex flex-wrap items-center gap-3">
-                {avatarOptions.map((url, i) => (
-                  <button
-                    key={i}
-                    onClick={() => updateStudentProfile({ avatar: url })}
-                    className={`w-14 h-14 rounded-2xl overflow-hidden border-2 transition-all ${
-                      student.avatar === url ? 'border-sky-400 scale-105 shadow-lg' : 'border-slate-700 opacity-60'
-                    }`}
-                  >
-                    <img src={url} alt="avatar" className="w-full h-full object-cover" />
-                  </button>
-                ))}
-              </div>
-            </div>
-
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className="text-xs font-bold text-slate-400 uppercase tracking-wider block mb-1">

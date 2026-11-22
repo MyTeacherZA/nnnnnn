@@ -94,9 +94,6 @@ interface AppContextType {
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
-const DEFAULT_AVATAR =
-  'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80';
-
 function readStoredProfile(): StudentProfile | null {
   try {
     const raw = localStorage.getItem(PROFILE_KEY);
@@ -311,7 +308,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               country: (p.country as any) || 'US',
               nation: p.nation,
               state: p.state || '',
-              avatar: DEFAULT_AVATAR,
+              avatar: '',
               firmament: (j.firmament && (j.firmament as any).life_path) ? {
                 studentName: p.full_name || result.account.fullName,
                 calculatedAt: j.firmament.calculated_at,
@@ -368,7 +365,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       country: payload.country,
       nation: payload.nation,
       state: payload.state,
-      avatar: student?.avatar || DEFAULT_AVATAR,
+      avatar: student?.avatar || '',
       firmament: payload.firmament,
       subjects: payload.subjects,
       subscription:
