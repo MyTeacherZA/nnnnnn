@@ -409,7 +409,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         country: updates.country || 'US',
         nation: updates.nation,
         state: updates.state || '',
-        avatar: DEFAULT_AVATAR,
+        avatar: '',
         firmament: {} as any,
         subjects: [],
         subscription:
