@@ -122,9 +122,9 @@ const AppContent: React.FC = () => {
             </div>
             <button
               onClick={() => setIsSubscriptionOpen(true)}
-              className="px-3 py-1.5 rounded-xl text-xs font-bold bg-slate-900 border border-slate-700 hover:border-slate-500 text-slate-200"
+              className="px-4 py-2 rounded-xl text-sm font-black btn-accent shadow-lg hover:scale-105"
             >
-              Plans &amp; pricing
+              Get access — subscribe
             </button>
           </div>
         </header>

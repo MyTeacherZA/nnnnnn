@@ -43,13 +43,6 @@ export const Navbar: React.FC = () => {
   // The 11 official SA languages only apply to South African CAPS learners.
   const offersSaLanguages = student?.country === 'ZA';
 
-  const isActiveSub = subscription?.status === 'active';
-  const isTrialSub = subscription?.status === 'trial';
-  const subscriptionButtonClass = isActiveSub
-    ? 'bg-emerald-500/15 border border-emerald-500/40 hover:border-emerald-400 text-emerald-300'
-    : isTrialSub
-    ? 'bg-amber-500/15 border border-amber-500/40 hover:border-amber-400 text-amber-300'
-    : 'btn-accent text-white';
   const subscriptionLabel = subscriptionBadgeLabel(subscription);
 
   const isLight = displayMode === 'light';
@@ -169,10 +162,12 @@ export const Navbar: React.FC = () => {
 
           {/* Right Navigation & Action Items */}
           <div className="flex items-center gap-1.5 sm:gap-2">
-            {/* Subscription status / upgrade — always visible so access is discoverable */}
+            {/* Subscription status / upgrade — prominent CTA so billing is discoverable */}
             <button
               onClick={() => setIsSubscriptionOpen(true)}
-              className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl text-xs font-bold transition-all shadow-sm ${subscriptionButtonClass}`}
+              className={`flex items-center gap-2 px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl text-sm sm:text-base font-black transition-all shadow-lg ${subscription?.status === 'active'
+                ? 'bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 hover:border-emerald-400'
+                : 'btn-accent text-white hover:scale-105'}`}
               title={
                 subscription?.status === 'active'
                   ? 'Subscription active — manage billing'
@@ -181,8 +176,9 @@ export const Navbar: React.FC = () => {
                   : 'Subscribe to unlock Tutoring, Study and Exam'
               }
             >
-              {isActiveSub ? <ShieldCheck className="w-4 h-4" /> : <CreditCard className="w-4 h-4" />}
-              <span className="hidden sm:inline">{subscriptionLabel}</span>
+              {subscription?.status === 'active' ? <ShieldCheck className="w-4 h-4 sm:w-5 sm:h-5" /> : <CreditCard className="w-4 h-4 sm:w-5 sm:h-5" />}
+              <span className={subscription?.status === 'active' ? 'hidden sm:inline' : 'inline'}>{subscriptionLabel}</span>
+              {subscription?.status !== 'active' && <span className="ml-1">→</span>}
             </button>
 
             {/* Textbook button */}
