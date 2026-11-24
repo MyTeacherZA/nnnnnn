@@ -169,6 +169,36 @@ export interface SubscriptionAccess {
   daysLeft?: number;
 }
 
+/** Per-agent usage bucket from the AI metering ledger. */
+export interface AiUsageAgentBucket {
+  calls: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  costUsd: number;
+}
+
+/** Aggregated AI usage for one learner over the current billing window. */
+export interface AiUsageSummary {
+  calls: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  costUsd: number;
+  byAgent: Record<string, AiUsageAgentBucket>;
+}
+
+/** Monthly AI allowance + consumption snapshot. */
+export interface AiQuota {
+  status: string;
+  enforced: boolean;
+  allowanceTokens: number;
+  usedTokens: number;
+  remainingTokens: number;
+  resetAt: string;
+  allowed: boolean;
+}
+
 export interface StudentProfile {
   id: string;
   fullName: string;

@@ -8,9 +8,12 @@ import {
   MessageSquareHeart,
   Loader2,
   Gift,
+  Clock,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
+import { fetchAiUsage } from '../services/aiUsage';
 import { subscriptionBadgeLabel } from '../services/subscription';
+import { AiQuota, AiUsageSummary } from '../types';
 
 interface Plan {
   planId?: string;
@@ -48,6 +51,7 @@ export const SubscriptionModal: React.FC<{ open: boolean; onClose: () => void }>
   const [busyPlan, setBusyPlan] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [referral, setReferral] = useState<{ code: string | null; uses: number; threshold: number; granted: boolean } | null>(null);
+  const [aiUsage, setAiUsage] = useState<{ usage: AiUsageSummary; quota: AiQuota } | null>(null);
 
   const email = student?.email || account?.email || '';
   const preferred = preferredCurrency(student?.country);
@@ -77,6 +81,11 @@ export const SubscriptionModal: React.FC<{ open: boolean; onClose: () => void }>
         .catch(() => {});
     }
     void refreshSubscription();
+    if (email) {
+      void fetchAiUsage(email).then((data) => {
+        if (data) setAiUsage(data);
+      }).catch(() => {});
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 

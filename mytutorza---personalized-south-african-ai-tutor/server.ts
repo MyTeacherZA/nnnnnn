@@ -178,6 +178,7 @@ async function callLlamaChat(params: {
   baseUrl?: string;
   apiKey?: string;
   model?: string;
+  usageSink?: (u: { promptTokens?: number; completionTokens?: number; totalTokens?: number }) => void;
 }): Promise<string | null> {
   const providerApiKey = params.apiKey || LLAMA_API_KEY;
   const providerBaseUrl = (params.baseUrl || LLAMA_BASE_URL).replace(/\/+$/, '');
@@ -237,6 +238,14 @@ async function callLlamaChat(params: {
       return null;
     }
     const data = await res.json();
+    try {
+      const u = (data?.usage || {}) as any;
+      params.usageSink?.({
+        promptTokens: Number(u.prompt_tokens ?? u.promptTokens ?? 0) || 0,
+        completionTokens: Number(u.completion_tokens ?? u.completionTokens ?? 0) || 0,
+        totalTokens: Number(u.total_tokens ?? u.totalTokens ?? 0) || 0,
+      });
+    } catch {}
     if (useNativeOllama) {
       return data?.message?.content ?? data?.response ?? null;
     }
@@ -246,6 +255,298 @@ async function callLlamaChat(params: {
     console.warn('Llama chat failed:', err?.message || err);
     return null;
   }
+}
+
+// ---------------------------------------------------------------------
+// AI USAGE METERING — provider abstraction → provider adapter (Grok /
+// DeepSeek / Llama…) → ai_usage persistence → per-user monthly quota →
+// cost caps. All agent brains should flow through runAiAgent().
+// ---------------------------------------------------------------------
+type AiAgentName =
+  | 'tutoring'
+  | 'study'
+  | 'exam'
+  | 'roadmap'
+  | 'spark_notes'
+  | 'notes'
+  | 'term_tests';
+
+const AI_AGENT_PROVIDER: Record<string, 'grok' | 'deepseek' | 'llama'> = {
+  tutoring: 'grok',
+  study: 'grok',
+  exam: 'grok',
+  roadmap: 'deepseek',
+  spark_notes: 'grok',
+  notes: 'grok',
+  term_tests: 'grok',
+};
+
+const AI_AGENT_MAX_TOKENS: Record<string, number> = {
+  tutoring: 8000,
+  study: 8000,
+  exam: 4000,
+  roadmap: 3000,
+  spark_notes: 2000,
+  notes: 3000,
+  term_tests: 3000,
+};
+
+function aiMonthlyAllowanceFor(status: string): number {
+  const clean = String(status || '').toLowerCase();
+  const freeTokens = parseInt(process.env.AI_QUOTA_FREE_TOKENS || '25000', 10);
+  const paidTokens = parseInt(process.env.AI_QUOTA_PAID_TOKENS || '200000', 10);
+  const entitled = clean === 'active' || clean === 'past_due' || clean === 'trial';
+  return entitled ? paidTokens : freeTokens;
+}
+
+function estimateTokens(text: string): number {
+  const clean = String(text || '');
+  const words = clean.trim().split(/\s+/).filter(Boolean).length;
+  return Math.max(1, Math.ceil(words * 1.33 + 12));
+}
+
+function estimateModelCost(params: { model?: string; promptTokens?: number; completionTokens?: number }): number {
+  const model = String(params.model || '');
+  const promptTokens = Number(params.promptTokens || 0);
+  const completionTokens = Number(params.completionTokens || 0);
+  const M = 1_000_000;
+  let inputRate = 0;
+  let outputRate = 0;
+  if (model.startsWith('grok')) {
+    inputRate = 3;
+    outputRate = 15;
+  } else if (model.startsWith('deepseek')) {
+    inputRate = 0.27;
+    outputRate = 1.1;
+  } else if (model.startsWith('llama') || model.includes('70b')) {
+    inputRate = 0.11;
+    outputRate = 0.39;
+  }
+  const cost = (promptTokens * inputRate) / M + (completionTokens * outputRate) / M;
+  return Math.round(cost * 10000) / 10000;
+}
+
+async function recordAiUsage(params: {
+  email: string;
+  agent: string;
+  provider?: string;
+  model?: string;
+  promptTokens?: number;
+  completionTokens?: number;
+  status?: 'success' | 'error' | 'cache' | 'quota_exceeded' | 'fallback';
+}): Promise<void> {
+  try {
+    const client = getServiceSupabaseClient();
+    const email = String(params.email || '').trim().toLowerCase();
+    if (!client || !email) return;
+    const profile = await findProfileByEmail(client, email);
+    if (!profile?.id) return;
+    const isCostly = params.status === 'success' || params.status === 'cache';
+    const costUsd = isCostly
+      ? estimateModelCost({ model: params.model, promptTokens: params.promptTokens, completionTokens: params.completionTokens })
+      : 0;
+    await client.from('ai_usage').insert({
+      user_id: profile.id,
+      agent: String(params.agent || 'tutoring'),
+      provider: String(params.provider || 'unconfigured'),
+      model: String(params.model || 'unknown'),
+      prompt_tokens: Number(params.promptTokens || 0),
+      completion_tokens: Number(params.completionTokens || 0),
+      cost_usd: Math.round(costUsd * 10000) / 10000,
+      status: params.status || 'success',
+    });
+  } catch (e) {
+    console.warn('AI usage record failed:', (e as any)?.message || e);
+  }
+}
+
+async function getAiUsageSummary(email: string, agent?: string) {
+  const empty = { calls: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0, costUsd: 0, byAgent: {} as Record<string, any> };
+  const client = getServiceSupabaseClient();
+  const emailNorm = String(email || '').trim().toLowerCase();
+  if (!client || !emailNorm) return empty;
+  try {
+    const profile = await findProfileByEmail(client, emailNorm);
+    if (!profile?.id) return empty;
+    let query = client
+      .from('ai_usage')
+      .select('agent, provider, model, prompt_tokens, completion_tokens, cost_usd, status')
+      .eq('user_id', profile.id)
+      .gte('created_at', new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString());
+    if (agent) query = query.eq('agent', String(agent));
+    const { data, error } = await query.order('created_at', { ascending: false }).limit(1000);
+    if (error || !data) return empty;
+    const summary: any = { ...empty, byAgent: {} };
+    for (const row of (data as any[]) || []) {
+      const promptTokens = Number(row?.prompt_tokens || 0);
+      const completionTokens = Number(row?.completion_tokens || 0);
+      const costUsd = Number(row?.cost_usd || 0);
+      summary.calls += 1;
+      summary.promptTokens += promptTokens;
+      summary.completionTokens += completionTokens;
+      summary.totalTokens += promptTokens + completionTokens;
+      summary.costUsd += costUsd;
+      const key = String(row?.agent || 'unknown');
+      summary.byAgent[key] = summary.byAgent[key] || { calls: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0, costUsd: 0 };
+      summary.byAgent[key].calls += 1;
+      summary.byAgent[key].promptTokens += promptTokens;
+      summary.byAgent[key].completionTokens += completionTokens;
+      summary.byAgent[key].totalTokens += promptTokens + completionTokens;
+      summary.byAgent[key].costUsd += costUsd;
+    }
+    return summary;
+  } catch (e) {
+    console.warn('AI usage summary failed:', (e as any)?.message || e);
+    return empty;
+  }
+}
+
+async function getAiQuota(email: string) {
+  const client = getServiceSupabaseClient();
+  const emailNorm = String(email || '').trim().toLowerCase();
+  const profile: any = client && emailNorm ? await findProfileByEmail(client, emailNorm) : null;
+  const status = String(profile?.subscription_status || 'none').toLowerCase();
+  const allowanceTokens = aiMonthlyAllowanceFor(status);
+  let used = 0;
+  if (client && profile?.id) {
+    try {
+      const { data, error } = await client
+        .from('ai_usage')
+        .select('prompt_tokens, completion_tokens')
+        .eq('user_id', profile.id)
+        .gte('created_at', new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString())
+        .limit(1000);
+      if (!error && Array.isArray(data)) {
+        for (const row of data as any[]) {
+          used += Number(row?.prompt_tokens || 0) + Number(row?.completion_tokens || 0);
+        }
+      }
+    } catch (e) {
+      console.warn('AI usage quota read failed:', (e as any)?.message || e);
+    }
+  }
+  const resetAt = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1).toISOString();
+  return {
+    status,
+    enforced: true,
+    allowanceTokens,
+    usedTokens: used,
+    remainingTokens: Math.max(0, allowanceTokens - used),
+    resetAt,
+    allowed: used < allowanceTokens,
+  };
+}
+
+async function runAiAgent(params: {
+  agent: string;
+  email: string;
+  system?: string;
+  user?: string;
+  messages?: { role: string; content: string }[];
+  jsonMode?: boolean;
+  temperature?: number;
+  timeoutMs?: number;
+  maxTokens?: number;
+  baseUrl?: string;
+  apiKey?: string;
+  model?: string;
+  cacheKey?: string;
+  cacheTtlSeconds?: number;
+}): Promise<{
+  reply: string | null;
+  cached: boolean;
+  quotaExceeded: boolean;
+  provider: string;
+  model: string;
+  usage: any;
+  costUsd: number;
+  quota: any;
+}> {
+  const agentKey = String(params.agent || 'tutoring');
+  const preferred = AI_AGENT_PROVIDER[agentKey] || 'grok';
+  const resolveLane = (name: 'grok' | 'deepseek' | 'llama') => {
+    if (name === 'grok') {
+      if (GROK_API_KEY) return { provider: 'grok', baseUrl: GROK_BASE_URL, apiKey: GROK_API_KEY, model: GROK_MODEL };
+    }
+    if (name === 'deepseek') {
+      if (DEEPSEEK_API_KEY) return { provider: 'deepseek', baseUrl: DEEPSEEK_BASE_URL, apiKey: DEEPSEEK_API_KEY, model: DEEPSEEK_MODEL };
+    }
+    if (LLAMA_API_KEY) return { provider: 'llama', baseUrl: LLAMA_BASE_URL, apiKey: LLAMA_API_KEY, model: LLAMA_MODEL_ID };
+    return null;
+  };
+  const resolved = resolveLane(preferred) || resolveLane('deepseek') || resolveLane('grok');
+  const providerLabel = resolved?.provider || 'unconfigured';
+  const modelLabel = resolved?.model || String(params.model || '');
+  const maxTokens = params.maxTokens ?? AI_AGENT_MAX_TOKENS[agentKey] ?? 4000;
+
+  const quota = await getAiQuota(params.email);
+  const estimatedPromptTokens =
+    estimateTokens(`${params.system || ''}${params.user || ''}`) +
+    (params.messages || []).reduce((acc: number, m: any) => acc + estimateTokens(m?.content || ''), 0);
+  const estimatedCallTokens = estimatedPromptTokens + estimateTokens(String(maxTokens));
+  const quotaExceeded = !quota.allowed || quota.usedTokens + estimatedCallTokens > quota.allowanceTokens;
+
+  let reply: string | null = null;
+  let cached = false;
+  let costUsd = 0;
+  let usage: any = null;
+
+  if (quotaExceeded) {
+    void recordAiUsage({ email: params.email, agent: agentKey, provider: providerLabel, model: modelLabel, status: 'quota_exceeded' });
+    return { reply: null, cached: false, quotaExceeded: true, provider: providerLabel, model: modelLabel, usage: null, costUsd: 0, quota };
+  }
+
+  const usageRef: any = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+  const usageSink = (u: any) => {
+    usageRef.promptTokens = Number(u?.promptTokens || 0);
+    usageRef.completionTokens = Number(u?.completionTokens || 0);
+    usageRef.totalTokens = Number(u?.totalTokens || 0) || usageRef.promptTokens + usageRef.completionTokens;
+  };
+
+  if (params.cacheKey) {
+    const cachedReply = await getCache(params.cacheKey);
+    if (typeof cachedReply === 'string' && cachedReply.trim()) {
+      reply = cachedReply;
+      cached = true;
+      costUsd = 0;
+      void recordAiUsage({ email: params.email, agent: agentKey, provider: providerLabel, model: modelLabel, promptTokens: 0, completionTokens: 0, status: 'cache' });
+    }
+  }
+
+  if (!reply) {
+    const result = await callLlamaChat({
+      system: params.system,
+      user: params.user,
+      messages: params.messages,
+      jsonMode: params.jsonMode,
+      temperature: params.temperature,
+      timeoutMs: params.timeoutMs,
+      maxTokens,
+      baseUrl: resolved?.baseUrl,
+      apiKey: resolved?.apiKey,
+      model: resolved?.model,
+      usageSink,
+    });
+    reply = result;
+    if (reply) {
+      usage = { ...usageRef };
+      costUsd = estimateModelCost({ model: modelLabel, promptTokens: usageRef.promptTokens, completionTokens: usageRef.completionTokens });
+      if (params.cacheKey) await setCache(params.cacheKey, reply, params.cacheTtlSeconds || 900);
+      void recordAiUsage({
+        email: params.email,
+        agent: agentKey,
+        provider: providerLabel,
+        model: modelLabel,
+        promptTokens: usageRef.promptTokens,
+        completionTokens: usageRef.completionTokens,
+        status: 'success',
+      });
+    } else {
+      void recordAiUsage({ email: params.email, agent: agentKey, provider: providerLabel, model: modelLabel, status: 'error' });
+    }
+  }
+
+  return { reply, cached, quotaExceeded: false, provider: providerLabel, model: modelLabel, usage, costUsd, quota };
 }
 
 // ---------------------------------------------------------------------
@@ -754,6 +1055,44 @@ UPLOADED SOURCE / RAG CONTEXT (FIRST CONTEXT — "THE HOLY GRAIL"):
 - If the uploaded source has no content relevant to the locked topic, say so briefly and fall back to internet-based knowledge strictly specific to the locked topic.`;
     }
 
+    // LEARNER DOCUMENT CONTEXT (Firmament-grounded documents): injected from the
+    // learner's saved documents (Supabase tutoring_sources) so the AI is bound to
+    // THEIR curriculum material, not just the generic curriculum directive.
+    try {
+      const learnerDocs = await getLearnerDocuments(
+        email,
+        cleanSubject,
+        cleanGrade,
+        country,
+        state,
+        nation,
+      );
+      if (learnerDocs.length > 0) {
+        const docBlocks = (await Promise.all(
+          learnerDocs.map(async (d) => {
+            const chunks = selectSourceChunksWithScore(d.text, `${cleanTopic} ${cleanMessage}`, 6000);
+            const content = chunks.text || (d.text || '').slice(0, 6000);
+            return `DOCUMENT: "${d.name}" (${d.docType || 'general'})\nRELEVANT CONTENT: ${content}\nCOVERAGE: ${chunks.bestScore}\n`;
+          }),
+        ));
+        systemInstruction += `
+
+LEARNER DOCUMENT CONTEXT (AUTHORITATIVE FOR THIS LEARNER):
+The following documents are saved for this learner and are authoritative curriculum material for ${cleanSubject} ${cleanGrade}.
+Tutor using these documents first. Do not contradict them unless the learner asks about newer material.
+
+${docBlocks.join('\n---\n')}
+
+INSTRUCTION: Ground the response for "${cleanTopic}" in the above documents. Use general knowledge or internet search only to fill gaps not covered by the documents.`;
+
+        systemInstruction += `
+
+SOURCE OVERRIDE FOR LEARNER DOCUMENTS: if an uploaded source exists, it takes priority for that session; otherwise use the learner documents above.`;
+      }
+    } catch (docErr: any) {
+      console.warn('Learner document context injection skipped:', docErr?.message || docErr);
+    }
+
     if (webSnippets && webSnippets.length > 0) {
       const snippetBlock = webSnippets
         .map(
@@ -819,32 +1158,30 @@ ${snippetBlock}
     let reply: string | null = null;
     let replySource = 'deepseek';
 
-    if (GROK_API_KEY || DEEPSEEK_API_KEY) {
-      const cachedReply = await getCache(cacheKey);
-      if (typeof cachedReply === 'string' && cachedReply.trim()) {
-        reply = cachedReply;
-        replySource = 'cache';
-      } else {
-        try {
-          reply = await callLlamaChat({
-            system: systemInstruction,
-            messages: historyMessages,
-            user: cleanMessage,
-            temperature: 0.35,
-            timeoutMs: GROK_API_KEY ? 90000 : 45000,
-            maxTokens: 8000,
-            baseUrl: GROK_API_KEY ? GROK_BASE_URL : DEEPSEEK_BASE_URL,
-            apiKey: GROK_API_KEY || DEEPSEEK_API_KEY,
-            model: GROK_API_KEY ? GROK_MODEL : DEEPSEEK_MODEL,
-          });
-          if (reply) await setCache(cacheKey, reply, 900);
-        } catch (llamaErr: any) {
-          console.warn(
-            'Tutoring LLM timeout/error, serving topic-locked fallback:',
-            llamaErr?.message || llamaErr,
-          );
-        }
-      }
+    // AI USAGE METERING GATE — provider abstraction → provider adapter →
+    // ai_usage persistence → per-user monthly quota → cost cap.
+    const aiResult = await runAiAgent({
+      agent: 'tutoring',
+      email,
+      system: systemInstruction,
+      messages: historyMessages,
+      user: cleanMessage,
+      temperature: 0.35,
+      timeoutMs: GROK_API_KEY ? 90000 : 45000,
+      maxTokens: 8000,
+      cacheKey,
+      cacheTtlSeconds: 900,
+    });
+
+    reply = aiResult.reply;
+    replySource = aiResult.cached ? 'cache' : aiResult.provider;
+
+    if (aiResult.quotaExceeded) {
+      return res.status(402).json({
+        error: 'Your AI usage limit for this month has been reached. Subscribe to continue learning with the AI tutor.',
+        code: 'AI_QUOTA_EXCEEDED',
+        quota: aiResult.quota,
+      });
     }
 
     if (!reply) {
@@ -1007,6 +1344,55 @@ app.post('/api/tutoring/source/ingest', async (req: Request, res: Response) => {
 });
 
 // ---------------------------------------------------------------------
+// DOCUMENTS / GENERAL DOC INGEST — same storage + RAG pipeline as tutoring sources
+// ---------------------------------------------------------------------
+app.post('/api/documents/ingest', async (req: Request, res: Response) => {
+  try {
+    if (await rejectWithoutAgentAccess(req, res)) return;
+    const { name, base64, subject, grade, country, state, nation, topic, docType } = req.body || {};
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const fileName = String(name || '').trim() || 'document';
+    const encoded = String(base64 || '').replace(/^data:[^;]+;base64,/, '');
+    if (!encoded) return res.status(400).json({ error: 'Document file is required.' });
+    const buffer = Buffer.from(encoded, 'base64');
+    if (!buffer.length) return res.status(400).json({ error: 'Could not read the uploaded document.' });
+    if (buffer.length > 7 * 1024 * 1024) return res.status(413).json({ error: 'Document is too large. Please upload a file under 7MB.' });
+    let text = '';
+    if (/\.pdf$/i.test(fileName)) text = await extractPdfTextFromBuffer(buffer);
+    else text = buffer.toString('utf8');
+    text = text.replace(/\u0000/g, ' ').replace(/\r/g, '\n').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+    if (!text || text.length < 50) return res.status(422).json({ error: 'No readable text could be extracted from this document.' });
+    if (text.length > 400000) text = text.slice(0, 400000);
+    const tableOfContents = detectTOC(text).slice(0, 40);
+    const contentHash = createHash('sha256').update(text).digest('hex');
+    const sourceKey = `document:${contentHash.slice(0, 32)}`;
+    const stored = await saveTutoringSource({ email, name: fileName, subject: String(subject || '').trim(), grade: String(grade || '').trim(), topic: String(topic || '').trim(), text, contentHash, tableOfContents });
+    await setCache(sourceKey, { id: stored?.id || null, name: fileName, docType: String(docType || 'general').trim(), subject: String(subject || '').trim(), grade: String(grade || '').trim(), country: String(country || 'US').trim(), state: String(state || '').trim(), nation: String(nation || '').trim(), tableOfContents, chars: text.length, ingestedAt: new Date().toISOString() }, 60 * 60 * 24 * 7);
+    return res.json({ name: fileName, documentId: stored?.id || null, sourceKey, text, tableOfContents, chars: text.length, persisted: Boolean(stored?.id) });
+  } catch (err: any) {
+    console.error('Document ingest error:', err);
+    return res.status(500).json({ error: err?.message || 'Document ingest failed.' });
+  }
+});
+
+// ---------------------------------------------------------------------
+// AI USAGE METERING — per-user usage summary + monthly quota for clients
+// ---------------------------------------------------------------------
+app.get('/api/ai/usage', async (req: Request, res: Response) => {
+  try {
+    const email = String((req.query.email as string) || '').trim().toLowerCase();
+    const agent = String((req.query.agent as string) || '').trim().toLowerCase();
+    const summary = await getAiUsageSummary(email, agent || undefined);
+    const quota = await getAiQuota(email);
+    const payload: any = { success: true, usage: summary, quota };
+    if (agent) payload.agent = agent;
+    return res.json(payload);
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || String(err) });
+  }
+});
+
+// ---------------------------------------------------------------------
 // 1B. CONVERSATION ANALYSIS & PERSONALIZED SPARK NOTES GENERATOR
 /**
  * Extract learning signals from ONE tutoring exchange and merge them into the
@@ -1068,30 +1454,17 @@ Rules:
 STUDENT MESSAGE: ${String(input.userMessage).slice(0, 1500)}
 TUTOR REPLY: ${String(input.assistantReply).slice(0, 1500)}`;
 
-    let raw: string | null = null;
-    if (GROK_API_KEY || DEEPSEEK_API_KEY) {
-      raw = await callLlamaChat({
-        system: prompt,
-        user,
-        jsonMode: true,
-        temperature: 0.1,
-        timeoutMs: 8000,
-        maxTokens: 400,
-        baseUrl: GROK_API_KEY ? GROK_BASE_URL : DEEPSEEK_BASE_URL,
-        apiKey: GROK_API_KEY || DEEPSEEK_API_KEY,
-        model: GROK_API_KEY ? GROK_MODEL : DEEPSEEK_MODEL,
-      });
-    }
-    if (!raw && LLAMA_API_KEY) {
-      raw = await callLlamaChat({
-        system: prompt,
-        user,
-        jsonMode: true,
-        temperature: 0.1,
-        timeoutMs: 8000,
-        maxTokens: 400,
-      });
-    }
+    const rawResult = await runAiAgent({
+      agent: 'spark_notes',
+      email: input.email,
+      system: prompt,
+      user,
+      jsonMode: true,
+      temperature: 0.1,
+      timeoutMs: 8000,
+      maxTokens: 400,
+    });
+    const raw = rawResult.reply;
     if (!raw) return;
 
     let cleaned = raw.trim();
@@ -1875,6 +2248,32 @@ async function saveTutoringSource(input: {
   }
 }
 
+/** Loads a learner's ingested documents by subject/grade (for Firmament injection). */
+async function getLearnerDocuments(email: string, subject: string, grade: string, country: string, state: string, nation: string): Promise<Array<{ id: string; name: string; text: string; docType?: string }>> {
+  const client = getServiceSupabaseClient();
+  if (!client || !email) return [];
+  try {
+    const profile = await findProfileByEmail(client, email);
+    if (!profile?.id) return [];
+    const { data, error } = await client
+      .from('tutoring_sources')
+      .select('id, name, content, subject, grade, topic')
+      .eq('user_id', profile.id)
+      .ilike('subject', `%${subject}%`)
+      .ilike('grade', `%${grade}%`)
+      .limit(10);
+    if (error || !data) return [];
+    return (data as any[]).map((row: any) => ({
+      id: String(row.id || ''),
+      name: String(row.name || 'document'),
+      text: String(row.content || ''),
+      docType: String(row.subject || 'general'),
+    }));
+  } catch {
+    return [];
+  }
+}
+
 /** Loads an ingested source and enforces per-user ownership. */
 async function getTutoringSource(email: string, sourceId: string): Promise<TutoringSourceRow | null> {
   const client = getServiceSupabaseClient();
@@ -2170,21 +2569,19 @@ app.post('/api/study/generate', async (req: Request, res: Response) => {
       webSnippets,
     });
 
-    if (GROK_API_KEY || DEEPSEEK_API_KEY || LLAMA_API_KEY) {
+    const studyPackResult = await runAiAgent({
+      agent: 'study',
+      email,
+      system: systemInstruction,
+      user: `Create today's STUDY SESSION pack for ${grade} ${subject} on the topic "${cleanTopic}". Diagnose gaps first, teach directly in the learner's cognitive delivery style, then build recall and a short quiz. JSON only.`,
+      jsonMode: true,
+      temperature: 0.35,
+      timeoutMs: 90000,
+      maxTokens: 8000,
+    });
+    const textRaw = studyPackResult.reply;
+    if (textRaw) {
       try {
-        const textRaw = await callLlamaChat({
-          system: systemInstruction,
-          user: `Create today's STUDY SESSION pack for ${grade} ${subject} on the topic "${cleanTopic}". Diagnose gaps first, teach directly in the learner's cognitive delivery style, then build recall and a short quiz. JSON only.`,
-          jsonMode: true,
-          temperature: 0.35,
-          timeoutMs: GROK_API_KEY ? 90000 : DEEPSEEK_API_KEY ? 90000 : 60000,
-          maxTokens: 8000,
-          ...(GROK_API_KEY
-            ? { baseUrl: GROK_BASE_URL, apiKey: GROK_API_KEY, model: GROK_MODEL }
-            : DEEPSEEK_API_KEY
-              ? { baseUrl: DEEPSEEK_BASE_URL, apiKey: DEEPSEEK_API_KEY, model: DEEPSEEK_MODEL }
-              : {}),
-        });
         let text = (textRaw || '').trim();
         if (text.startsWith('```json')) {
           text = text.replace(/^```json\s*/, '').replace(/\s*```$/, '');
@@ -2218,14 +2615,22 @@ app.post('/api/study/generate', async (req: Request, res: Response) => {
             },
             studyPack: parsed,
           });
-          return res.json({ ...parsed, title: parsed.title || cleanTitle, sessionId: savedSessionId || sessionId || null, source: LLAMA_MODEL_ID });
+          return res.json({ ...parsed, title: parsed.title || cleanTitle, sessionId: savedSessionId || sessionId || null, source: studyPackResult.model });
         }
       } catch (llamaErr: any) {
         console.warn(
-          'Llama study timeout/error, serving fallback study notes:',
+          'Study pack LLM timeout/error, serving fallback study notes:',
           (llamaErr as any)?.message || llamaErr
         );
       }
+    }
+
+    if (studyPackResult.quotaExceeded) {
+      return res.status(402).json({
+        error: 'Your AI usage limit for this month has been reached. Subscribe to continue generating study packs.',
+        code: 'AI_QUOTA_EXCEEDED',
+        quota: studyPackResult.quota,
+      });
     }
 
     const fallbackData = {
@@ -3024,23 +3429,21 @@ RETURN STRICT JSON matching this schema:
 
     const roadmapSystemInstruction = `${systemInstruction}\n\n${buildLearningHistoryBlock(learningHistory)}`;
 
-    if (GROK_API_KEY || DEEPSEEK_API_KEY || LLAMA_API_KEY) {
+    const roadmapResult = await runAiAgent({
+      agent: 'roadmap',
+      email,
+      system: roadmapSystemInstruction,
+      user: `Generate a personalized ${weeksWanted}-week ${curriculum.frameworkLabel} study roadmap for ${targetGrade} ${targetSubject} for a student with previous mark ${mark}% and archetype ${
+        firmamentProfile?.lifePath?.archetype || 'The Architect'
+      }. Focus: ${focusTopic || 'the semester chapter or topic chosen by the learner'}.`,
+      jsonMode: true,
+      temperature: 0.4,
+      timeoutMs: 90000,
+      maxTokens: 6000,
+    });
+    const textRaw = roadmapResult.reply;
+    if (textRaw) {
       try {
-        const textRaw = await callLlamaChat({
-          system: roadmapSystemInstruction,
-          user: `Generate a personalized ${weeksWanted}-week ${curriculum.frameworkLabel} study roadmap for ${targetGrade} ${targetSubject} for a student with previous mark ${mark}% and archetype ${
-            firmamentProfile?.lifePath?.archetype || 'The Architect'
-          }. Focus: ${focusTopic || 'the semester chapter or topic chosen by the learner'}.`,
-          jsonMode: true,
-          temperature: 0.4,
-          timeoutMs: GROK_API_KEY ? 90000 : DEEPSEEK_API_KEY ? 90000 : 9000,
-          maxTokens: 6000,
-          ...(GROK_API_KEY
-            ? { baseUrl: GROK_BASE_URL, apiKey: GROK_API_KEY, model: GROK_MODEL }
-            : DEEPSEEK_API_KEY
-              ? { baseUrl: DEEPSEEK_BASE_URL, apiKey: DEEPSEEK_API_KEY, model: DEEPSEEK_MODEL }
-              : {}),
-        });
         let text = (textRaw || '').trim();
         if (text.startsWith('```json')) {
           text = text.replace(/^```json\s*/, '').replace(/\s*```$/, '');
@@ -3051,14 +3454,22 @@ RETURN STRICT JSON matching this schema:
         const parsed = JSON.parse(text);
         if (parsed && Array.isArray(parsed.weeks) && parsed.weeks.length === weeksWanted) {
           await setCache(cacheKey, parsed, 7200);
-          return res.json({ ...parsed, source: LLAMA_MODEL_ID });
+          return res.json({ ...parsed, source: roadmapResult.model });
         }
       } catch (llamaErr: any) {
         console.warn(
-          'Llama roadmap generation timeout/error, serving firmament fallback:',
+          'Roadmap generation LLM timeout/error, serving firmament fallback:',
           (llamaErr as any)?.message || llamaErr,
         );
       }
+    }
+
+    if (roadmapResult.quotaExceeded) {
+      return res.status(402).json({
+        error: 'Your AI usage limit for this month has been reached. Subscribe to continue building your study roadmap.',
+        code: 'AI_QUOTA_EXCEEDED',
+        quota: roadmapResult.quota,
+      });
     }
 
     const fallback = getFirmamentRoadmapFallback(
@@ -3224,23 +3635,21 @@ Return valid JSON conforming strictly to:
 - Do not teach, coach, scaffold or reveal answers inside the paper. Put all solutions in the memorandum only.
 - Weight question selection toward the learner's recorded weak skills and quiz failures, while remaining inside the official curriculum scope.`;
 
-    if (GROK_API_KEY || DEEPSEEK_API_KEY || LLAMA_API_KEY) {
+    const examResult = await runAiAgent({
+      agent: 'exam',
+      email,
+      system: examSystemInstruction,
+      user: `Generate a realistic ${dur}-minute ${curriculum.frameworkLabel} examination for ${grade} ${subject} (${paperType}) on ${
+        topic || 'core syllabus'
+      }.`,
+      jsonMode: true,
+      temperature: 0.3,
+      timeoutMs: 90000,
+      maxTokens: 6500,
+    });
+    const textRaw = examResult.reply;
+    if (textRaw) {
       try {
-        const textRaw = await callLlamaChat({
-          system: examSystemInstruction,
-          user: `Generate a realistic ${dur}-minute ${curriculum.frameworkLabel} examination for ${grade} ${subject} (${paperType}) on ${
-            topic || 'core syllabus'
-          }.`,
-          jsonMode: true,
-          temperature: 0.3,
-          timeoutMs: GROK_API_KEY ? 90000 : DEEPSEEK_API_KEY ? 90000 : 9000,
-          maxTokens: GROK_API_KEY ? 6500 : DEEPSEEK_API_KEY ? 6500 : 5000,
-          ...(GROK_API_KEY
-            ? { baseUrl: GROK_BASE_URL, apiKey: GROK_API_KEY, model: GROK_MODEL }
-            : DEEPSEEK_API_KEY
-              ? { baseUrl: DEEPSEEK_BASE_URL, apiKey: DEEPSEEK_API_KEY, model: DEEPSEEK_MODEL }
-              : {}),
-        });
         let text = (textRaw || '').trim();
         if (text.startsWith('```json')) {
           text = text.replace(/^```json\s*/, '').replace(/\s*```$/, '');
@@ -3255,14 +3664,22 @@ Return valid JSON conforming strictly to:
             parsed.webCount = webSnippets.length;
           }
           await setCache(cacheKey, parsed, 7200);
-          return res.json({ ...parsed, source: GROK_API_KEY ? GROK_MODEL : DEEPSEEK_API_KEY ? DEEPSEEK_MODEL : LLAMA_MODEL_ID });
+          return res.json({ ...parsed, source: examResult.model });
         }
       } catch (llamaErr: any) {
         console.warn(
-          'Llama exam generation timeout/error, serving authentic CAPS DBE paper bank:',
+          'Exam generation LLM timeout/error, serving authentic CAPS DBE paper bank:',
           (llamaErr as any)?.message || llamaErr,
         );
       }
+    }
+
+    if (examResult.quotaExceeded) {
+      return res.status(402).json({
+        error: 'Your AI usage limit for this month has been reached. Subscribe to continue generating exams.',
+        code: 'AI_QUOTA_EXCEEDED',
+        quota: examResult.quota,
+      });
     }
 
     const fallbackPaper = getAuthenticDBEPaper(subject, grade, paperType, dur, topic);
@@ -3961,28 +4378,34 @@ Return valid JSON with:
 `.trim();
 
   let paper: any = null;
-  if (GROK_API_KEY || DEEPSEEK_API_KEY) {
+  const termTestEmail = String(req.body?.email || '').trim().toLowerCase();
+  const termTestResult = await runAiAgent({
+    agent: 'term_tests',
+    email: termTestEmail,
+    system: systemInstruction,
+    user: `Generate the ${exam} now for ${grd} ${sub} (${trm}).`,
+    jsonMode: true,
+    temperature: 0.3,
+    timeoutMs: 90000,
+    maxTokens: 6000,
+  });
+  const termTestText = termTestResult.reply;
+  if (termTestResult.quotaExceeded) {
+    return res.status(402).json({
+      error: 'Your AI usage limit for this month has been reached. Subscribe to continue generating exams.',
+      code: 'AI_QUOTA_EXCEEDED',
+      quota: termTestResult.quota,
+    });
+  }
+  if (termTestText) {
     try {
-      const text = await callLlamaChat({
-        system: systemInstruction,
-        user: `Generate the ${exam} now for ${grd} ${sub} (${trm}).`,
-        jsonMode: true,
-        temperature: 0.3,
-        timeoutMs: GROK_API_KEY ? 90000 : 90000,
-        maxTokens: 6000,
-        baseUrl: GROK_API_KEY ? GROK_BASE_URL : DEEPSEEK_BASE_URL,
-        apiKey: GROK_API_KEY || DEEPSEEK_API_KEY,
-        model: GROK_API_KEY ? GROK_MODEL : DEEPSEEK_MODEL,
-      });
-      if (text) {
-        let cleaned = text.trim();
-        if (cleaned.startsWith('```'))
-          cleaned = cleaned
-            .replace(/^```json\s*/, '')
-            .replace(/^```\s*/, '')
-            .replace(/\s*```$/, '');
-        paper = JSON.parse(cleaned);
-      }
+      let cleaned = termTestText.trim();
+      if (cleaned.startsWith('```'))
+        cleaned = cleaned
+          .replace(/^```json\s*/, '')
+          .replace(/^```\s*/, '')
+          .replace(/\s*```$/, '');
+      paper = JSON.parse(cleaned);
     } catch (err) {
       console.warn('Term test generation error:', err);
     }
@@ -4223,33 +4646,38 @@ Return valid JSON:
 `.trim();
 
   let paper: any = null;
-  if (GROK_API_KEY || DEEPSEEK_API_KEY || LLAMA_API_KEY) {
+  const notesEmail = String(req.body?.email || '').trim().toLowerCase();
+  const notesResult = await runAiAgent({
+    agent: 'notes',
+    email: notesEmail,
+    system: systemInstruction,
+    user: `Generate study notes for this chapter only.`,
+    jsonMode: true,
+    temperature: 0.3,
+    timeoutMs: 90000,
+    maxTokens: 4000,
+  });
+  const textRaw = notesResult.reply;
+  if (textRaw) {
     try {
-      const textRaw = await callLlamaChat({
-        system: systemInstruction,
-        user: `Generate study notes for this chapter only.`,
-        jsonMode: true,
-        temperature: 0.3,
-        timeoutMs: GROK_API_KEY ? 90000 : DEEPSEEK_API_KEY ? 90000 : 60000,
-        maxTokens: 4000,
-        ...(GROK_API_KEY
-          ? { baseUrl: GROK_BASE_URL, apiKey: GROK_API_KEY, model: GROK_MODEL }
-          : DEEPSEEK_API_KEY
-            ? { baseUrl: DEEPSEEK_BASE_URL, apiKey: DEEPSEEK_API_KEY, model: DEEPSEEK_MODEL }
-            : {}),
-      });
-      if (textRaw) {
-        let cleaned = textRaw.trim();
-        if (cleaned.startsWith('```'))
-          cleaned = cleaned
-            .replace(/^```json\s*/, '')
-            .replace(/^```\s*/, '')
-            .replace(/\s*```$/, '');
-        paper = JSON.parse(cleaned);
-      }
+      let cleaned = textRaw.trim();
+      if (cleaned.startsWith('```'))
+        cleaned = cleaned
+          .replace(/^```json\s*/, '')
+          .replace(/^```\s*/, '')
+          .replace(/\s*```$/, '');
+      paper = JSON.parse(cleaned);
     } catch (err: any) {
       console.warn('Note gen error:', err?.message);
     }
+  }
+
+  if (notesResult.quotaExceeded) {
+    return res.status(402).json({
+      error: 'Your AI usage limit for this month has been reached. Subscribe to continue generating study notes.',
+      code: 'AI_QUOTA_EXCEEDED',
+      quota: notesResult.quota,
+    });
   }
 
   if (!paper) {
