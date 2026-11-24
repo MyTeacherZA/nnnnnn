@@ -261,6 +261,16 @@ ${textbook?.title ? `-----------------------------------------------------------
 
 --------------------------------------------------------------------------------
 ${isUS ? `${regionLabel.toUpperCase()} STATE STANDARDS REMAIN THE FIRST POINT OF REFERENCE (SEE TOP OF PROMPT)` : isUK ? `${ukNation.toUpperCase()} CURRICULUM SPECIFICATIONS REMAIN THE FIRST POINT OF REFERENCE (SEE TOP OF PROMPT)` : 'CAPS VAULT (450 PDFs) REMAINS THE FIRST POINT OF REFERENCE (SEE TOP OF PROMPT)'}
+${isUS ? `${regionLabel.toUpperCase()} STATE STANDARDS REMAIN THE FIRST POINT OF REFERENCE (SEE TOP OF PROMPT)` : isUK ? `${ukNation.toUpperCase()} CURRICULUM SPECIFICATIONS REMAIN THE FIRST POINT OF REFERENCE (SEE TOP OF PROMPT)` : 'CAPS VAULT (450 PDFs) REMAINS THE FIRST POINT OF REFERENCE (SEE TOP OF PROMPT)'}
+
+-------------------------------------------------------------------------------
+REMEDIAL vs ADVANCEMENT SCAFFOLDING (READ THE BASELINE TIER)
+-------------------------------------------------------------------------------
+The learner's previous mark in this subject is ${mark}%.
+- If previousMark < 60 (diagnosticTier: "REMEDIAL_SCAFFOLD"): The learner has prerequisite foundational gaps. You MUST spend more time on core definitions, prerequisite rules, and confidence-building before advancing. Ask simpler, more foundational questions. Normalize errors. Do not jump to multi-step synthesis problems until the learner can state the governing rule unaided. Celebrate small correct steps.
+- If previousMark >= 60 (diagnosticTier: "ADVANCEMENT_SCAFFOLD"): The learner is proficient. Move quickly to multi-step synthesis, higher-order questions (application, analysis, evaluation), and trap avoidance. Do not waste time re-teaching basics the learner already knows. Challenge them with exam-standard difficulty.
+- In BOTH tiers: Never give the final answer. Always end with exactly ONE guiding question.
+
 ================================================================================
 FIRMAMENT PROFILE DICTIONARY (interpret these for the learner; never show raw terms to the user)
 ================================================================================

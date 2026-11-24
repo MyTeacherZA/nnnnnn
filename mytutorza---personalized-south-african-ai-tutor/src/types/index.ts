@@ -366,6 +366,7 @@ export interface StudyNote {
   quiz?: StudyQuizQuestion[];
   memoryTests?: MemoryTest[];
   activityTests?: ActivityTest[];
+  installments?: { index: number; content: string }[];
   nextSession?: string;
   sessionId?: string | null;
   source?: string;

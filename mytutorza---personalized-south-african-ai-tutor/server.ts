@@ -826,7 +826,7 @@ ${snippetBlock}
             user: cleanMessage,
             temperature: 0.35,
             timeoutMs: 45000,
-            maxTokens: 2000,
+            maxTokens: 8000,
             baseUrl: DEEPSEEK_BASE_URL,
             apiKey: DEEPSEEK_API_KEY,
             model: DEEPSEEK_MODEL,
@@ -3024,7 +3024,7 @@ RETURN STRICT JSON matching this schema:
           jsonMode: true,
           temperature: 0.4,
           timeoutMs: DEEPSEEK_API_KEY ? 90000 : 9000,
-          maxTokens: 3000,
+          maxTokens: 6000,
           ...(DEEPSEEK_API_KEY
             ? { baseUrl: DEEPSEEK_BASE_URL, apiKey: DEEPSEEK_API_KEY, model: DEEPSEEK_MODEL }
             : {}),
@@ -3155,6 +3155,11 @@ Topic Focus: ${topic ? topic : curriculum.isUS ? 'Full state standards for this 
 CURRICULUM & EXAM SPECIFICATION (${curriculum.frameworkLabel}):
 ${getCurriculumDirective({ subject, grade, topic, state, country, nation })}
 ${webSnippetsBlock}
+
+TARGET LENGTH MANDATE (NON-NEGOTIABLE):
+- The complete exam output must total approximately 3,000 words across all sections, questions, mark allocations, examiner traps, and the official memorandum.
+- Do NOT generate a short paper of 3 questions. This must be a full, comprehensive examination paper.
+- Every section must be substantial. If the paper comes out under 2,500 words, expand Section B with more multi-part calculation questions and Section C with more synthesis/essay items.
 
 STRICT EXAM STRUCTURE MANDATE:
 1. SECTION A: Objective Questions (MCQs, matching items, or short 1-word concepts) - approx 20-25% of marks.

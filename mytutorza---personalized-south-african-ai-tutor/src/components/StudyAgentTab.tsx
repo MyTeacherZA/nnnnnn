@@ -365,6 +365,7 @@ export const StudyAgentTab: React.FC = () => {
         })),
         memoryTests: data.memoryTests || [],
         activityTests: data.activityTests || [],
+        installments: Array.isArray(data.installments) ? data.installments : [],
         nextSession: data.nextSession,
         source: data.source,
       };
@@ -1023,6 +1024,44 @@ export const StudyAgentTab: React.FC = () => {
                           ))}
                         </div>
                       )}
+                    </div>
+                  )}
+
+                  {/* Installments (multi-part study content - up to 3 installments per prompt spec) */}
+                  {studyNote.installments && studyNote.installments.length > 0 && (
+                    <div className="metallic-card rounded-2xl p-6 border border-slate-700/60 shadow-xl">
+                      <div className="flex items-center justify-between mb-4 pb-3 border-b border-slate-800">
+                        <div className="flex items-center gap-2">
+                          <Layers className="w-5 h-5 text-sky-400" />
+                          <h3 className="text-lg font-black text-white tracking-tight">
+                            Study Content ({studyNote.installments.length} part{studyNote.installments.length > 1 ? 's' : ''})
+                          </h3>
+                        </div>
+                        <span className="text-xs font-bold text-slate-400 bg-slate-900 px-3 py-1 rounded-full border border-slate-800">
+                          Up to 2,000 words per part
+                        </span>
+                      </div>
+                      <div className="space-y-4">
+                        {studyNote.installments.map((installment) => (
+                          <div
+                            key={`installment-${installment.index}`}
+                            className="bg-slate-900/80 p-4 rounded-xl border border-slate-800"
+                          >
+                            <div className="flex items-center gap-2 mb-2">
+                              <span className="text-[10px] font-extrabold uppercase tracking-wider text-sky-400">
+                                Part {installment.index + 1}
+                              </span>
+                            </div>
+                            <div className="prose prose-invert prose-sm max-w-none text-slate-200 leading-relaxed">
+                              {installment.content.split('\n\n').map((para, pIdx) => (
+                                <p key={pIdx} className="mb-3">
+                                  {para}
+                                </p>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   )}
 
