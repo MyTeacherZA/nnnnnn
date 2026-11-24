@@ -69,6 +69,11 @@ const DEEPSEEK_BASE_URL = (process.env.DEEPSEEK_BASE_URL || 'https://api.deepsee
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
 const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-chat';
 
+// Grok / xAI — primary engine for testing (falls back to DeepSeek when not set)
+const GROK_BASE_URL = (process.env.GROK_BASE_URL || 'https://api.x.ai/v1').replace(/\/+$/, '');
+const GROK_API_KEY = process.env.GROK_API_KEY || '';
+const GROK_MODEL = process.env.GROK_MODEL || 'grok-3';
+
 // Upstash Redis REST
 const UPSTASH_URL = (process.env.UPSTASH_REDIS_REST_URL || '').replace(/\/+$/, '');
 const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || '';
@@ -293,6 +298,7 @@ app.get('/api/health', (req: Request, res: Response) => {
     curriculumDb: 'US state standards / AP · UK nation curricula / ZA CAPS vault (fallback)',
     webSearchConfigured: webSearchConfigured(),
     deepseekConfigured: !!DEEPSEEK_API_KEY,
+    grokConfigured: !!GROK_API_KEY,
     buildId: BUILD_ID,
   });
 });
@@ -813,7 +819,7 @@ ${snippetBlock}
     let reply: string | null = null;
     let replySource = 'deepseek';
 
-    if (DEEPSEEK_API_KEY) {
+    if (GROK_API_KEY || DEEPSEEK_API_KEY) {
       const cachedReply = await getCache(cacheKey);
       if (typeof cachedReply === 'string' && cachedReply.trim()) {
         reply = cachedReply;
@@ -825,11 +831,11 @@ ${snippetBlock}
             messages: historyMessages,
             user: cleanMessage,
             temperature: 0.35,
-            timeoutMs: 45000,
+            timeoutMs: GROK_API_KEY ? 90000 : 45000,
             maxTokens: 8000,
-            baseUrl: DEEPSEEK_BASE_URL,
-            apiKey: DEEPSEEK_API_KEY,
-            model: DEEPSEEK_MODEL,
+            baseUrl: GROK_API_KEY ? GROK_BASE_URL : DEEPSEEK_BASE_URL,
+            apiKey: GROK_API_KEY || DEEPSEEK_API_KEY,
+            model: GROK_API_KEY ? GROK_MODEL : DEEPSEEK_MODEL,
           });
           if (reply) await setCache(cacheKey, reply, 900);
         } catch (llamaErr: any) {
@@ -1063,7 +1069,7 @@ STUDENT MESSAGE: ${String(input.userMessage).slice(0, 1500)}
 TUTOR REPLY: ${String(input.assistantReply).slice(0, 1500)}`;
 
     let raw: string | null = null;
-    if (DEEPSEEK_API_KEY) {
+    if (GROK_API_KEY || DEEPSEEK_API_KEY) {
       raw = await callLlamaChat({
         system: prompt,
         user,
@@ -1071,9 +1077,9 @@ TUTOR REPLY: ${String(input.assistantReply).slice(0, 1500)}`;
         temperature: 0.1,
         timeoutMs: 8000,
         maxTokens: 400,
-        baseUrl: DEEPSEEK_BASE_URL,
-        apiKey: DEEPSEEK_API_KEY,
-        model: DEEPSEEK_MODEL,
+        baseUrl: GROK_API_KEY ? GROK_BASE_URL : DEEPSEEK_BASE_URL,
+        apiKey: GROK_API_KEY || DEEPSEEK_API_KEY,
+        model: GROK_API_KEY ? GROK_MODEL : DEEPSEEK_MODEL,
       });
     }
     if (!raw && LLAMA_API_KEY) {
@@ -1448,11 +1454,13 @@ Do not include markdown code fences if responseMimeType is json.
           user: `Analyze the following tutoring conversation and generate Personalized Spark Notes:\n\n${transcript}`,
           jsonMode: true,
           temperature: 0.4,
-          timeoutMs: DEEPSEEK_API_KEY ? 45000 : 9500,
+          timeoutMs: GROK_API_KEY ? 45000 : DEEPSEEK_API_KEY ? 45000 : 9500,
           maxTokens: 2500,
-          ...(DEEPSEEK_API_KEY
-            ? { baseUrl: DEEPSEEK_BASE_URL, apiKey: DEEPSEEK_API_KEY, model: DEEPSEEK_MODEL }
-            : {}),
+          ...(GROK_API_KEY
+            ? { baseUrl: GROK_BASE_URL, apiKey: GROK_API_KEY, model: GROK_MODEL }
+            : DEEPSEEK_API_KEY
+              ? { baseUrl: DEEPSEEK_BASE_URL, apiKey: DEEPSEEK_API_KEY, model: DEEPSEEK_MODEL }
+              : {}),
         });
         let text = (textRaw || '').trim();
         if (text.startsWith('```json')) {
@@ -2162,18 +2170,20 @@ app.post('/api/study/generate', async (req: Request, res: Response) => {
       webSnippets,
     });
 
-    if (LLAMA_API_KEY || DEEPSEEK_API_KEY) {
+    if (GROK_API_KEY || DEEPSEEK_API_KEY || LLAMA_API_KEY) {
       try {
         const textRaw = await callLlamaChat({
           system: systemInstruction,
           user: `Create today's STUDY SESSION pack for ${grade} ${subject} on the topic "${cleanTopic}". Diagnose gaps first, teach directly in the learner's cognitive delivery style, then build recall and a short quiz. JSON only.`,
           jsonMode: true,
           temperature: 0.35,
-          timeoutMs: DEEPSEEK_API_KEY ? 90000 : 60000,
+          timeoutMs: GROK_API_KEY ? 90000 : DEEPSEEK_API_KEY ? 90000 : 60000,
           maxTokens: 8000,
-          ...(DEEPSEEK_API_KEY
-            ? { baseUrl: DEEPSEEK_BASE_URL, apiKey: DEEPSEEK_API_KEY, model: DEEPSEEK_MODEL }
-            : {}),
+          ...(GROK_API_KEY
+            ? { baseUrl: GROK_BASE_URL, apiKey: GROK_API_KEY, model: GROK_MODEL }
+            : DEEPSEEK_API_KEY
+              ? { baseUrl: DEEPSEEK_BASE_URL, apiKey: DEEPSEEK_API_KEY, model: DEEPSEEK_MODEL }
+              : {}),
         });
         let text = (textRaw || '').trim();
         if (text.startsWith('```json')) {
@@ -3014,7 +3024,7 @@ RETURN STRICT JSON matching this schema:
 
     const roadmapSystemInstruction = `${systemInstruction}\n\n${buildLearningHistoryBlock(learningHistory)}`;
 
-    if (LLAMA_API_KEY || DEEPSEEK_API_KEY) {
+    if (GROK_API_KEY || DEEPSEEK_API_KEY || LLAMA_API_KEY) {
       try {
         const textRaw = await callLlamaChat({
           system: roadmapSystemInstruction,
@@ -3023,11 +3033,13 @@ RETURN STRICT JSON matching this schema:
           }. Focus: ${focusTopic || 'the semester chapter or topic chosen by the learner'}.`,
           jsonMode: true,
           temperature: 0.4,
-          timeoutMs: DEEPSEEK_API_KEY ? 90000 : 9000,
+          timeoutMs: GROK_API_KEY ? 90000 : DEEPSEEK_API_KEY ? 90000 : 9000,
           maxTokens: 6000,
-          ...(DEEPSEEK_API_KEY
-            ? { baseUrl: DEEPSEEK_BASE_URL, apiKey: DEEPSEEK_API_KEY, model: DEEPSEEK_MODEL }
-            : {}),
+          ...(GROK_API_KEY
+            ? { baseUrl: GROK_BASE_URL, apiKey: GROK_API_KEY, model: GROK_MODEL }
+            : DEEPSEEK_API_KEY
+              ? { baseUrl: DEEPSEEK_BASE_URL, apiKey: DEEPSEEK_API_KEY, model: DEEPSEEK_MODEL }
+              : {}),
         });
         let text = (textRaw || '').trim();
         if (text.startsWith('```json')) {
@@ -3212,7 +3224,7 @@ Return valid JSON conforming strictly to:
 - Do not teach, coach, scaffold or reveal answers inside the paper. Put all solutions in the memorandum only.
 - Weight question selection toward the learner's recorded weak skills and quiz failures, while remaining inside the official curriculum scope.`;
 
-    if (LLAMA_API_KEY || DEEPSEEK_API_KEY) {
+    if (GROK_API_KEY || DEEPSEEK_API_KEY || LLAMA_API_KEY) {
       try {
         const textRaw = await callLlamaChat({
           system: examSystemInstruction,
@@ -3221,11 +3233,13 @@ Return valid JSON conforming strictly to:
           }.`,
           jsonMode: true,
           temperature: 0.3,
-          timeoutMs: DEEPSEEK_API_KEY ? 90000 : 9000,
-          maxTokens: DEEPSEEK_API_KEY ? 6500 : 5000,
-          ...(DEEPSEEK_API_KEY
-            ? { baseUrl: DEEPSEEK_BASE_URL, apiKey: DEEPSEEK_API_KEY, model: DEEPSEEK_MODEL }
-            : {}),
+          timeoutMs: GROK_API_KEY ? 90000 : DEEPSEEK_API_KEY ? 90000 : 9000,
+          maxTokens: GROK_API_KEY ? 6500 : DEEPSEEK_API_KEY ? 6500 : 5000,
+          ...(GROK_API_KEY
+            ? { baseUrl: GROK_BASE_URL, apiKey: GROK_API_KEY, model: GROK_MODEL }
+            : DEEPSEEK_API_KEY
+              ? { baseUrl: DEEPSEEK_BASE_URL, apiKey: DEEPSEEK_API_KEY, model: DEEPSEEK_MODEL }
+              : {}),
         });
         let text = (textRaw || '').trim();
         if (text.startsWith('```json')) {
@@ -3241,7 +3255,7 @@ Return valid JSON conforming strictly to:
             parsed.webCount = webSnippets.length;
           }
           await setCache(cacheKey, parsed, 7200);
-          return res.json({ ...parsed, source: DEEPSEEK_API_KEY ? DEEPSEEK_MODEL : LLAMA_MODEL_ID });
+          return res.json({ ...parsed, source: GROK_API_KEY ? GROK_MODEL : DEEPSEEK_API_KEY ? DEEPSEEK_MODEL : LLAMA_MODEL_ID });
         }
       } catch (llamaErr: any) {
         console.warn(
@@ -3947,18 +3961,18 @@ Return valid JSON with:
 `.trim();
 
   let paper: any = null;
-  if (DEEPSEEK_API_KEY) {
+  if (GROK_API_KEY || DEEPSEEK_API_KEY) {
     try {
       const text = await callLlamaChat({
         system: systemInstruction,
         user: `Generate the ${exam} now for ${grd} ${sub} (${trm}).`,
         jsonMode: true,
         temperature: 0.3,
-        timeoutMs: 90000,
+        timeoutMs: GROK_API_KEY ? 90000 : 90000,
         maxTokens: 6000,
-        baseUrl: DEEPSEEK_BASE_URL,
-        apiKey: DEEPSEEK_API_KEY,
-        model: DEEPSEEK_MODEL,
+        baseUrl: GROK_API_KEY ? GROK_BASE_URL : DEEPSEEK_BASE_URL,
+        apiKey: GROK_API_KEY || DEEPSEEK_API_KEY,
+        model: GROK_API_KEY ? GROK_MODEL : DEEPSEEK_MODEL,
       });
       if (text) {
         let cleaned = text.trim();
@@ -4209,18 +4223,20 @@ Return valid JSON:
 `.trim();
 
   let paper: any = null;
-  if (LLAMA_API_KEY || DEEPSEEK_API_KEY) {
+  if (GROK_API_KEY || DEEPSEEK_API_KEY || LLAMA_API_KEY) {
     try {
       const textRaw = await callLlamaChat({
         system: systemInstruction,
         user: `Generate study notes for this chapter only.`,
         jsonMode: true,
         temperature: 0.3,
-        timeoutMs: DEEPSEEK_API_KEY ? 90000 : 60000,
+        timeoutMs: GROK_API_KEY ? 90000 : DEEPSEEK_API_KEY ? 90000 : 60000,
         maxTokens: 4000,
-        ...(DEEPSEEK_API_KEY
-          ? { baseUrl: DEEPSEEK_BASE_URL, apiKey: DEEPSEEK_API_KEY, model: DEEPSEEK_MODEL }
-          : {}),
+        ...(GROK_API_KEY
+          ? { baseUrl: GROK_BASE_URL, apiKey: GROK_API_KEY, model: GROK_MODEL }
+          : DEEPSEEK_API_KEY
+            ? { baseUrl: DEEPSEEK_BASE_URL, apiKey: DEEPSEEK_API_KEY, model: DEEPSEEK_MODEL }
+            : {}),
       });
       if (textRaw) {
         let cleaned = textRaw.trim();
