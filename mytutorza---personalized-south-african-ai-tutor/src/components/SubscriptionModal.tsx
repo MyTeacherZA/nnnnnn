@@ -189,6 +189,23 @@ export const SubscriptionModal: React.FC<{ open: boolean; onClose: () => void }>
           )}
         </div>
 
+        {/* AI usage this month (metering) */}
+        {aiUsage && (
+          <div className="mt-3 rounded-2xl border border-slate-700/70 bg-slate-900/50 px-4 py-3">
+            <div className="text-xs font-bold text-slate-200">AI usage this month</div>
+            <div className="mt-1 text-[11px] text-slate-400">
+              {aiUsage.usage.calls} agent call{aiUsage.usage.calls === 1 ? '' : 's'} ·{' '}
+              {aiUsage.usage.totalTokens.toLocaleString()} tokens used ·{' '}
+              {(aiUsage.quota.allowanceTokens - aiUsage.quota.usedTokens).toLocaleString()} of{' '}
+              {aiUsage.quota.allowanceTokens.toLocaleString()} tokens remaining
+              {aiUsage.quota.resetAt ? ` · resets ${new Date(aiUsage.quota.resetAt).toLocaleDateString()}` : ''}
+              {!aiUsage.quota.allowed ? (
+                <span className="ml-1 text-amber-300 font-semibold">— quota reached</span>
+              ) : null}
+            </div>
+          </div>
+        )}
+
         <ul className="mt-5 grid sm:grid-cols-2 gap-x-6 gap-y-2 text-xs text-slate-300">
           {[
             'Socratic Tutoring agent — guided, never just answers',
