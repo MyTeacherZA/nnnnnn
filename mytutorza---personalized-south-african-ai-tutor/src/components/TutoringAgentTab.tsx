@@ -45,7 +45,11 @@ export const TutoringAgentTab: React.FC = () => {
       id: 'init-1',
       sender: 'ai',
       agent: 'tutoring',
-      text: `${greeting} ${student?.fullName || 'Student'}! I am your Guided Discovery AI Tutor for **${activeSubject?.name || 'Mathematics'}** (${student?.grade || 'Grade 12'}).\n\nI am permanently calibrated to your **${student?.firmament.cognitiveScore || student?.firmament.lifePath.profile}** profile under ${curriculumLabel}.\n\n🛡️ **Firmament Guardrail Active:** Generic teaching is disabled. I will never simply give away the final answer or solve problems for you. I will guide you through targeted questions to discover the principle yourself.\n\nBaseline: **${activeSubject?.previousTermMark || 50}%** (${activeSubject?.previousTermMark && activeSubject.previousTermMark < 60 ? 'Remedial Scaffold: We will ensure fundamental concepts are rock-solid first' : 'Advancement Scaffold: Ready for higher-order exam challenges'}).\n\nWhich ${openingTopic} shall we tackle today?`,
+      text: `${greeting} ${student?.fullName || 'Student'}! I am your own private tutor for **${activeSubject?.name || 'Mathematics'}** (${student?.grade || 'Grade 12'}.
+
+I am here to guide you — never just hand you the answer — and we will figure things out together.
+
+Which ${openingTopic} shall we tackle first? Or is there something you have been wondering about?`,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     },
   ]);

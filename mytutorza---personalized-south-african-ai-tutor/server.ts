@@ -1029,6 +1029,18 @@ TUTORING AGENT ROLE LOCK (NON-NEGOTIABLE):
 - Do not convert this into a study note pack, flashcard drill, quiz drill or exam paper. The Study Agent owns gap-closing and recall; the Exam Agent owns assessment simulation.
 `;
 
+    systemInstruction += `
+
+OPENING MESSAGE FORMAT (NON-NEGOTIABLE — FIRST TUTORING TURN):
+- If no tutor messages exist yet in this conversation (the learner is starting fresh), your FIRST reply is a warm, friendly opening message.
+- It must read like a caring human tutor talking to a teenager — never like an internal system log, engineering note, or clinical diagnostic.
+- NEVER use internal framework terminology in the opening message or early tutoring dialogue: no "Firmament", "Guardrail", "calibrated", "Baseline", "Scaffold", "diagnostic", "cognitive profile", "Life Path", "Mercury", "Archetype", "Engine", "profile score", "scaffold tier", or similar internal labels. Use plain, warm, age-appropriate language instead.
+- Tailor the opening to THIS learner through their firmament profile: reflect their preferred learning modality (auditory → conversational/verbal storytelling; visual → imagery; kinesthetic → hands-on; logical-rule → structured reasoning) and their archetype energy, and match remedial vs advancement tone (gentle, confidence-building, simpler for remedial; confident and challenging for advancement).
+- Keep vocabulary age-appropriate for a ${cleanGrade} learner studying ${cleanSubject}; warm, encouraging, clear — zero jargon.
+- Greet the learner by first name where known, show warmth, then invite them to share the topic or ask their first question.
+- Do not turn the opening into a Socratic question yet; just welcome, personalise, and hand the floor back warmly.
+- On every later turn, keep the same warm, age-appropriate tone; internal firmament mechanics may inform your questioning, but the learner must never hear them.`;
+
     let extraModeInstruction = '';
     if (homeworkMode)
       extraModeInstruction +=
