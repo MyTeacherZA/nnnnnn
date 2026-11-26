@@ -9,6 +9,7 @@
 
 import { getSelectiveCapsCurriculumContext } from './serverCapsVault';
 import { buildCurriculumDirective as buildUsUkCurriculumDirective } from './serverUsUkCurriculum';
+import { buildUsStandardsNotes } from './serverUsStandardsNotes';
 import {
   COGNITIVE_PROFILE_GUIDE,
   DIMENSION_GUIDE,
@@ -155,6 +156,7 @@ PRIMARY SOURCE OF TRUTH (FIRST POINT OF REFERENCE): ${isUS ? `${regionLabel.toUp
 ${isUS ? `(Grade-level standards and state assessment expectations for ${grade} ${subject}). Consult these before any reasoning:` : isUK ? `(National curriculum requirements and exam-board mark-scheme conventions for ${grade} ${subject}). Consult these before any reasoning:` : '(450 DBE CAPS PDFs - Annual Teaching Plans, Examination Guidelines, Formula\nSheets, chief examiner traps). Consult these documents before any reasoning:'}
 
 ${rawCurriculum}
+${isUS ? buildUsStandardsNotes({ subject, grade, state, topic: userQuery }) : ''}
 
 --------------------------------------------------------------------------------
 LAYER 0: THE 24 FIRMAMENT DIAGNOSTIC ANSWERS (CAPTURED IN SUPABASE)
@@ -625,6 +627,7 @@ Term: ${term}
 Language of delivery: ${language}
 
 ${curriculumDirective}
+${String(country || '').toUpperCase() === 'US' ? buildUsStandardsNotes({ subject, grade, state, topic }) : ''}
 ${
   Array.isArray(webSnippets) && webSnippets.length
     ? `

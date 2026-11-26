@@ -24,6 +24,7 @@ import {
 } from './serverPdfIngestion';
 import { selectSourceChunksWithScore, isPossiblyOffTopic, detectStruggleSignal } from './serverTutoringContext';
 import { searchWeb, detectNeedsWeb, webSearchConfigured } from './serverWebSearch';
+import { usResearchDomainsFor, buildUsStandardsNotes } from './serverUsStandardsNotes';
 import { createHash } from 'crypto';
 import {
   pickFiles as pickCapsFiles,
@@ -1048,13 +1049,17 @@ app.post('/api/tutoring/chat', async (req: Request, res: Response) => {
       Boolean(sessionSource && sourceCoverage === 0);
 
     if (wantsWeb) {
-      const webCacheKey = `web:${hashForCache(`${cleanTopic}||${cleanMessage}`)}`;
+      const webCacheKey = `web:${hashForCache(`${cleanTopic}||${cleanMessage}||${String(country || '')}||${String(state || '')}`)}`;
       const cachedWeb = await getCache(webCacheKey);
       if (Array.isArray(cachedWeb) && cachedWeb.length > 0) {
         webSnippets = cachedWeb;
       } else {
         try {
-          webSnippets = await searchWeb(`${cleanTopic} ${cleanMessage}`.slice(0, 300), 3);
+          webSnippets = await searchWeb(
+            `${cleanTopic} ${cleanMessage}`.slice(0, 300),
+            3,
+            String(country || '').toUpperCase() === 'US' ? usResearchDomainsFor(state) : undefined
+          );
           if (webSnippets?.length) {
             await setCache(webCacheKey, webSnippets, 60 * 60 * 12); // 12h TTL: reuse is free
           }
@@ -2571,13 +2576,17 @@ app.post('/api/study/generate', async (req: Request, res: Response) => {
     const wantsWeb = Boolean(includeWeb) || detectNeedsWeb(cleanTopic);
     let webSnippets: { title: string; url: string; snippet: string }[] | null = null;
     if (wantsWeb) {
-      const webCacheKey = `web:${hashForCache(`${cleanTopic}||study`)}`;
+      const webCacheKey = `web:${hashForCache(`${cleanTopic}||study||${String(country || '')}||${String(state || '')}`)}`;
       const cachedWeb = await getCache(webCacheKey);
       if (Array.isArray(cachedWeb) && cachedWeb.length > 0) {
         webSnippets = cachedWeb;
       } else {
         try {
-          webSnippets = await searchWeb(`${cleanTopic} ${cleanTitle}`.slice(0, 300), 3);
+          webSnippets = await searchWeb(
+            `${cleanTopic} ${cleanTitle}`.slice(0, 300),
+            3,
+            String(country || '').toUpperCase() === 'US' ? usResearchDomainsFor(state) : undefined
+          );
           if (webSnippets?.length) {
             await setCache(webCacheKey, webSnippets, 60 * 60 * 12); // 12h TTL
           }
@@ -3467,6 +3476,7 @@ CURRICULUM SPECIFICATIONS:
 
 CURRICULUM GROUNDING (${curriculum.frameworkLabel}):
 ${getCurriculumDirective({ subject: targetSubject, grade: targetGrade, topic: focusTopic, state, country, nation })}
+${String(country || '').toUpperCase() === 'US' ? buildUsStandardsNotes({ subject: targetSubject, grade: targetGrade, state, topic: focusTopic }) : ''}
 
 RETURN STRICT JSON matching this schema:
 {
@@ -3607,13 +3617,17 @@ app.post('/api/exam/generate', async (req: Request, res: Response) => {
     const wantsWeb = Boolean(includeWeb) || detectNeedsWeb(topic || '');
     let webSnippets: { title: string; url: string; snippet: string }[] | null = null;
     if (wantsWeb) {
-      const webCacheKey = `web:${hashForCache(`${topic || 'general'}||exam`)}`;
+      const webCacheKey = `web:${hashForCache(`${topic || 'general'}||exam||${String(countryCode)}||${String(state || '')}`)}`;
       const cachedWeb = await getCache(webCacheKey);
       if (Array.isArray(cachedWeb) && cachedWeb.length > 0) {
         webSnippets = cachedWeb;
       } else {
         try {
-          webSnippets = await searchWeb(`${topic || subject} ${subject}`.slice(0, 300), 3);
+          webSnippets = await searchWeb(
+            `${topic || subject} ${subject}`.slice(0, 300),
+            3,
+            countryCode === 'US' ? usResearchDomainsFor(state) : undefined
+          );
           if (webSnippets?.length) {
             await setCache(webCacheKey, webSnippets, 60 * 60 * 12); // 12h TTL
           }
@@ -3659,6 +3673,7 @@ Topic Focus: ${topic ? topic : curriculum.isUS ? 'Full state standards for this 
 
 CURRICULUM & EXAM SPECIFICATION (${curriculum.frameworkLabel}):
 ${getCurriculumDirective({ subject, grade, topic, state, country, nation })}
+${countryCode === 'US' ? buildUsStandardsNotes({ subject, grade, state, topic }) : ''}
 ${webSnippetsBlock}
 
 TARGET LENGTH MANDATE (NON-NEGOTIABLE):
@@ -4475,6 +4490,7 @@ You are ${examiner}. Generate a ${exam} for ${grd} ${sub} (${trm}).
 Duration: ${dur} minutes. Include sections, questions, mark allocations, examiner traps, and an official answer sheet with rubrics.
 Ground all content in the learner's curriculum framework:
 ${framework}
+${countryCode === 'US' ? buildUsStandardsNotes({ subject: sub, grade: grd, state, topic: trm }) : ''}
 
 Return valid JSON with:
 {

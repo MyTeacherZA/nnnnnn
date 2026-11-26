@@ -23,9 +23,28 @@ export function detectNeedsWeb(message: string): boolean {
   return FRESHNESS_PATTERN.test(String(message || ''));
 }
 
-export async function searchWeb(query: string, maxResults: number = 3): Promise<WebSnippet[] | null> {
+export async function searchWeb(
+  query: string,
+  maxResults: number = 3,
+  includeDomains?: string[]
+): Promise<WebSnippet[] | null> {
   const clean = String(query || '').trim().slice(0, 500);
   if (!clean) return null;
+  const allowedDomains = (includeDomains || [])
+    .map((d) => String(d || '').trim().toLowerCase())
+    .filter(Boolean);
+  const keepAllowed = (snippets: WebSnippet[]): WebSnippet[] =>
+    allowedDomains.length
+      ? snippets.filter((s) =>
+          allowedDomains.some((d) => {
+            try {
+              return new URL(s.url).hostname.replace(/^www\./, '').endsWith(d);
+            } catch {
+              return String(s.url || '').toLowerCase().includes(d);
+            }
+          })
+        )
+      : snippets;
 
   const tavilyKey = process.env.TAVILY_API_KEY || '';
   const braveKey = process.env.BRAVE_API_KEY || process.env.BRAVE_SEARCH_API_KEY || '';
@@ -44,6 +63,7 @@ export async function searchWeb(query: string, maxResults: number = 3): Promise<
           search_depth: 'basic',
           max_results: Math.min(5, Math.max(1, maxResults)),
           include_answer: false,
+          ...(allowedDomains.length ? { include_domains: allowedDomains } : {}),
         }),
         signal: controller.signal,
       });
@@ -54,14 +74,14 @@ export async function searchWeb(query: string, maxResults: number = 3): Promise<
       } else {
         const data: any = await res.json();
         const results = Array.isArray(data?.results) ? data.results : [];
-        return results
-          .slice(0, maxResults)
+        const mapped = results
           .map((r: any) => ({
             title: String(r?.title || '').slice(0, 200),
             url: String(r?.url || '').slice(0, 500),
             snippet: String(r?.content || '').slice(0, 500),
           }))
           .filter((s: WebSnippet) => s.title || s.snippet);
+        return keepAllowed(mapped).slice(0, maxResults);
       }
     } catch (err: any) {
       console.warn('Tavily search error:', err?.message || err);
@@ -74,8 +94,11 @@ export async function searchWeb(query: string, maxResults: number = 3): Promise<
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 8000);
+      const restrictedQuery = allowedDomains.length
+        ? `${clean} (${allowedDomains.map((d) => `site:${d}`).join(' OR ')})`
+        : clean;
       const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(
-        clean,
+        restrictedQuery,
       )}&count=${Math.min(5, Math.max(1, maxResults))}&safesearch=strict`;
       const res = await fetch(url, {
         headers: {
@@ -91,14 +114,14 @@ export async function searchWeb(query: string, maxResults: number = 3): Promise<
       }
       const data: any = await res.json();
       const results = Array.isArray(data?.web?.results) ? data.web.results : [];
-      return results
-        .slice(0, maxResults)
+      const mapped = results
         .map((r: any) => ({
           title: String(r?.title || '').slice(0, 200),
           url: String(r?.url || '').slice(0, 500),
           snippet: String(r?.description || '').slice(0, 500),
         }))
         .filter((s: WebSnippet) => s.title || s.snippet);
+      return keepAllowed(mapped).slice(0, maxResults);
     } catch (err: any) {
       console.warn('Brave search error:', err?.message || err);
       return null;
