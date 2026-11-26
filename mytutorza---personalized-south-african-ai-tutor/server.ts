@@ -304,10 +304,15 @@ const TRIAL_MESSAGE_LIMITS: Record<string, { user: number; ai: number }> = {
   study: { user: 12, ai: 11 },
 };
 const ADMIN_FULL_NAMES = ['lulu lavender'];
-const ADMIN_EMAILS = String(process.env.ADMIN_EMAILS || '')
-  .split(',')
-  .map((v) => v.trim().toLowerCase())
-  .filter(Boolean);
+const ADMIN_EMAILS = Array.from(
+  new Set([
+    'mananalunga62@gmail.com',
+    ...String(process.env.ADMIN_EMAILS || '')
+      .split(',')
+      .map((v) => v.trim().toLowerCase())
+      .filter(Boolean),
+  ])
+);
 
 interface TrialUsage {
   tutoringUser: number;

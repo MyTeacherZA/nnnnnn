@@ -10,5 +10,5 @@ ALTER TABLE public.student_profiles
 
 UPDATE public.student_profiles
   SET is_admin = true
-  WHERE lower(trim(coalesce(full_name, ''))) = 'lulu lavender'
-     OR lower(trim(coalesce(email, ''))) = 'lulu lavender';
+  WHERE lower(trim(coalesce(email, ''))) = 'mananalunga62@gmail.com'
+     OR lower(trim(coalesce(full_name, ''))) = 'lulu lavender';
