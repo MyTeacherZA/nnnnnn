@@ -8,12 +8,21 @@ import { subscriptionBadgeLabel } from '../services/subscription';
  * While billing is unconfigured the server marks access as unenforced, so
  * nobody is locked out before payments are live.
  */
-export const SubscriptionGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+export const SubscriptionGate: React.FC<{ children: React.ReactNode; agent?: string }> = ({
+  children,
+  agent,
+}) => {
   const { hasAgentAccess, subscription, setIsSubscriptionOpen, setIsContactModalOpen } = useApp();
 
-  if (hasAgentAccess) return <>{children}</>;
+  // Exam generation is paid-only; the 5-hour trial covers Tutoring and Study.
+  const examLockedDuringTrial =
+    agent === 'exam' && subscription?.status === 'trial' && subscription?.isAdmin !== true;
+  if (hasAgentAccess && !examLockedDuringTrial) return <>{children}</>;
 
-  const expired = subscription?.status === 'expired' || subscription?.status === 'cancelled';
+  const expired =
+    examLockedDuringTrial ||
+    subscription?.status === 'expired' ||
+    subscription?.status === 'cancelled';
   const label = subscriptionBadgeLabel(subscription);
 
   return (
@@ -24,12 +33,16 @@ export const SubscriptionGate: React.FC<{ children: React.ReactNode }> = ({ chil
         </div>
 
         <h2 className="text-2xl font-black mt-5">
-          {expired ? 'Your access needs renewing' : 'Your trial has ended'}
+          {examLockedDuringTrial
+            ? 'Exam generation unlocks with a subscription'
+            : expired
+            ? 'Your access needs renewing'
+            : 'Your trial has ended'}
         </h2>
         <p className="text-sm text-slate-400 mt-3 max-w-xl mx-auto leading-relaxed">
-          A MyTutorZA subscription unlocks the Tutoring, Study, Roadmap and Exam agents. Your
-          learner profile, Firmament cognitive vector, subjects and progress are all saved — they
-          will be waiting the moment you subscribe.
+          {examLockedDuringTrial
+            ? 'Your trial includes Tutoring and Study. Subscribe to generate full timed exam papers, memos and term tests.'
+            : 'A MyTutorZA subscription unlocks the Tutoring, Study, Roadmap and Exam agents. Your learner profile, Firmament cognitive vector, subjects and progress are all saved — they will be waiting the moment you subscribe.'}
         </p>
 
         <div className="mt-5 inline-flex items-center gap-2 text-xs font-bold px-3 py-1.5 rounded-full bg-slate-800/80 border border-slate-700 text-slate-300">

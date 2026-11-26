@@ -291,8 +291,67 @@ const AI_AGENT_MAX_TOKENS: Record<string, number> = {
   term_tests: 3000,
 };
 
-function aiMonthlyAllowanceFor(status: string): number {
+// ---------------------------------------------------------------------
+// TRIAL + ADMIN ENTITLEMENT
+// New learners get a 5-hour trial with a deliberately small message budget:
+// 12 user messages and 11 AI replies in Tutoring, the same in Study, and no
+// Exam generation. The named admin profile is never metered or gated.
+// ---------------------------------------------------------------------
+const TRIAL_DURATION_MS = 5 * 60 * 60 * 1000;
+const TRIAL_TTL_SECONDS = 6 * 60 * 60;
+const TRIAL_MESSAGE_LIMITS: Record<string, { user: number; ai: number }> = {
+  tutoring: { user: 12, ai: 11 },
+  study: { user: 12, ai: 11 },
+};
+const ADMIN_FULL_NAMES = ['lulu lavender'];
+const ADMIN_EMAILS = String(process.env.ADMIN_EMAILS || '')
+  .split(',')
+  .map((v) => v.trim().toLowerCase())
+  .filter(Boolean);
+
+interface TrialUsage {
+  tutoringUser: number;
+  tutoringAi: number;
+  studyUser: number;
+  studyAi: number;
+}
+const EMPTY_TRIAL_USAGE: TrialUsage = { tutoringUser: 0, tutoringAi: 0, studyUser: 0, studyAi: 0 };
+
+function isAdminProfile(profile: any): boolean {
+  if (!profile) return false;
+  if (profile.is_admin === true || profile.isAdmin === true) return true;
+  const email = String(profile.email || '').trim().toLowerCase();
+  const name = String(profile.full_name || profile.fullName || '').trim().toLowerCase();
+  return ADMIN_EMAILS.includes(email) || ADMIN_FULL_NAMES.includes(name);
+}
+
+function trialCacheKey(email: string): string {
+  return `trialusage:${String(email || '').trim().toLowerCase()}`;
+}
+
+async function getTrialUsage(email: string): Promise<TrialUsage> {
+  const cached = await getCache(trialCacheKey(email));
+  return {
+    tutoringUser: Number(cached?.tutoringUser || 0),
+    tutoringAi: Number(cached?.tutoringAi || 0),
+    studyUser: Number(cached?.studyUser || 0),
+    studyAi: Number(cached?.studyAi || 0),
+  };
+}
+
+async function bumpTrialUsage(email: string, agent: string, phase: 'user' | 'ai'): Promise<TrialUsage> {
+  if (!email) return EMPTY_TRIAL_USAGE;
+  const usage = await getTrialUsage(email);
+  const prefix = agent === 'study' ? 'study' : 'tutoring';
+  const key = `${prefix}${phase === 'ai' ? 'Ai' : 'User'}` as keyof TrialUsage;
+  usage[key] = Number(usage[key] || 0) + 1;
+  await setCache(trialCacheKey(email), usage, TRIAL_TTL_SECONDS);
+  return usage;
+}
+
+function aiMonthlyAllowanceFor(status: string, isAdmin = false): number {
   const clean = String(status || '').toLowerCase();
+  if (isAdmin) return 100_000_000;
   const freeTokens = parseInt(process.env.AI_QUOTA_FREE_TOKENS || '25000', 10);
   const paidTokens = parseInt(process.env.AI_QUOTA_PAID_TOKENS || '200000', 10);
   const entitled = clean === 'active' || clean === 'past_due' || clean === 'trial';
@@ -405,8 +464,9 @@ async function getAiQuota(email: string) {
   const client = getServiceSupabaseClient();
   const emailNorm = String(email || '').trim().toLowerCase();
   const profile: any = client && emailNorm ? await findProfileByEmail(client, emailNorm) : null;
+  const admin = isAdminProfile(profile);
   const status = String(profile?.subscription_status || 'none').toLowerCase();
-  const allowanceTokens = aiMonthlyAllowanceFor(status);
+  const allowanceTokens = aiMonthlyAllowanceFor(status, admin);
   let used = 0;
   if (client && profile?.id) {
     try {
@@ -433,7 +493,7 @@ async function getAiQuota(email: string) {
     usedTokens: used,
     remainingTokens: Math.max(0, allowanceTokens - used),
     resetAt,
-    allowed: used < allowanceTokens,
+    allowed: admin || used < allowanceTokens,
   };
 }
 
@@ -870,7 +930,7 @@ function hashForCache(value: string): string {
 
 app.post('/api/tutoring/chat', async (req: Request, res: Response) => {
   try {
-    if (await rejectWithoutAgentAccess(req, res)) return;
+    if (await rejectWithoutAgentAccess(req, res, 'tutoring')) return;
     const {
       message,
       firmamentProfile,
@@ -1208,6 +1268,9 @@ ${snippetBlock}
       }What is the first definition, rule or step you would write down for it?`;
       replySource = 'topic-locked-fallback';
     }
+
+    // Trial metering: count the AI reply that was actually delivered.
+    void bumpTrialUsage(email, 'tutoring', 'ai');
 
     // Persist the exchange against ONE session row (never one row per message).
     const savedTutoringSessionId = await saveTutoringSession({
@@ -2469,7 +2532,7 @@ async function saveTutoringSession(input: {
 
 app.post('/api/study/generate', async (req: Request, res: Response) => {
   try {
-    if (await rejectWithoutAgentAccess(req, res)) return;
+    if (await rejectWithoutAgentAccess(req, res, 'study')) return;
 
     const {
       subject,
@@ -2627,6 +2690,7 @@ app.post('/api/study/generate', async (req: Request, res: Response) => {
             },
             studyPack: parsed,
           });
+          void bumpTrialUsage(email, 'study', 'ai');
           return res.json({ ...parsed, title: parsed.title || cleanTitle, sessionId: savedSessionId || sessionId || null, source: studyPackResult.model });
         }
       } catch (llamaErr: any) {
@@ -2773,6 +2837,7 @@ app.post('/api/study/generate', async (req: Request, res: Response) => {
       studyPack: fallbackData,
     });
     // Intentionally NOT cached: the fallback pack is deliberately minimal.
+    void bumpTrialUsage(email, 'study', 'ai');
     return res.json({
       ...fallbackData,
       title: cleanTitle,
@@ -3521,7 +3586,7 @@ RETURN STRICT JSON matching this schema:
 // ---------------------------------------------------------------------
 app.post('/api/exam/generate', async (req: Request, res: Response) => {
   try {
-    if (await rejectWithoutAgentAccess(req, res)) return;
+    if (await rejectWithoutAgentAccess(req, res, 'exam')) return;
     const { subject, grade, examType, durationMinutes, topic, term, state, country, nation, includeWeb } = req.body;
     const email = String(req.body?.email || '').trim().toLowerCase();
     const dur = Number(durationMinutes) || 60;
@@ -3768,27 +3833,18 @@ app.get('/api/caps/search', (req: Request, res: Response) => {
 // BILLING (PayFast gating: beta mode until merchant configured)
 // ---------------------------------------------------------------------
 app.get('/api/billing/trial', (req: Request, res: Response) => {
-  const trialStarted = Date.now() - 0;
-  const expires = trialStarted + 3 * 24 * 60 * 60 * 1000;
+  const trialStarted = Date.now();
   return res.json({
     trialStartedAt: new Date(trialStarted).toISOString(),
-    trialExpiresAt: new Date(expires).toISOString(),
-    daysRemaining: 3,
+    trialExpiresAt: new Date(trialStarted + TRIAL_DURATION_MS).toISOString(),
+    hoursRemaining: 5,
     status: 'trial',
   });
 });
 
-app.get('/api/billing/status', (req: Request, res: Response) => {
-  const configured = !!process.env.PAYFAST_MERCHANT_ID;
-  return res.json({
-    betaMode: !configured,
-    payfastConfigured: configured,
-    plans: [
-      { id: 'weekly', label: 'R25 / 7 days', price: 25, cycle: 'weekly' },
-      { id: 'monthly', label: 'R80 / month', price: 80, cycle: 'monthly' },
-    ],
-  });
-});
+// The legacy PayFast /api/billing/status route was removed here: Express uses
+// the first matching route, and it shadowed the authoritative Supabase-backed
+// status route below (so paid learners were still shown a trial badge).
 
 app.post('/api/billing/checkout', (req: Request, res: Response) => {
   const { merchantId = process.env.PAYFAST_MERCHANT_ID, plan = 'weekly' } = req.body || {};
@@ -3875,6 +3931,8 @@ interface BillingAccess {
   status: string;
   active: boolean;
   enforced: boolean;
+  isAdmin?: boolean;
+  trialUsage?: TrialUsage;
   trialEndsAt?: string;
   plan?: string;
   provider?: string;
@@ -4015,13 +4073,15 @@ function computeBillingAccess(row: any, enforced: boolean): BillingAccess {
   const trialMs = row?.trial_expires_at ? new Date(row.trial_expires_at).getTime() : 0;
   const trialActive = status === 'trial' && (!trialMs || trialMs > Date.now());
   const paidActive = status === 'active' || status === 'past_due';
-  const active = !enforced || paidActive || trialActive;
+  const isAdmin = isAdminProfile(row);
+  const active = isAdmin || !enforced || paidActive || trialActive;
   const daysLeft = trialMs ? Math.max(0, Math.ceil((trialMs - Date.now()) / 86400000)) : undefined;
 
   return {
     status,
     active,
     enforced,
+    isAdmin,
     trialEndsAt: row?.trial_expires_at || undefined,
     plan: row?.plan_id || undefined,
     provider: row?.provider || undefined,
@@ -4054,7 +4114,7 @@ async function latestSubscriptionFor(client: any, profileId: string) {
 }
 
 /** Returns true when the request has already been rejected with a 402. */
-async function rejectWithoutAgentAccess(req: Request, res: Response): Promise<boolean> {
+async function rejectWithoutAgentAccess(req: Request, res: Response, agent?: string): Promise<boolean> {
   const email = String(req.body?.email || req.body?.userEmail || '').trim().toLowerCase();
   const enforced = subscriptionsConfigured();
   const client = getServiceSupabaseClient();
@@ -4065,8 +4125,42 @@ async function rejectWithoutAgentAccess(req: Request, res: Response): Promise<bo
   const profile = await findProfileByEmail(client, email);
   if (!profile) return false;
 
+  // The named admin account is never metered, gated or charged.
+  if (isAdminProfile(profile)) return false;
+
   const access = computeBillingAccess(profile, true);
-  if (access.active) return false;
+  if (access.active && access.status !== 'trial') return false;
+
+  if (access.active && access.status === 'trial') {
+    // Exam generation is a paid-only feature, even during the trial.
+    if (agent === 'exam') {
+      res.status(402).json({
+        error: 'Exam generation unlocks with a subscription. Your trial covers Tutoring and Study only.',
+        code: 'TRIAL_EXAM_LOCKED',
+        access,
+      });
+      return true;
+    }
+
+    const limits = TRIAL_MESSAGE_LIMITS[agent || ''];
+    if (limits) {
+      const usage = await getTrialUsage(email);
+      const prefix = agent === 'study' ? 'study' : 'tutoring';
+      const userCount = Number(usage[`${prefix}User` as keyof TrialUsage] || 0);
+      const aiCount = Number(usage[`${prefix}Ai` as keyof TrialUsage] || 0);
+      if (userCount >= limits.user || aiCount >= limits.ai) {
+        access.trialUsage = usage;
+        res.status(402).json({
+          error: `Your ${agent} trial messages are used up. Subscribe to keep learning without limits.`,
+          code: 'TRIAL_LIMIT_REACHED',
+          access,
+        });
+        return true;
+      }
+      void bumpTrialUsage(email, agent as string, 'user');
+    }
+    return false;
+  }
 
   res.status(402).json({
     error: 'Your subscription has ended. Subscribe to continue using the Tutoring, Study and Exam agents.',
@@ -4111,6 +4205,8 @@ app.get('/api/billing/status', async (req: Request, res: Response) => {
 
     const sub = await latestSubscriptionFor(client, profile.id);
     const access = computeBillingAccess(profile, configured);
+    access.isAdmin = isAdminProfile(profile);
+    access.trialUsage = await getTrialUsage(email || profile.email || '');
     if (sub) {
       access.plan = sub.plan_id || access.plan;
       access.provider = sub.provider || access.provider;
@@ -4127,6 +4223,8 @@ app.get('/api/billing/status', async (req: Request, res: Response) => {
         email: profile.email,
         subscriptionStatus: profile.subscription_status,
         trialEndsAt: profile.trial_expires_at,
+        isAdmin: access.isAdmin,
+        trialUsage: access.trialUsage,
       },
     });
   } catch (err: any) {
@@ -4837,8 +4935,8 @@ async function persistProfileBundle(
         {
           ...profileFields,
           trial_started_at: new Date().toISOString(),
-          trial_expires_at: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
-          subscription_status: 'none',
+          trial_expires_at: new Date(Date.now() + TRIAL_DURATION_MS).toISOString(),
+          subscription_status: 'trial',
         },
       ])
       .select('id')

@@ -14,6 +14,7 @@ import { useApp } from '../context/AppContext';
 import { fetchAiUsage } from '../services/aiUsage';
 import { subscriptionBadgeLabel } from '../services/subscription';
 import { AiQuota, AiUsageSummary } from '../types';
+import { PayPalSubscribeButton } from './PayPalSubscribeButton';
 
 interface Plan {
   planId?: string;
@@ -49,6 +50,7 @@ export const SubscriptionModal: React.FC<{ open: boolean; onClose: () => void }>
   const { student, account, subscription, refreshSubscription, setIsContactModalOpen } = useApp();
   const [plans, setPlans] = useState<PlansResponse | null>(null);
   const [busyPlan, setBusyPlan] = useState<string | null>(null);
+  const [selectedPlan, setSelectedPlan] = useState<{ key: string; plan: Plan } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [referral, setReferral] = useState<{ code: string | null; uses: number; threshold: number; granted: boolean } | null>(null);
   const [aiUsage, setAiUsage] = useState<{ usage: AiUsageSummary; quota: AiQuota } | null>(null);
@@ -59,6 +61,7 @@ export const SubscriptionModal: React.FC<{ open: boolean; onClose: () => void }>
   useEffect(() => {
     if (!open) return;
     setError(null);
+    setSelectedPlan(null);
     fetch('/api/billing/paypal/plans')
       .then((r) => r.json())
       .then(setPlans)
@@ -130,11 +133,19 @@ export const SubscriptionModal: React.FC<{ open: boolean; onClose: () => void }>
     }
   };
 
+  const onPayPalApproved = async () => {
+    await refreshSubscription();
+    setSelectedPlan(null);
+    onClose();
+  };
+
   if (!open) return null;
 
   const statusLabel = subscriptionBadgeLabel(subscription);
   const isActive = subscription?.status === 'active';
   const isTrial = subscription?.status === 'trial';
+  const isAdmin = subscription?.isAdmin === true;
+  const trialUsage = subscription?.trialUsage;
   const paymentsConfigured = plans?.configured !== false;
 
   return (
@@ -170,7 +181,7 @@ export const SubscriptionModal: React.FC<{ open: boolean; onClose: () => void }>
         {/* Current entitlement */}
         <div className="mt-5 rounded-2xl border border-slate-700/70 bg-slate-900/70 p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div className="flex items-center gap-2 text-sm font-bold text-slate-200">
-            {isActive ? (
+            {isActive || isAdmin ? (
               <ShieldCheck className="w-4 h-4 text-emerald-400" />
             ) : (
               <Clock className="w-4 h-4 text-amber-400" />
@@ -188,6 +199,29 @@ export const SubscriptionModal: React.FC<{ open: boolean; onClose: () => void }>
             </span>
           )}
         </div>
+
+        {isAdmin && (
+          <div className="mt-3 rounded-2xl border border-emerald-500/40 bg-emerald-500/10 p-4">
+            <p className="text-sm font-bold text-emerald-300">Admin account — unlimited access</p>
+            <p className="text-xs text-emerald-100/80 mt-1">
+              Every agent, including Exam generation, is unlocked with no trial limits, no usage
+              metering and no payment required.
+            </p>
+          </div>
+        )}
+
+        {isTrial && !isAdmin && (
+          <div className="mt-3 rounded-2xl border border-amber-500/30 bg-amber-500/5 p-4">
+            <p className="text-xs font-bold text-amber-200">Your 5-hour trial</p>
+            <p className="text-[11px] text-amber-100/80 mt-1 leading-snug">
+              Tutoring: {Math.max(0, 12 - Number(trialUsage?.tutoringUser || 0))} user messages and{' '}
+              {Math.max(0, 11 - Number(trialUsage?.tutoringAi || 0))} AI replies left. Study:{' '}
+              {Math.max(0, 12 - Number(trialUsage?.studyUser || 0))} user messages and{' '}
+              {Math.max(0, 11 - Number(trialUsage?.studyAi || 0))} AI replies left. Exam generation
+              unlocks after subscribing.
+            </p>
+          </div>
+        )}
 
         {/* AI usage this month (metering) */}
         {aiUsage && (
@@ -230,7 +264,14 @@ export const SubscriptionModal: React.FC<{ open: boolean; onClose: () => void }>
         )}
 
         <div className="mt-6">
-          {!plans ? (
+          {isAdmin ? (
+            <div className="rounded-2xl border border-emerald-500/40 bg-emerald-500/10 p-5 text-center">
+              <p className="text-sm font-bold text-emerald-300">No subscription needed</p>
+              <p className="text-xs text-emerald-100/80 mt-1">
+                Your admin profile already has full, unlimited access to every agent.
+              </p>
+            </div>
+          ) : !plans ? (
             <div className="flex items-center justify-center py-8 text-slate-400 text-sm gap-2">
               <Loader2 className="w-4 h-4 animate-spin" />
               Loading plans…
@@ -261,7 +302,10 @@ export const SubscriptionModal: React.FC<{ open: boolean; onClose: () => void }>
                   <button
                     key={key}
                     disabled={!!busyPlan}
-                    onClick={() => subscribe(key)}
+                    onClick={() => {
+                      setError(null);
+                      setSelectedPlan({ key, plan });
+                    }}
                     className={`relative text-left rounded-2xl border p-4 transition-all disabled:opacity-50 ${
                       popular
                         ? 'border-sky-500/60 bg-sky-500/10 hover:border-sky-400'
@@ -286,17 +330,37 @@ export const SubscriptionModal: React.FC<{ open: boolean; onClose: () => void }>
                       {plan.currency} · full access · cancel anytime
                     </p>
                     <span className="mt-3 inline-flex items-center gap-1.5 text-xs font-bold text-sky-300">
-                      {busyPlan === key ? (
-                        <>
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" /> Starting…
-                        </>
-                      ) : (
-                        'Subscribe'
-                      )}
+                      {selectedPlan?.key === key
+                        ? 'Selected — use the PayPal button below'
+                        : 'Choose plan'}
                     </span>
                   </button>
                 );
               })}
+            </div>
+          )}
+
+          {!isAdmin && selectedPlan && (
+            <div className="mt-5 rounded-2xl border border-sky-500/30 bg-sky-500/5 p-4">
+              <p className="text-xs font-bold text-sky-200">
+                Checkout — {planName(selectedPlan.key, selectedPlan.plan)} ·{' '}
+                {CURRENCY_SYMBOL[selectedPlan.plan.currency] || selectedPlan.plan.currency}
+                {selectedPlan.plan.price}/{selectedPlan.plan.cycle === 'monthly' ? 'month' : 'week'}
+              </p>
+              <PayPalSubscribeButton
+                planId={selectedPlan.plan.planId || ''}
+                planKey={selectedPlan.key}
+                email={email}
+                onSuccess={onPayPalApproved}
+                onError={setError}
+              />
+              <button
+                onClick={() => subscribe(selectedPlan.key)}
+                disabled={!!busyPlan}
+                className="mt-3 text-[11px] text-slate-400 underline hover:text-slate-200 disabled:opacity-50"
+              >
+                Having trouble? Open PayPal checkout directly
+              </button>
             </div>
           )}
         </div>

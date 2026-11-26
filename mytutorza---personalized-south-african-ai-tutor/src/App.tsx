@@ -219,7 +219,7 @@ const AppContent: React.FC = () => {
             </SubscriptionGate>
           )}
           {activeTab === 'exam' && (
-            <SubscriptionGate>
+            <SubscriptionGate agent="exam">
               <ExamAgentTab />
             </SubscriptionGate>
           )}

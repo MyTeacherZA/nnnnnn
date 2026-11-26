@@ -1,4 +1,4 @@
-import { SubscriptionAccess, SubscriptionStatus } from '../types';
+import { SubscriptionAccess, SubscriptionStatus, TrialUsage } from '../types';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -7,6 +7,8 @@ interface RawAccess {
   active?: boolean;
   enforced?: boolean;
   trialExpiresAt?: string;
+  isAdmin?: boolean;
+  trialUsage?: TrialUsage;
   plan?: string;
   provider?: string;
   currentPeriodEnd?: string;
@@ -38,15 +40,18 @@ export function deriveSubscriptionAccess(raw: RawAccess = {}): SubscriptionAcces
   const trialMs = raw.trialExpiresAt ? new Date(raw.trialExpiresAt).getTime() : 0;
   const trialActive = status === 'trial' && (!trialMs || trialMs > now);
   const active =
-    typeof raw.active === 'boolean'
+    raw.isAdmin === true ||
+    (typeof raw.active === 'boolean'
       ? raw.active
-      : status === 'active' || status === 'past_due' || trialActive;
+      : status === 'active' || status === 'past_due' || trialActive);
   const daysLeft = trialMs ? Math.max(0, Math.ceil((trialMs - now) / DAY_MS)) : undefined;
 
   return {
     status,
     active,
     enforced: raw.enforced !== false,
+    isAdmin: raw.isAdmin === true,
+    trialUsage: raw.trialUsage,
     trialEndsAt: raw.trialExpiresAt,
     plan: raw.plan,
     provider: raw.provider,
@@ -72,6 +77,7 @@ export async function fetchSubscriptionAccess(email: string): Promise<Subscripti
 /** Human label for the navbar badge. */
 export function subscriptionBadgeLabel(access: SubscriptionAccess | null): string {
   if (!access) return 'Subscribe';
+  if (access.isAdmin) return 'Admin · Unlimited';
   if (access.status === 'active') return 'Active';
   if (access.status === 'past_due') return 'Payment due';
   if (access.status === 'trial') {

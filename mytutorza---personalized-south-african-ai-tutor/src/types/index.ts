@@ -155,12 +155,22 @@ export type SubscriptionStatus =
   | 'none';
 
 /** Entitlement snapshot used by the UI to show status and gate the agents. */
+export interface TrialUsage {
+  tutoringUser: number;
+  tutoringAi: number;
+  studyUser: number;
+  studyAi: number;
+}
+
 export interface SubscriptionAccess {
   status: SubscriptionStatus;
   /** True when the learner may use Tutoring, Study, Roadmap and Exam. */
   active: boolean;
   /** False while PayPal is unconfigured — access stays open so nobody is bricked. */
   enforced: boolean;
+  /** Named admin profile: unlimited access, never charged or metered. */
+  isAdmin?: boolean;
+  trialUsage?: TrialUsage;
   trialEndsAt?: string;
   plan?: string;
   provider?: string;
