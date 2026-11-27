@@ -17,6 +17,7 @@ import {
   Minimize2,
   Plus,
   Loader2,
+  GraduationCap,
 } from 'lucide-react';
 import { ChatMessage, PersonalizedSparkNotes } from '../types';
 import { SparkNotesModal } from './SparkNotesModal';
@@ -58,6 +59,7 @@ Which ${openingTopic} shall we tackle first? Or is there something you have been
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [homeworkMode, setHomeworkMode] = useState(false);
   const [askMode, setAskMode] = useState(false);
+  const [teachMode, setTeachMode] = useState(false);
   const [sessionTitle, setSessionTitle] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -266,6 +268,7 @@ Which ${openingTopic} shall we tackle first? Or is there something you have been
           textbook: activeSubject.textbook,
           homeworkMode,
           askMode,
+          teachMode,
           history: messages.slice(-5).map((m) => ({ sender: m.sender, text: m.text })),
           title: sessionTitle.trim(),
           lockedTopic: lockedTopic || undefined,
@@ -408,6 +411,14 @@ Which ${openingTopic} shall we tackle first? Or is there something you have been
               title="Ask mode"
             >
               Ask
+            </button>
+            <button
+              onClick={() => setTeachMode((v) => !v)}
+              className={`px-2 py-1.5 rounded-lg text-xs font-bold transition-colors flex items-center gap-1 ${teachMode ? 'bg-amber-500 text-white' : 'bg-slate-800 text-slate-400 hover:text-slate-200'}`}
+              title="Teach mode - direct, Firmament-tailored lesson for this session topic"
+            >
+              <GraduationCap className="w-3.5 h-3.5" />
+              Teach
             </button>
             {/* Book toggle: upload a textbook / PDF / text source for this session */}
             <div className="relative">
