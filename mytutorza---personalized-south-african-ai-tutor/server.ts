@@ -1311,6 +1311,7 @@ ${snippetBlock}
       language: targetLang,
       title: bodyTitle,
       topic: cleanTopic,
+      mode: req.body?.teachMode ? 'teach' : 'tutoring',
       source: sessionSource,
       messages: [
         { role: 'user', content: cleanMessage },
@@ -1445,6 +1446,67 @@ app.post('/api/tutoring/source/ingest', async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('Tutoring source ingest error:', err);
     return res.status(500).json({ error: err?.message || 'Source ingest failed.' });
+  }
+});
+
+// ---------------------------------------------------------------------
+// TUTORING SESSIONS — list (most recent first) for the session picker
+// ---------------------------------------------------------------------
+app.get('/api/tutoring/sessions', async (req: Request, res: Response) => {
+  const email = String((req.query.email as string) || '').trim().toLowerCase();
+  const modeFilter = String((req.query.mode as string) || '').trim().toLowerCase();
+  const subjectFilter = String((req.query.subject as string) || '').trim();
+  const client = getServiceSupabaseClient();
+  if (!client || !email) return res.json({ sessions: [] });
+  try {
+    const profile = await findProfileByEmail(client, email);
+    if (!profile?.id) return res.json({ sessions: [] });
+
+    const selectCols = (withMode: boolean) =>
+      withMode
+        ? 'id,subject,grade,language,title,topic,mode,pdf_name,created_at,updated_at,messages'
+        : 'id,subject,grade,language,title,topic,pdf_name,created_at,updated_at,messages';
+
+    let withMode = true;
+    let data: any = null;
+    let error: any = null;
+    for (const attempt of [true, false]) {
+      let q = client
+        .from('tutoring_sessions')
+        .select(selectCols(attempt))
+        .eq('user_id', profile.id)
+        .order('updated_at', { ascending: false })
+        .limit(50);
+      if (modeFilter && attempt) q = q.eq('mode', modeFilter);
+      if (subjectFilter) q = q.eq('subject', subjectFilter);
+      const result = await q;
+      data = result.data;
+      error = result.error;
+      if (!error) {
+        withMode = attempt;
+        break;
+      }
+      if (attempt) continue;
+    }
+    if (error) return res.status(500).json({ error: error.message });
+
+    const sessions = (Array.isArray(data) ? data : []).map((r: any) => ({
+      id: r.id,
+      subject: r.subject,
+      grade: r.grade,
+      language: r.language,
+      title: r.title,
+      topic: r.topic,
+      mode: withMode ? (r.mode || 'tutoring') : 'tutoring',
+      pdfName: r.pdf_name,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+      messageCount: Array.isArray(r.messages) ? r.messages.length : 0,
+      messages: Array.isArray(r.messages) ? r.messages : [],
+    }));
+    return res.json({ sessions });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || 'Failed to load sessions' });
   }
 });
 
@@ -2458,6 +2520,7 @@ async function saveTutoringSession(input: {
   language?: string;
   title?: string;
   topic?: string;
+  mode?: string;
   source?: TutoringSourceRow | null;
   messages: { role: string; content: string }[];
 }): Promise<string | null> {
@@ -2475,6 +2538,7 @@ async function saveTutoringSession(input: {
       language: input.language || 'English',
       title: input.title || '',
       topic: input.topic || '',
+      mode: input.mode || 'tutoring',
       pdf_name: input.source?.name || null,
       pdf_source_id: input.source?.id || null,
       // Store a short excerpt only; the full text lives in tutoring_sources.
