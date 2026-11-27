@@ -12,6 +12,7 @@
 
 -- 1. tutoring_sessions: session lock + source link --------------------------
 ALTER TABLE public.tutoring_sessions ADD COLUMN IF NOT EXISTS topic TEXT;
+ALTER TABLE public.tutoring_sessions ADD COLUMN IF NOT EXISTS mode TEXT DEFAULT 'tutoring';
 ALTER TABLE public.tutoring_sessions ADD COLUMN IF NOT EXISTS pdf_name TEXT;
 ALTER TABLE public.tutoring_sessions ADD COLUMN IF NOT EXISTS pdf_text TEXT;
 ALTER TABLE public.tutoring_sessions ADD COLUMN IF NOT EXISTS pdf_source_id UUID;

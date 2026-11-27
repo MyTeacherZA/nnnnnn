@@ -18,7 +18,10 @@ import {
   Plus,
   Loader2,
   GraduationCap,
+  History,
+  Search,
 } from 'lucide-react';
+import { fetchTutoringSessions, type TutoringSessionRecord } from '../services/tutoringSessions';
 import { ChatMessage, PersonalizedSparkNotes } from '../types';
 import { SparkNotesModal } from './SparkNotesModal';
 import { getStoredSupabaseConfig, saveSparkNotesToSupabase, getLocalSparkNotes } from '../services/supabase';
@@ -60,8 +63,26 @@ Which ${openingTopic} shall we tackle first? Or is there something you have been
   const [homeworkMode, setHomeworkMode] = useState(false);
   const [askMode, setAskMode] = useState(false);
   const [teachMode, setTeachMode] = useState(false);
+  const [sessionsOpen, setSessionsOpen] = useState(false);
+  const [sessions, setSessions] = useState<TutoringSessionRecord[]>([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [sessionSearch, setSessionSearch] = useState('');
   const [sessionTitle, setSessionTitle] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!sessionsOpen) return;
+    let cancelled = false;
+    setSessionsLoading(true);
+    void fetchTutoringSessions(student?.email, undefined, activeSubject?.name).then((rows) => {
+      if (cancelled) return;
+      setSessions(rows);
+      setSessionsLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionsOpen, student?.email, activeSubject?.name]);
 
   // New tutoring session: locked topic + optional uploaded source (PDF/text).
   const [sessionId, setSessionId] = useState<string>(() => {
@@ -351,6 +372,14 @@ Which ${openingTopic} shall we tackle first? Or is there something you have been
             >
               <Plus className="w-3.5 h-3.5 text-sky-400" />
               <span className="hidden sm:inline">New session</span>
+            </button>
+            <button
+              onClick={() => setSessionsOpen(true)}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-[11px] font-bold text-slate-200 hover:text-white hover:border-sky-500/60 transition-colors shrink-0"
+              title="Browse past tutoring sessions"
+            >
+              <History className="w-3.5 h-3.5 text-sky-400" />
+              <span className="hidden sm:inline">Sessions</span>
             </button>
             <div className="w-9 h-9 rounded-xl btn-accent flex items-center justify-center">
               <Sparkles className="w-5 h-5 text-white" />
