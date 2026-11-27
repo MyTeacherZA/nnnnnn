@@ -361,7 +361,7 @@ Which ${openingTopic} shall we tackle first? Or is there something you have been
   return (
     <div className={isFullscreen ? 'fixed inset-0 z-50 bg-slate-950 p-4 overflow-y-auto' : 'grid grid-cols-1 lg:grid-cols-12 gap-4'}>
       {/* Left Chat Window (9 cols) */}
-      <div className="lg:col-span-8 xl:col-span-9 metallic-card rounded-2xl border border-slate-700/60 shadow-2xl flex flex-col h-[650px] overflow-hidden">
+      <div className="lg:col-span-8 xl:col-span-9 metallic-card rounded-2xl border border-slate-700/60 shadow-2xl flex flex-col h-[650px] overflow-hidden relative">
         {/* Chat Header */}
         <div className="px-4 py-3 bg-slate-900/90 border-b border-slate-800 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -759,6 +759,16 @@ Which ${openingTopic} shall we tackle first? Or is there something you have been
             <Send className="w-4 h-4 text-white" />
           </button>
         </div>
+
+        {/* Floating Teach bubble */}
+        <button
+          onClick={() => setTeachMode((v) => !v)}
+          className={`absolute bottom-20 right-4 z-20 flex items-center gap-1.5 px-3 py-2 rounded-full shadow-xl border text-xs font-bold transition-all ${teachMode ? 'bg-amber-500 text-white border-amber-400' : 'bg-slate-800/95 text-slate-200 border-slate-700 hover:border-amber-500/60'}`}
+          title="Teach mode - direct Firmament-tailored lesson for this topic"
+        >
+          <GraduationCap className="w-4 h-4" />
+          {teachMode ? 'Teach ON' : 'Teach'}
+        </button>
       </div>
 
       {/* Right Cognitive Vector & Case Sidebar (3 cols) */}
@@ -847,6 +857,89 @@ Which ${openingTopic} shall we tackle first? Or is there something you have been
         onRegenerate={(focus) => handleAnalyzeSparkNotes(focus)}
         isRegenerating={isAnalyzingSparkNotes}
       />
+
+      {/* Sessions Modal */}
+      {sessionsOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+          <div className="w-full max-w-2xl bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl overflow-hidden">
+            <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                <History className="w-4 h-4 text-sky-400" />
+                Past Tutoring Sessions
+              </h3>
+              <button
+                onClick={() => setSessionsOpen(false)}
+                className="text-slate-400 hover:text-white text-sm font-bold"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="p-4 space-y-3">
+              <div className="flex items-center gap-2">
+                <Search className="w-4 h-4 text-slate-400" />
+                <input
+                  value={sessionSearch}
+                  onChange={(e) => setSessionSearch(e.target.value)}
+                  placeholder="Search by topic or title..."
+                  className="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                />
+              </div>
+              {sessionsLoading ? (
+                <p className="text-xs text-slate-400">Loading sessions…</p>
+              ) : sessions.length === 0 ? (
+                <p className="text-xs text-slate-400">No saved sessions yet.</p>
+              ) : (
+                <div className="max-h-[400px] overflow-y-auto space-y-2">
+                  {sessions
+                    .filter((s) => {
+                      const q = sessionSearch.trim().toLowerCase();
+                      if (!q) return true;
+                      return `${s.title || ''} ${s.topic || ''} ${s.subject || ''}`.toLowerCase().includes(q);
+                    })
+                    .map((s) => (
+                      <button
+                        key={s.id}
+                        onClick={() => {
+                          setSessionId(s.id);
+                          setLockedTopic(s.topic || s.title || null);
+                          setSessionTitle(s.title || s.topic || '');
+                          if (Array.isArray(s.messages) && s.messages.length) {
+                            setMessages(
+                              s.messages.map((m, idx) => ({
+                                id: `${s.id}-${idx}`,
+                                sender: m.role === 'user' ? 'user' : 'ai',
+                                agent: 'tutoring',
+                                text: m.content,
+                                timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                              }))
+                            );
+                          }
+                          setSessionsOpen(false);
+                        }}
+                        className="w-full text-left p-3 rounded-xl bg-slate-800/80 border border-slate-700 hover:border-sky-500/60 transition-colors"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs font-bold text-white truncate">
+                            {s.title || s.topic || 'Untitled session'}
+                          </span>
+                          <span className={`text-[10px] font-extrabold px-1.5 py-0.5 rounded ${s.mode === 'teach' ? 'bg-amber-500/20 text-amber-300' : 'bg-sky-500/20 text-sky-300'}`}>
+                            {s.mode === 'teach' ? 'Teach' : 'Tutoring'}
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-slate-400 mt-1">
+                          {s.subject} • {s.grade} • {s.messageCount ?? 0} messages
+                        </div>
+                        <div className="text-[10px] text-slate-500 mt-1">
+                          {s.updatedAt ? new Date(s.updatedAt).toLocaleString() : ''}
+                        </div>
+                      </button>
+                    ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
