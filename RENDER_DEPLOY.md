@@ -53,7 +53,7 @@ Set these in Render → **Environment** (see `mytutorza---personalized-south-afr
 | `GROK_MODEL` | no | default `grok-3` |
 | `GROQ_API_KEY` | yes | Groq key — fallback engine |
 | `GROQ_BASE_URL` | no | default `https://api.groq.com/openai/v1` |
-| `GROQ_MODEL` | no | default `llama-3.3-70b-versatile` |
+| `GROQ_MODEL` | no | default `openai/gpt-oss-120b` |
 | `DEEPSEEK_API_KEY` | no | final fallback (account must have credits) |
 | `DEEPSEEK_BASE_URL` | no | default `https://api.deepseek.com/v1` |
 | `DEEPSEEK_MODEL` | no | default `deepseek-chat` |

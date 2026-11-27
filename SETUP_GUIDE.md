@@ -197,7 +197,7 @@ Render → your service → **Environment** → add each row, then
 | `GROK_API_KEY` | xAI key — primary engine | one of these three |
 | `GROK_MODEL` | `grok-3` | optional |
 | `GROQ_API_KEY` | Groq key — fallback engine | one of these three |
-| `GROQ_MODEL` | `llama-3.3-70b-versatile` | optional |
+| `GROQ_MODEL` | `openai/gpt-oss-120b` | optional |
 | `DEEPSEEK_API_KEY` | DeepSeek key — final fallback (must have credits) | one of these three |
 | `DEEPSEEK_MODEL` | `deepseek-chat` | optional |
 | `SMTP_HOST` | `smtp.gmail.com` | yes (password reset) |

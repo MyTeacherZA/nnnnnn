@@ -58,7 +58,7 @@ const BUILD_ID = loadBuildId();
 // Groq (OpenAI-compatible) — secondary engine after Grok / DeepSeek.
 const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
 const GROQ_BASE_URL = (process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1').replace(/\/+$/, '');
-const GROQ_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
+const GROQ_MODEL = process.env.GROQ_MODEL || 'openai/gpt-oss-120b';
 
 // DeepSeek (OpenAI-compatible) — used by the Tutoring + Exam agents for deep reasoning / long outputs.
 const DEEPSEEK_BASE_URL = (process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1').replace(/\/+$/, '');
@@ -358,6 +358,9 @@ function estimateModelCost(params: { model?: string; promptTokens?: number; comp
   } else if (model.startsWith('deepseek')) {
     inputRate = 0.27;
     outputRate = 1.1;
+  } else if (model.startsWith('openai/gpt-oss')) {
+    inputRate = 0.15;
+    outputRate = 0.60;
   } else if (model.includes('70b') || model.startsWith('qwen') || model.startsWith('mistral')) {
     inputRate = 0.11;
     outputRate = 0.39;
