@@ -638,6 +638,39 @@ function getServiceSupabaseClient() {
   }
 }
 
+app.get('/api/ai/diagnostic', async (req: Request, res: Response) => {
+  const resolveLane = (name: 'grok' | 'deepseek' | 'groq') => {
+    if (name === 'grok' && GROK_API_KEY) return { provider: 'grok', baseUrl: GROK_BASE_URL, apiKey: GROK_API_KEY, model: GROK_MODEL };
+    if (name === 'deepseek' && DEEPSEEK_API_KEY) return { provider: 'deepseek', baseUrl: DEEPSEEK_BASE_URL, apiKey: DEEPSEEK_API_KEY, model: DEEPSEEK_MODEL };
+    if (name === 'groq' && GROQ_API_KEY) return { provider: 'groq', baseUrl: GROQ_BASE_URL, apiKey: GROQ_API_KEY, model: GROQ_MODEL };
+    return null;
+  };
+  const resolved = resolveLane('grok') || resolveLane('groq') || resolveLane('deepseek');
+  if (!resolved) {
+    return res.json({ ok: false, provider: 'unconfigured', model: '', error: 'No AI provider key is set on the server.' });
+  }
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20000);
+    const r = await fetch(`${resolved.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${resolved.apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: resolved.model, messages: [{ role: 'user', content: 'Reply with exactly: OK' }], max_tokens: 8, temperature: 0 }),
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    const text = await r.text();
+    if (!r.ok) {
+      return res.json({ ok: false, provider: resolved.provider, model: resolved.model, status: r.status, error: text.slice(0, 400) });
+    }
+    let content = '';
+    try { content = JSON.parse(text)?.choices?.[0]?.message?.content || ''; } catch {}
+    return res.json({ ok: Boolean(content && content.trim()), provider: resolved.provider, model: resolved.model, status: r.status, reply: String(content).trim().slice(0, 120) });
+  } catch (err: any) {
+    return res.json({ ok: false, provider: resolved.provider, model: resolved.model, error: err?.message || String(err) });
+  }
+});
+
 app.get('/api/health', (req: Request, res: Response) => {
   res.json({
     status: 'online',
