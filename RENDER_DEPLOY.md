@@ -48,9 +48,17 @@ Set these in Render → **Environment** (see `mytutorza---personalized-south-afr
 |-----|----------|-------|
 | `NODE_VERSION` | yes | `22.12.0` (Vite 8 needs Node ≥ 20.19 / 22.12) |
 | `NODE_ENV` | yes | `production` |
-| `LLAMA_API_KEY` | yes | Groq / Together / OpenRouter key for tutoring |
-| `LLAMA_BASE_URL` | no | default `https://api.groq.com/openai/v1` |
-| `LLAMA_MODEL` | no | default `llama-3.3-70b-versatile` |
+| `GROK_API_KEY` | no* | xAI key — primary engine for all agents |
+| `GROK_BASE_URL` | no | default `https://api.x.ai/v1` |
+| `GROK_MODEL` | no | default `grok-3` |
+| `GROQ_API_KEY` | yes | Groq key — fallback engine |
+| `GROQ_BASE_URL` | no | default `https://api.groq.com/openai/v1` |
+| `GROQ_MODEL` | no | default `llama-3.3-70b-versatile` |
+| `DEEPSEEK_API_KEY` | no | final fallback (account must have credits) |
+| `DEEPSEEK_BASE_URL` | no | default `https://api.deepseek.com/v1` |
+| `DEEPSEEK_MODEL` | no | default `deepseek-chat` |
+
+\* At least one of `GROK_API_KEY`, `GROQ_API_KEY` or `DEEPSEEK_API_KEY` is required. No Llama/Ollama/Together provider is used.
 | `APP_URL` | yes | your public URL, e.g. `https://mytutorza.online` |
 | `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_JWT_SECRET` | yes | Supabase project |
 | `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` | yes | baked into the client at **build** time, so they must exist during the build |

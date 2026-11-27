@@ -16,12 +16,24 @@ services:
         value: production
       - key: APP_URL
         sync: false
-      - key: LLAMA_API_KEY
+      - key: GROK_API_KEY
         sync: false
-      - key: LLAMA_BASE_URL
+      - key: GROK_BASE_URL
+        value: https://api.x.ai/v1
+      - key: GROK_MODEL
+        value: grok-3
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_BASE_URL
         value: https://api.groq.com/openai/v1
-      - key: LLAMA_MODEL
+      - key: GROQ_MODEL
         value: llama-3.3-70b-versatile
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: DEEPSEEK_BASE_URL
+        value: https://api.deepseek.com/v1
+      - key: DEEPSEEK_MODEL
+        value: deepseek-chat
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_ANON_KEY

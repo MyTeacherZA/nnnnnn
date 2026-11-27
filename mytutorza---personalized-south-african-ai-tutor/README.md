@@ -14,7 +14,7 @@ View your app in AI Studio: https://ai.studio/apps/435ac907-b5f9-4926-8211-1bf8d
 
 1. Install dependencies:
    `npm ci`
-2. Copy `.env.example` to `.env` and fill in your keys (`LLAMA_API_KEY`, Supabase, etc.)
+2. Copy `.env.example` to `.env` and fill in your keys (`GROK_API_KEY`, `GROQ_API_KEY`, `DEEPSEEK_API_KEY`, Supabase, etc.)
 3. Build the client and start the server:
    `npm run build && npm start`
 
@@ -120,7 +120,7 @@ password in the recovery dialog. See [../SETUP_GUIDE.md](../SETUP_GUIDE.md) §2.
 > Notes: to use real server-side auth, configure `VITE_SUPABASE_*` and run
 > `supabase/schema.sql`. With Supabase Auth, turn off "Confirm email" for instant
 > sign-in (or users must confirm before a session is issued). The deterministic
-> offline fallbacks (used only when `LLAMA_API_KEY` is unset) are authored around
+> offline fallbacks (used only when no AI provider key is set) are authored around
 > CAPS content, so US curriculum output requires the LLM key to be configured.
 
 

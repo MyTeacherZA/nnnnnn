@@ -194,9 +194,12 @@ Render → your service → **Environment** → add each row, then
 | `SUPABASE_ANON_KEY` | `eyJ...` | yes |
 | `SUPABASE_SERVICE_ROLE_KEY` | `eyJ...` (secret) | yes (profile sync + reset links) |
 | `SUPABASE_JWT_SECRET` | from Supabase JWT settings | optional |
-| `LLAMA_API_KEY` | Groq / Together / OpenRouter key | yes (US & UK content) |
-| `LLAMA_BASE_URL` | `https://api.groq.com/openai/v1` | optional |
-| `LLAMA_MODEL` | `llama-3.3-70b-versatile` | optional |
+| `GROK_API_KEY` | xAI key — primary engine | one of these three |
+| `GROK_MODEL` | `grok-3` | optional |
+| `GROQ_API_KEY` | Groq key — fallback engine | one of these three |
+| `GROQ_MODEL` | `llama-3.3-70b-versatile` | optional |
+| `DEEPSEEK_API_KEY` | DeepSeek key — final fallback (must have credits) | one of these three |
+| `DEEPSEEK_MODEL` | `deepseek-chat` | optional |
 | `SMTP_HOST` | `smtp.gmail.com` | yes (password reset) |
 | `SMTP_PORT` | `465` | yes |
 | `SMTP_SECURE` | `true` | yes for 465 |

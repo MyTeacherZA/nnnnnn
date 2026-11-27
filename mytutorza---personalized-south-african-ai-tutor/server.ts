@@ -55,15 +55,10 @@ function loadBuildId(): string {
 }
 const BUILD_ID = loadBuildId();
 
-// Llama 3.3 is the brain for Tutoring, Study & Exam agents.
-const LLAMA_API_KEY =
-  process.env.LLAMA_API_KEY ||
-  process.env.OLLAMA_API_KEY ||
-  process.env.GROQ_API_KEY ||
-  process.env.TOGETHER_API_KEY ||
-  '';
-const LLAMA_BASE_URL = (process.env.LLAMA_BASE_URL || 'https://api.groq.com/openai/v1').replace(/\/+$/, '');
-const LLAMA_MODEL_ID = process.env.LLAMA_MODEL || 'llama-3.3-70b-versatile';
+// Groq (OpenAI-compatible) — secondary engine after Grok / DeepSeek.
+const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
+const GROQ_BASE_URL = (process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1').replace(/\/+$/, '');
+const GROQ_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
 
 // DeepSeek (OpenAI-compatible) — used by the Tutoring + Exam agents for deep reasoning / long outputs.
 const DEEPSEEK_BASE_URL = (process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1').replace(/\/+$/, '');
@@ -168,7 +163,7 @@ async function setCache(key: string, data: any, ttlSeconds: number = 3600): Prom
   }
 }
 
-async function callLlamaChat(params: {
+async function callChatCompletion(params: {
   system?: string;
   user?: string;
   messages?: { role: string; content: string }[];
@@ -181,9 +176,9 @@ async function callLlamaChat(params: {
   model?: string;
   usageSink?: (u: { promptTokens?: number; completionTokens?: number; totalTokens?: number }) => void;
 }): Promise<string | null> {
-  const providerApiKey = params.apiKey || LLAMA_API_KEY;
-  const providerBaseUrl = (params.baseUrl || LLAMA_BASE_URL).replace(/\/+$/, '');
-  const providerModel = params.model || LLAMA_MODEL_ID;
+  const providerApiKey = params.apiKey || GROQ_API_KEY;
+  const providerBaseUrl = (params.baseUrl || GROQ_BASE_URL).replace(/\/+$/, '');
+  const providerModel = params.model || GROQ_MODEL;
   const providerTemperature = params.temperature ?? 0.4;
   const providerTimeoutMs = params.timeoutMs ?? 9000;
   const providerMaxTokens = params.maxTokens ?? 4000;
@@ -205,37 +200,20 @@ async function callLlamaChat(params: {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), providerTimeoutMs);
 
-  const useNativeOllama = providerBaseUrl.endsWith('/api') || providerBaseUrl.endsWith('/api/');
-  const effectiveMaxTokens = providerMaxTokens;
-
   try {
-    const url = useNativeOllama
-      ? `${providerBaseUrl}/chat`
-      : `${providerBaseUrl}/chat/completions`;
-
-    const body = useNativeOllama
-      ? {
-          model: providerModel,
-          messages: payload.messages,
-          stream: false,
-          format: providerJsonMode ? 'json' : undefined,
-          options: { temperature: providerTemperature, num_predict: effectiveMaxTokens },
-        }
-      : { ...payload, max_tokens: effectiveMaxTokens };
-
-    const res = await fetch(url, {
+    const res = await fetch(`${providerBaseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${providerApiKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(payload),
       signal: controller.signal,
     });
     clearTimeout(timer);
     if (!res.ok) {
       const errText = await res.text();
-      console.warn('Llama chat error:', res.status, errText);
+      console.warn('AI chat error:', res.status, errText);
       return null;
     }
     const data = await res.json();
@@ -247,20 +225,17 @@ async function callLlamaChat(params: {
         totalTokens: Number(u.total_tokens ?? u.totalTokens ?? 0) || 0,
       });
     } catch {}
-    if (useNativeOllama) {
-      return data?.message?.content ?? data?.response ?? null;
-    }
     return data?.choices?.[0]?.message?.content ?? null;
   } catch (err: any) {
     clearTimeout(timer);
-    console.warn('Llama chat failed:', err?.message || err);
+    console.warn('AI chat failed:', err?.message || err);
     return null;
   }
 }
 
 // ---------------------------------------------------------------------
 // AI USAGE METERING — provider abstraction → provider adapter (Grok /
-// DeepSeek / Llama…) → ai_usage persistence → per-user monthly quota →
+// DeepSeek / Groq) → ai_usage persistence → per-user monthly quota →
 // cost caps. All agent brains should flow through runAiAgent().
 // ---------------------------------------------------------------------
 type AiAgentName =
@@ -272,11 +247,11 @@ type AiAgentName =
   | 'notes'
   | 'term_tests';
 
-const AI_AGENT_PROVIDER: Record<string, 'grok' | 'deepseek' | 'llama'> = {
+const AI_AGENT_PROVIDER: Record<string, 'grok' | 'deepseek' | 'groq'> = {
   tutoring: 'grok',
   study: 'grok',
   exam: 'grok',
-  roadmap: 'deepseek',
+  roadmap: 'grok',
   spark_notes: 'grok',
   notes: 'grok',
   term_tests: 'grok',
@@ -383,7 +358,7 @@ function estimateModelCost(params: { model?: string; promptTokens?: number; comp
   } else if (model.startsWith('deepseek')) {
     inputRate = 0.27;
     outputRate = 1.1;
-  } else if (model.startsWith('llama') || model.includes('70b')) {
+  } else if (model.includes('70b') || model.startsWith('qwen') || model.startsWith('mistral')) {
     inputRate = 0.11;
     outputRate = 0.39;
   }
@@ -530,17 +505,23 @@ async function runAiAgent(params: {
 }> {
   const agentKey = String(params.agent || 'tutoring');
   const preferred = AI_AGENT_PROVIDER[agentKey] || 'grok';
-  const resolveLane = (name: 'grok' | 'deepseek' | 'llama') => {
+  const resolveLane = (name: 'grok' | 'deepseek' | 'groq') => {
     if (name === 'grok') {
       if (GROK_API_KEY) return { provider: 'grok', baseUrl: GROK_BASE_URL, apiKey: GROK_API_KEY, model: GROK_MODEL };
     }
     if (name === 'deepseek') {
       if (DEEPSEEK_API_KEY) return { provider: 'deepseek', baseUrl: DEEPSEEK_BASE_URL, apiKey: DEEPSEEK_API_KEY, model: DEEPSEEK_MODEL };
     }
-    if (LLAMA_API_KEY) return { provider: 'llama', baseUrl: LLAMA_BASE_URL, apiKey: LLAMA_API_KEY, model: LLAMA_MODEL_ID };
+    if (name === 'groq') {
+      if (GROQ_API_KEY) return { provider: 'groq', baseUrl: GROQ_BASE_URL, apiKey: GROQ_API_KEY, model: GROQ_MODEL };
+    }
     return null;
   };
-  const resolved = resolveLane(preferred) || resolveLane('deepseek') || resolveLane('grok');
+  const resolved =
+    resolveLane(preferred) ||
+    resolveLane('grok') ||
+    resolveLane('groq') ||
+    resolveLane('deepseek');
   const providerLabel = resolved?.provider || 'unconfigured';
   const modelLabel = resolved?.model || String(params.model || '');
   const maxTokens = params.maxTokens ?? AI_AGENT_MAX_TOKENS[agentKey] ?? 4000;
@@ -580,7 +561,7 @@ async function runAiAgent(params: {
   }
 
   if (!reply) {
-    const result = await callLlamaChat({
+    const result = await callChatCompletion({
       system: params.system,
       user: params.user,
       messages: params.messages,
@@ -658,8 +639,8 @@ app.get('/api/health', (req: Request, res: Response) => {
   res.json({
     status: 'online',
     app: 'MyTutorZA Backend Engine',
-    llamaConfigured: !!LLAMA_API_KEY,
-    llamaModel: LLAMA_MODEL_ID,
+    groqConfigured: !!GROQ_API_KEY,
+    groqModel: GROQ_MODEL,
     supabaseConfigured: !!(supabaseServerUrl && supabaseServerAnonKey),
     upstashConfigured: !!(UPSTASH_URL && UPSTASH_TOKEN),
     curriculumDb: 'US state standards / AP · UK nation curricula / ZA CAPS vault (fallback)',
@@ -1858,7 +1839,7 @@ app.post('/api/tutoring/analyze-spark-notes', async (req: Request, res: Response
 
     let generatedNotes: any = null;
 
-    if (LLAMA_API_KEY || DEEPSEEK_API_KEY) {
+    if (GROK_API_KEY || GROQ_API_KEY || DEEPSEEK_API_KEY) {
       const basePrompt = buildFirmamentSystemPrompt({
         firmamentProfile,
         subject: sub,
@@ -1907,7 +1888,7 @@ Do not include markdown code fences if responseMimeType is json.
 `;
 
       try {
-        const textRaw = await callLlamaChat({
+        const textRaw = await callChatCompletion({
           system: systemInstruction,
           user: `Analyze the following tutoring conversation and generate Personalized Spark Notes:\n\n${transcript}`,
           jsonMode: true,
@@ -1950,13 +1931,13 @@ Do not include markdown code fences if responseMimeType is json.
             cognitiveAdvice: parsed.cognitiveAdvice || `Calibrated for ${archetype}.`,
             conversationMessageCount: conversation.length,
             createdAt: new Date().toISOString(),
-            source: LLAMA_MODEL_ID,
+            source: GROQ_MODEL,
           };
         }
-      } catch (llamaErr: any) {
+      } catch (aiErr: any) {
         console.warn(
-          'Llama spark notes analysis error/timeout, using cognitive fallback:',
-          (llamaErr as any)?.message || llamaErr,
+          'AI spark notes analysis error/timeout, using cognitive fallback:',
+          (aiErr as any)?.message || aiErr,
         );
       }
     }
@@ -2707,10 +2688,10 @@ app.post('/api/study/generate', async (req: Request, res: Response) => {
           void bumpTrialUsage(email, 'study', 'ai');
           return res.json({ ...parsed, title: parsed.title || cleanTitle, sessionId: savedSessionId || sessionId || null, source: studyPackResult.model });
         }
-      } catch (llamaErr: any) {
+      } catch (aiErr: any) {
         console.warn(
           'Study pack LLM timeout/error, serving fallback study notes:',
-          (llamaErr as any)?.message || llamaErr
+          (aiErr as any)?.message || aiErr
         );
       }
     }
@@ -3548,10 +3529,10 @@ RETURN STRICT JSON matching this schema:
           await setCache(cacheKey, parsed, 7200);
           return res.json({ ...parsed, source: roadmapResult.model });
         }
-      } catch (llamaErr: any) {
+      } catch (aiErr: any) {
         console.warn(
           'Roadmap generation LLM timeout/error, serving firmament fallback:',
-          (llamaErr as any)?.message || llamaErr,
+          (aiErr as any)?.message || aiErr,
         );
       }
     }
@@ -3763,10 +3744,10 @@ Return valid JSON conforming strictly to:
           await setCache(cacheKey, parsed, 7200);
           return res.json({ ...parsed, source: examResult.model });
         }
-      } catch (llamaErr: any) {
+      } catch (aiErr: any) {
         console.warn(
           'Exam generation LLM timeout/error, serving authentic CAPS DBE paper bank:',
-          (llamaErr as any)?.message || llamaErr,
+          (aiErr as any)?.message || aiErr,
         );
       }
     }
@@ -4543,7 +4524,7 @@ Return valid JSON with:
   }
 
   if (!paper) {
-    return res.status(503).json({ error: 'Llama not available or generation failed' });
+    return res.status(503).json({ error: 'AI provider not available or generation failed' });
   }
 
   const client = getServiceSupabaseClient() || getSupabaseServerClient(req);
@@ -5295,7 +5276,7 @@ app.post('/api/notes/generate-from-pdf-toc', async (req: Request, res: Response)
     )}\n\nReturn valid JSON: {"summary": string, "topics": [{"heading": string, "details": string}], "keyPoints": string[], "formulas": [{"name": string, "formula": string, "variables": string, "when": string, "example": string}], "terminology": [{"term": string, "definition": string}], "examinerTips": string[]}`;
     let paper: any = null;
     try {
-      const raw = await callLlamaChat({
+      const raw = await callChatCompletion({
         system: systemInstruction,
         user: 'Generate notes for this chapter.',
         jsonMode: true,
@@ -5378,7 +5359,7 @@ app.post('/api/notes/batch-from-pdfs-toc', async (req: Request, res: Response) =
         )}\n\nReturn valid JSON: {"summary": string, "topics": [{"heading": string, "details": string}], "keyPoints": string[], "formulas": [{"name": string, "formula": string, "variables": string, "when": string, "example": string}], "terminology": [{"term": string, "definition": string}], "examinerTips": string[]}`;
         let paper: any = null;
         try {
-          const raw = await callLlamaChat({
+          const raw = await callChatCompletion({
             system: sys,
             user: 'Generate notes.',
             jsonMode: true,
