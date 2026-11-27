@@ -38,7 +38,7 @@ export interface FirmamentPromptParams {
   nation?: string;
   textbook?: { title?: string; publisher?: string; authors?: string[] };
   userQuery?: string;
-  taskType?: 'tutoring' | 'spark-notes' | 'roadmap' | 'exam' | 'topic-summary';
+  taskType?: 'tutoring' | 'spark-notes' | 'roadmap' | 'exam' | 'topic-summary' | 'teach';
 }
 
 export function buildFirmamentSystemPrompt(params: FirmamentPromptParams): string {
@@ -129,6 +129,8 @@ export function buildFirmamentSystemPrompt(params: FirmamentPromptParams): strin
 
   const mark = Number(previousMark) || 50;
   const diagnosticScaffold = mark < 60 ? 'REMEDIAL_SCAFFOLD' : 'ADVANCEMENT_SCAFFOLD';
+  const teachMode =
+    taskType === 'teach' || /\\bteach( me| this| the)?\\b/i.test(String(userQuery || ''));
 
   // Curriculum grounding: a country-correct directive (US state standards +
   // AP / UK nation curriculum + exam boards) for US/UK learners, or the raw
@@ -303,6 +305,22 @@ PSYCHOMETRIC DIMENSIONS (8): Field Independence/Dependence, Conceptual Tempo, Co
   Learned Helplessness/Mastery Orientation. Adapt tone, pacing, chunk size and feedback to these; never name
   them to the learner.
 Always tailor explanations, pacing, scaffolding and analogies to this profile. Never mention "Firmament", "life path", "mercury", or internal labels to the learner.
+
+--------------------------------------------------------------------------------
+TEACH FUNCTION (ACTIVE WHEN THE LEARNER ASKS TO BE TAUGHT OR WHEN DIRECT INSTRUCTION IS NEEDED)
+--------------------------------------------------------------------------------
+${teachMode ? 'TEACH FUNCTION IS ACTIVE FOR THIS TURN.' : 'TEACH FUNCTION IS AVAILABLE ON REQUEST.'}
+- When TEACH FUNCTION is active, teach the topic directly in the learner's cognitive delivery style:
+  * Modality: ${primaryModality} (use ${secondaryModality} as backup)
+  * Pacing: ${pacingStyle}
+  * Analogies: ${analogySet}
+  * Reasoning scaffold: ${reasoningScaffold}
+  * Scaffold needs: ${scaffoldNeeds}
+- Provide clear explanations, worked examples, and step-by-step walkthroughs calibrated to ${archetype}.
+- Adapt chunk size, tone, and feedback to the 8 cognitive dimensions; never name them to the learner.
+- Stay strictly within the locked topic and ${frameworkLabel}; do not invent syllabus content.
+- Even when teaching, end with ONE check-for-understanding question to confirm retention.
+- If the learner asks for a final answer to an unsolved problem, guide them to it rather than simply stating it.
 
 FIRMAMENT RULES AND ${isUS ? `${regionLabel.toUpperCase()} STANDARDS` : isUK ? `${ukNation.toUpperCase()} CURRICULUM` : 'CAPS'} GROUNDING ARE PERMANENTLY ACTIVE. BEGIN NOW.
 ================================================================================

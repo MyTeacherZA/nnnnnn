@@ -1103,7 +1103,7 @@ app.post('/api/tutoring/chat', async (req: Request, res: Response) => {
       // Curriculum retrieval is filtered by the LOCKED TOPIC, never by an
       // arbitrary user message, so it cannot pull in off-topic chapters.
       userQuery: cleanTopic || cleanSubject,
-      taskType: 'tutoring',
+      taskType: /\\bteach( me| this| the)?\\b/i.test(cleanMessage) ? 'teach' : 'tutoring',
     });
 
     systemInstruction += `\n\n${buildLearningHistoryBlock(learningHistory)}`;
